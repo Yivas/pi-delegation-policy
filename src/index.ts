@@ -53,7 +53,7 @@ async function refresh(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Runtime
     state,
     pi.getAllTools().map((tool) => tool.name),
   );
-  // Keep the latest runtime state on the extension instance without exposing it to Pi.
+  // Cache the latest runtime state for event handlers that do not receive a context.
   (pi as ExtensionAPI & { __delegationPolicyState?: RuntimeState }).__delegationPolicyState = state;
   return state;
 }
@@ -63,7 +63,7 @@ function currentState(pi: ExtensionAPI): RuntimeState | undefined {
 }
 
 function updateStatus(ctx: ExtensionContext, state: RuntimeState): void {
-  ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", statusLabel(state, ctx)));
+  ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", statusLabel(state)));
 }
 
 async function quickMode(
@@ -78,17 +78,19 @@ async function quickMode(
   ctx.ui.notify(`Session delegation mode: ${mode}.`, "info");
 }
 
-function statusText(state: RuntimeState, ctx: ExtensionContext): string {
+function statusText(state: RuntimeState): string {
   const preset = state.effective.preset;
   const skill = preset?.skill ?? "(unset)";
   const skillAvailable = skill !== "(unset)" && state.skillFiles.has(skill);
-  const skillLoaded = skillAvailable && skillIsLoaded(state, skill, ctx);
-  const assignmentErrors = state.runtimeErrors.length
-    ? ` | details=${state.runtimeErrors.join("; ")}`
-    : "";
+  const skillLoaded = skillAvailable && skillIsLoaded(state, skill);
+  const details = [
+    ...state.diagnostics.map((diagnostic) => diagnostic.message),
+    ...state.runtimeErrors,
+  ];
+  const errorDetails = details.length ? ` | details=${details.join("; ")}` : "";
   return (
     [
-      `${statusLabel(state, ctx)} mode=${state.effective.mode}`,
+      `${statusLabel(state)} mode=${state.effective.mode}`,
       `strategy=${state.effective.strategy}`,
       `preset=${state.effective.activePreset ?? "(none)"}`,
       `skill=${skill} ${
@@ -101,8 +103,8 @@ function statusText(state: RuntimeState, ctx: ExtensionContext): string {
             : "missing"
       }`,
       `enforcement=${preset?.enforcement ? "on" : "off"}`,
-      state.runtimeErrors.length ? `errors=${state.runtimeErrors.length}` : "errors=0",
-    ].join(" | ") + assignmentErrors
+      details.length ? `errors=${details.length}` : "errors=0",
+    ].join(" | ") + errorDetails
   );
 }
 
@@ -120,7 +122,7 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
       }
       if (action.kind === "status") {
         const state = await refresh(pi, ctx);
-        ctx.ui.notify(statusText(state, ctx), hasRuntimeError(state, ctx) ? "error" : "info");
+        ctx.ui.notify(statusText(state), hasRuntimeError(state) ? "error" : "info");
         return;
       }
       if (action.kind === "reset") {
@@ -144,8 +146,12 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
     handler: async (ctx) => openDelegateEditor(ctx, pi),
   });
 
-  pi.on("session_start", async (_event, ctx) => {
-    const state = await refresh(pi, ctx);
+  pi.on("session_start", async (event, ctx) => {
+    let state = await refresh(pi, ctx);
+    if (event.reason === "reload") {
+      resetLoadedSkills(pi, state);
+      state = await refresh(pi, ctx);
+    }
     updateStatus(ctx, state);
   });
   pi.on("session_tree", async (_event, ctx) => {
@@ -187,9 +193,9 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
     if (state && event.toolName === "read" && !event.isError)
       recordSkillFromRead(pi, state, event.input);
   });
-  pi.on("tool_call", (event, ctx) => {
+  pi.on("tool_call", (event) => {
     const state = currentState(pi);
-    if (!state || !executorBlocked(state, ctx, event.toolName)) return;
+    if (!state || !executorBlocked(state, event.toolName)) return;
     const skill = state.effective.preset?.skill;
     return {
       block: true,

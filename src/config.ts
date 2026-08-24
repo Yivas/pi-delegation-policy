@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import {
   emptyConfig,
   emptySessionState,
@@ -207,14 +207,17 @@ export async function readConfig(path: string, scope: ScopeName): Promise<Loaded
           diagnostics: [{ scope, message: `Invalid configuration at ${path}` }],
         };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      return { config: emptyConfig(), diagnostics: [] };
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { config: emptyConfig(), diagnostics: [] };
     return {
       config: emptyConfig(),
       diagnostics: [
         {
           scope,
-          message: `Could not read ${path}: ${error instanceof Error ? error.message : String(error)}`,
+          message:
+            error instanceof SyntaxError
+              ? `Invalid JSON at ${path}`
+              : `Could not read ${path}: ${code ?? "unknown error"}`,
         },
       ],
     };
@@ -248,15 +251,16 @@ export function restoreSessionState(entries: unknown[]): SessionState {
   return emptySessionState();
 }
 
-export function restoreLoadedSkills(entries: unknown[]): Set<string> {
-  const loaded = new Set<string>();
+export function restoreLoadedSkills(entries: unknown[]): Map<string, string> {
+  const loaded = new Map<string, string>();
   for (const entryValue of entries) {
     const entry = entryValue as Record<string, unknown> | undefined;
     if (entry?.type !== "custom") continue;
     if (entry.customType === SKILL_RESET_ENTRY_TYPE) {
       loaded.clear();
-    } else if (entry.customType === SKILL_LOADED_ENTRY_TYPE && typeof entry.data === "string") {
-      loaded.add(entry.data);
+    } else if (entry.customType === SKILL_LOADED_ENTRY_TYPE && isRecord(entry.data)) {
+      const { name, filePath } = entry.data;
+      if (typeof name === "string" && typeof filePath === "string") loaded.set(name, filePath);
     }
   }
   return loaded;
@@ -308,20 +312,4 @@ export function resolveConfig(
           : "default",
   } as const;
   return { activePreset, mode, strategy, preset, source };
-}
-
-export function sessionStateFromEffective(effective: EffectiveConfig): SessionState {
-  return {
-    schemaVersion: 1,
-    ...(effective.activePreset ? { activePreset: effective.activePreset } : {}),
-    mode: effective.mode,
-    strategy: effective.strategy,
-    ...(effective.preset && effective.activePreset
-      ? { presets: { [effective.activePreset]: effective.preset } }
-      : {}),
-  };
-}
-
-export function isProjectTrusted(ctx: ExtensionContext): boolean {
-  return ctx.isProjectTrusted();
 }

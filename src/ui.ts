@@ -323,14 +323,14 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
       const next = await selectOrCancel(ctx, "Edit scope", scopes);
       if (next) scope = next.toLowerCase() as ScopeName;
     } else if (selected.startsWith("Active preset:")) {
-      const next = await selectOrCancel(ctx, "Active preset", ["(none)", ...presetNames]);
+      const next = await selectOrCancel(ctx, "Active preset", ["(inherit)", ...presetNames]);
       if (next) {
         if (scope === "session") {
-          state.session.activePreset = next === "(none)" ? undefined : next;
+          state.session.activePreset = next === "(inherit)" ? undefined : next;
           sessionEntry(pi, state);
         } else {
           const document = documentForScope(state, scope);
-          document.activePreset = next === "(none)" ? undefined : next;
+          document.activePreset = next === "(inherit)" ? undefined : next;
           await saveScope(pi, ctx, state, scope, document);
         }
         Object.assign(state, await loadRuntime(ctx));

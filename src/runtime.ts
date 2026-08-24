@@ -27,7 +27,7 @@ export type RuntimeState = {
   project: Awaited<ReturnType<typeof readConfig>>["config"];
   session: ReturnType<typeof restoreSessionState>;
   diagnostics: ConfigDiagnostic[];
-  loadedSkills: Set<string>;
+  loadedSkills: Map<string, string>;
   skillFiles: Map<string, string>;
   skillsDiscovered: boolean;
   assignmentStatuses: Map<string, ModelStatus>;
@@ -92,12 +92,16 @@ export function activeCategories(state: RuntimeState): readonly string[] {
   return state.effective.strategy === "tiered" ? TIERED_CATEGORIES : TASK_CATEGORIES;
 }
 
-export function skillIsLoaded(
-  state: RuntimeState,
-  skillName: string | undefined,
-  _ctx: ExtensionContext,
-): boolean {
-  return !!skillName && state.loadedSkills.has(skillName);
+export function skillIsLoaded(state: RuntimeState, skillName: string | undefined): boolean {
+  if (!skillName) return false;
+  const loadedPath = state.loadedSkills.get(skillName);
+  const currentPath = state.skillFiles.get(skillName);
+  return (
+    !!loadedPath &&
+    !!currentPath &&
+    normalizePathForComparison(state.cwd, loadedPath) ===
+      normalizePathForComparison(state.cwd, currentPath)
+  );
 }
 
 export function markSkillLoaded(
@@ -105,9 +109,10 @@ export function markSkillLoaded(
   state: RuntimeState,
   skillName: string,
 ): void {
-  if (state.loadedSkills.has(skillName)) return;
-  state.loadedSkills.add(skillName);
-  pi.appendEntry(SKILL_LOADED_ENTRY_TYPE, skillName);
+  const filePath = state.skillFiles.get(skillName);
+  if (!filePath || skillIsLoaded(state, skillName)) return;
+  state.loadedSkills.set(skillName, filePath);
+  pi.appendEntry(SKILL_LOADED_ENTRY_TYPE, { name: skillName, filePath });
 }
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -156,7 +161,7 @@ export function modelStatusDetail(status: ModelStatus): string {
 
 export async function validateRuntime(ctx: ExtensionContext, state: RuntimeState): Promise<void> {
   state.assignmentStatuses.clear();
-  state.runtimeErrors = state.diagnostics.map((diagnostic) => diagnostic.message);
+  state.runtimeErrors = [];
   if (state.effective.mode === "off" || !state.effective.preset) return;
   for (const category of activeCategories(state)) {
     const assignment = assignmentFor(state, category as DelegationCategory);
@@ -187,7 +192,7 @@ export function validateExecutorTools(state: RuntimeState, toolNames: Iterable<s
   }
 }
 
-export function hasRuntimeError(state: RuntimeState, _ctx: ExtensionContext): boolean {
+export function hasRuntimeError(state: RuntimeState): boolean {
   const preset = state.effective.preset;
   if (state.diagnostics.length > 0 || state.runtimeErrors.length > 0) return true;
   if (state.effective.mode === "off") return false;
@@ -206,7 +211,8 @@ export function recordSkillFromExpandedPrompt(
   const skillPath = state.skillFiles.get(skillName);
   if (!skillPath) return;
   const opener = `<skill name="${skillName}" location="${skillPath}">`;
-  if (prompt.startsWith(`${opener}\n`)) markSkillLoaded(pi, state, skillName);
+  if (prompt.startsWith(`${opener}\n`) && prompt.includes("\n</skill>"))
+    markSkillLoaded(pi, state, skillName);
 }
 
 export function resetLoadedSkills(
@@ -243,18 +249,14 @@ export function recordSkillFromRead(
   }
 }
 
-export function executorBlocked(
-  state: RuntimeState,
-  ctx: ExtensionContext,
-  toolName: string,
-): boolean {
+export function executorBlocked(state: RuntimeState, toolName: string): boolean {
   const preset = state.effective.preset;
   return (
     state.effective.mode !== "off" &&
     !!preset?.enforcement &&
     !!preset.skill &&
     preset.executorTools.includes(toolName) &&
-    !skillIsLoaded(state, preset.skill, ctx)
+    !skillIsLoaded(state, preset.skill)
   );
 }
 
@@ -275,8 +277,8 @@ export function assignmentDisplay(
   return `${formatAssignment(assignment)} [unavailable: ${modelStatusDetail(status)}]`;
 }
 
-export function statusLabel(state: RuntimeState, ctx: ExtensionContext): string {
-  if (hasRuntimeError(state, ctx)) return "D:ERR";
+export function statusLabel(state: RuntimeState): string {
+  if (hasRuntimeError(state)) return "D:ERR";
   if (state.effective.mode === "off") return "D:OFF";
   return state.effective.mode === "normal" ? "D:NORM" : "D:AGG";
 }

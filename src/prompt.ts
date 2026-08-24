@@ -19,7 +19,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
   if (!preset.skill || !state.skillFiles.has(preset.skill)) {
     return `<delegation_policy>\nDelegation disabled: the configured external skill ${preset.skill ? `"${preset.skill}"` : "(none)"} is not available. Configure a discovered skill before delegating.\n</delegation_policy>`;
   }
-  if (state.diagnostics.length > 0 || state.runtimeErrors.length > 0) {
+  if (state.runtimeErrors.length > 0) {
     const details = state.runtimeErrors.join("; ") || "invalid runtime configuration";
     return `<delegation_policy>\nDelegation disabled: configured delegation assignments are unavailable. ${details}\n</delegation_policy>`;
   }
