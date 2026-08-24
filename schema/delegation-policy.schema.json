@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Yivas/pi-delegation-policy/blob/main/schema/delegation-policy.schema.json",
+  "title": "Pi Delegation Policy configuration",
+  "type": "object",
+  "required": ["schemaVersion", "presets"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "activePreset": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+    },
+    "mode": { "enum": ["off", "normal", "aggressive"] },
+    "strategy": { "enum": ["tiered", "task-based"] },
+    "presets": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/preset" }
+    }
+  },
+  "$defs": {
+    "assignment": {
+      "type": "object",
+      "required": ["provider", "model", "thinking"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "thinking": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "preset": {
+      "type": "object",
+      "required": [
+        "defaultMode",
+        "defaultStrategy",
+        "enforcement",
+        "executorTools",
+        "tiered",
+        "taskBased"
+      ],
+      "properties": {
+        "defaultMode": { "enum": ["off", "normal", "aggressive"] },
+        "defaultStrategy": { "enum": ["tiered", "task-based"] },
+        "skill": { "type": "string", "minLength": 1 },
+        "enforcement": { "type": "boolean" },
+        "executorTools": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "tiered": {
+          "type": "object",
+          "properties": {
+            "general": { "$ref": "#/$defs/assignment" },
+            "strong": { "$ref": "#/$defs/assignment" },
+            "ui-design": { "$ref": "#/$defs/assignment" }
+          },
+          "additionalProperties": false
+        },
+        "taskBased": {
+          "type": "object",
+          "properties": {
+            "planning": { "$ref": "#/$defs/assignment" },
+            "research": { "$ref": "#/$defs/assignment" },
+            "implementation": { "$ref": "#/$defs/assignment" },
+            "debugging": { "$ref": "#/$defs/assignment" },
+            "review": { "$ref": "#/$defs/assignment" },
+            "ui-design": { "$ref": "#/$defs/assignment" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

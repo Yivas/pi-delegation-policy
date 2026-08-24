@@ -1,0 +1,55 @@
+{
+  "name": "pi-delegation-policy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A configurable Pi extension for delegation policy and exact subagent model assignments.",
+  "type": "module",
+  "license": "MIT",
+  "repository": "https://github.com/Yivas/pi-delegation-policy",
+  "bugs": "https://github.com/Yivas/pi-delegation-policy/issues",
+  "homepage": "https://github.com/Yivas/pi-delegation-policy",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "delegation",
+    "model-profiles",
+    "subagents"
+  ],
+  "files": [
+    "src",
+    "schema",
+    "examples",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "build": "tsc --outDir dist",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.7.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
