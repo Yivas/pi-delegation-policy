@@ -1,0 +1,49 @@
+---
+title: pi-delegation-policy
+description: Configure delegation intensity and exact role model references for Pi.
+hero:
+  tagline: Choose when to delegate and which exact models guide the work.
+  actions:
+    - text: Install the extension
+      link: /pi-delegation-policy/getting-started/
+      icon: right-arrow
+    - text: View the source
+      link: https://github.com/Yivas/pi-delegation-policy
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+`pi-delegation-policy` is a local Pi extension for configuring delegation intensity and exact
+references for Small, Medium, Large, and an optional UI Design role. It guides the main agent; it
+does not run, route, or enforce delegated work.
+
+:::caution
+The extension cannot guarantee that another system follows a configured role or thinking choice. It
+only adds guidance when the active configuration is valid.
+:::
+
+<CardGrid>
+  <Card title="Install and configure" icon="puzzle">
+    Install the package, set global defaults, and keep each new session safely off.
+  </Card>
+  <Card title="Operate by session" icon="command">
+    Use `/delegate` to choose intensity, inspect status, and reset a session branch.
+  </Card>
+  <Card title="Understand the limits" icon="information">
+    Review fail-closed validation, privacy boundaries, and what the extension deliberately does not
+    do.
+  </Card>
+</CardGrid>
+
+## Status
+
+Version `0.1.0` is available from npm and supports Pi `0.84.1`. Every new session starts with
+delegation set to `off`.
+
+## Start here
+
+- Follow the [installation guide](/pi-delegation-policy/getting-started/) to add the package to Pi.
+- Read [configuration](/pi-delegation-policy/configuration/) before enabling an active intensity.
+- Use [commands and status](/pi-delegation-policy/commands-and-status/) while operating the extension.
