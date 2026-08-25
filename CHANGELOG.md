@@ -2,9 +2,19 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-08-26
+
 ### Added
 
 - Added a public task-oriented documentation site on GitHub Pages.
+
+### Fixed
+
+- Clarified that the selector reset action changes the draft until you apply it.
+
+### Security
+
+- Restricted documentation deployments to `main`, isolated pull request cancellation, and pinned privileged workflow actions.
 
 ## 0.1.0 - 2026-08-25
 

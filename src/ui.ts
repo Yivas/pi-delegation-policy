@@ -30,7 +30,7 @@ const USE_GLOBAL_DEFAULT = "Use global default";
 const DISABLE_FOR_SESSION = "Disable for this session";
 const APPLY_TO_SESSION = "Apply changes to this session";
 const SAVE_AS_DEFAULTS = "Save effective configuration as defaults";
-const RESET_SESSION = "Reset session to off";
+const RESET_SESSION = "Reset draft to off";
 const CANCEL = "Cancel";
 
 type ModelSelection =

@@ -458,7 +458,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
   });
 });
 
-test("the selector stages session edits, supports cancellation, and saves defaults without intensity", async () => {
+test("the selector stages session edits, supports cancellation, resets drafts, and saves defaults without intensity", async () => {
   await withAgentDirectory(async (directory) => {
     await writeConfig(getGlobalConfigPath(directory), defaults);
     const branch: Array<Record<string, unknown>> = [];
@@ -491,6 +491,27 @@ test("the selector stages session edits, supports cancellation, and saves defaul
     };
     await openDelegateEditor(cancelContext, { appendEntry: () => undefined } as never);
     assert.equal(cancelled.length, 0);
+
+    const resetBranch: Array<Record<string, unknown>> = [
+      {
+        type: "custom",
+        customType: SESSION_ENTRY_TYPE,
+        data: { schemaVersion: 2, intensity: "normal" },
+      },
+    ];
+    let resetSelections = 0;
+    const resetContext = context({ branch: resetBranch });
+    resetContext.ui.select = async (_title: string, options: string[]) => {
+      resetSelections += 1;
+      return resetSelections === 1
+        ? options.find((option) => option === "Reset draft to off")
+        : options.find((option) => option.startsWith("Apply changes"));
+    };
+    await openDelegateEditor(resetContext, {
+      appendEntry: (customType: string, data?: unknown) =>
+        resetBranch.push({ type: "custom", customType, data }),
+    } as never);
+    assert.deepEqual(resetBranch.at(-1)?.data, { schemaVersion: 2, intensity: "off" });
 
     const saveContext = context({ branch: [] });
     let saveSelections = 0;
@@ -527,7 +548,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.1.0");
+  assert.equal(packageJson.version, "0.1.1");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
 
