@@ -3,6 +3,8 @@
 A local Pi extension that lets you choose delegation intensity and exact model references for Small, Medium, Large, and an optional UI Design role. It guides the main agent; it does not run, route, or enforce delegated work.
 
 > **Status:** Version 0.1.0 is available from npm. Every new session starts at `off`.
+>
+> **Documentation:** Read the [documentation site](https://yivas.github.io/pi-delegation-policy/).
 
 ## What it does
 
