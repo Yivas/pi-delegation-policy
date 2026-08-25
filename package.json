@@ -1,7 +1,7 @@
 {
   "name": "pi-delegation-policy",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "private": false,
   "description": "A Pi extension for configurable delegation intensity and exact subagent role model references.",
   "type": "module",
   "license": "MIT",

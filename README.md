@@ -2,7 +2,7 @@
 
 A local Pi extension that lets you choose delegation intensity and exact model references for Small, Medium, Large, and an optional UI Design role. It guides the main agent; it does not run, route, or enforce delegated work.
 
-> **Status:** Pre-release. The package is unpublished and starts every new session at `off`.
+> **Status:** Version 0.1.0 is available from npm. Every new session starts at `off`.
 
 ## What it does
 
@@ -16,15 +16,15 @@ A local Pi extension that lets you choose delegation intensity and exact model r
 
 This package does not create, launch, route, supervise, or block subagents. It does not change Pi's main model or thinking level. It has no presets, project configuration, external skill loading, tool interception, model fallback, telemetry, credential storage, or network requests.
 
-## Install from source
+## Install
 
-The package is private and unpublished. From a parent directory containing a local checkout:
+Install the package in your Pi user settings:
 
 ```bash
-pi install ./pi-delegation-policy
+pi install npm:pi-delegation-policy
 ```
 
-It supports Pi `0.84.1`. Restart Pi or run `/reload` after installation.
+It supports Pi `0.84.1`. Restart Pi or run `/reload` after installation. To install a local checkout instead, use `pi install ./pi-delegation-policy`.
 
 ## Commands
 

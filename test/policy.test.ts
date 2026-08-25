@@ -139,7 +139,7 @@ async function withAgentDirectory<T>(callback: (directory: string) => Promise<T>
   } finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previous;
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 }
 
@@ -208,7 +208,7 @@ test("writing refuses invalid global defaults before touching disk", async () =>
     );
     await assert.rejects(readFile(path, "utf8"));
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
@@ -527,8 +527,8 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.0.0");
-  assert.equal(packageJson.private, true);
+  assert.equal(packageJson.version, "0.1.0");
+  assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
 
   const npmCli = process.env.npm_execpath;

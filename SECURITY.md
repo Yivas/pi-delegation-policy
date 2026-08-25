@@ -14,4 +14,4 @@ Include the affected version or commit, operating system, Pi version, reproducti
 
 ## Supported versions
 
-Only the latest published version is supported. The package is currently unpublished, so development snapshots are not supported releases.
+Only the latest published version is supported. Version 0.1.0 is the first supported release.
