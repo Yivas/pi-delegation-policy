@@ -1,58 +1,20 @@
 {
-  "schemaVersion": 1,
-  "activePreset": "balanced",
-  "presets": {
-    "balanced": {
-      "defaultMode": "normal",
-      "defaultStrategy": "task-based",
-      "skill": "your-subagent-skill",
-      "enforcement": true,
-      "executorTools": ["subagent"],
-      "tiered": {
-        "general": {
-          "provider": "example-provider",
-          "model": "example-general",
-          "thinking": "medium"
-        },
-        "strong": { "provider": "example-provider", "model": "example-strong", "thinking": "high" },
-        "ui-design": {
-          "provider": "example-provider",
-          "model": "example-ui-designer",
-          "thinking": "high"
-        }
-      },
-      "taskBased": {
-        "planning": {
-          "provider": "example-provider",
-          "model": "example-planner",
-          "thinking": "high"
-        },
-        "research": {
-          "provider": "example-provider",
-          "model": "example-researcher",
-          "thinking": "medium"
-        },
-        "implementation": {
-          "provider": "example-provider",
-          "model": "example-implementer",
-          "thinking": "medium"
-        },
-        "debugging": {
-          "provider": "example-provider",
-          "model": "example-debugger",
-          "thinking": "high"
-        },
-        "review": {
-          "provider": "example-provider",
-          "model": "example-reviewer",
-          "thinking": "high"
-        },
-        "ui-design": {
-          "provider": "example-provider",
-          "model": "example-ui-designer",
-          "thinking": "high"
-        }
-      }
-    }
+  "schemaVersion": 2,
+  "preference": "standard",
+  "small": {
+    "provider": "example-provider",
+    "model": "example-small"
+  },
+  "medium": {
+    "provider": "example-provider",
+    "model": "example-medium"
+  },
+  "large": {
+    "provider": "example-provider",
+    "model": "example-large"
+  },
+  "uiDesign": {
+    "provider": "example-provider",
+    "model": "example-ui-design"
   }
 }

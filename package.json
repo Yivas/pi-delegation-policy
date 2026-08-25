@@ -2,7 +2,7 @@
   "name": "pi-delegation-policy",
   "version": "0.0.0",
   "private": true,
-  "description": "A configurable Pi extension for delegation policy and exact subagent model assignments.",
+  "description": "A Pi extension for configurable delegation intensity and exact subagent role model references.",
   "type": "module",
   "license": "MIT",
   "repository": "https://github.com/Yivas/pi-delegation-policy",
@@ -12,8 +12,8 @@
     "pi-package",
     "pi-extension",
     "delegation",
-    "model-profiles",
-    "subagents"
+    "subagents",
+    "model-selection"
   ],
   "files": [
     "src",

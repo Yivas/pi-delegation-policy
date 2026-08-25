@@ -4,29 +4,22 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { SESSION_ENTRY_TYPE } from "./config.ts";
 import { buildDelegationPolicy } from "./prompt.ts";
 import {
-  executorBlocked,
   hasRuntimeError,
-  loadRuntime as reloadRuntime,
-  recordSkillFromExpandedPrompt,
-  recordSkillFromRead,
-  resetLoadedSkills,
-  skillIsLoaded,
+  loadRuntime,
+  sessionEntry,
   statusLabel,
-  validateExecutorTools,
-  validateRuntime,
   type RuntimeState,
 } from "./runtime.ts";
 import { openDelegateEditor } from "./ui.ts";
-import { MODES, type DelegationMode } from "./types.ts";
+import { INTENSITIES, type Intensity } from "./types.ts";
 
 const STATUS_KEY = "pi-delegation-policy";
 
 export type CommandAction =
   | { kind: "open" }
-  | { kind: "mode"; mode: DelegationMode }
+  | { kind: "intensity"; intensity: Intensity }
   | { kind: "status" }
   | { kind: "reset" }
   | { kind: "invalid" };
@@ -36,83 +29,72 @@ export function parseCommand(args: string): CommandAction {
   if (parts.length === 0) return { kind: "open" };
   if (parts[0] === "status" && parts.length === 1) return { kind: "status" };
   if (parts[0] === "reset" && parts.length === 1) return { kind: "reset" };
-  if (parts.length === 1 && MODES.includes(parts[0] as DelegationMode))
-    return { kind: "mode", mode: parts[0] as DelegationMode };
+  if (parts.length === 1 && INTENSITIES.includes(parts[0] as Intensity)) {
+    return { kind: "intensity", intensity: parts[0] as Intensity };
+  }
   return { kind: "invalid" };
 }
 
 export function getArgumentCompletions(prefix: string): AutocompleteItem[] | null {
-  const options = [...MODES, "status", "reset"];
+  const options = [...INTENSITIES, "status", "reset"];
   const matches = options.filter((option) => option.startsWith(prefix.toLowerCase()));
   return matches.length ? matches.map((value) => ({ value, label: value })) : null;
 }
 
-async function refresh(pi: ExtensionAPI, ctx: ExtensionContext): Promise<RuntimeState> {
-  const state = await reloadRuntime(ctx);
-  validateExecutorTools(
-    state,
-    pi.getAllTools().map((tool) => tool.name),
-  );
-  // Cache the latest runtime state for event handlers that do not receive a context.
-  (pi as ExtensionAPI & { __delegationPolicyState?: RuntimeState }).__delegationPolicyState = state;
-  return state;
-}
-
-function currentState(pi: ExtensionAPI): RuntimeState | undefined {
-  return (pi as ExtensionAPI & { __delegationPolicyState?: RuntimeState }).__delegationPolicyState;
+async function refresh(ctx: ExtensionContext): Promise<RuntimeState> {
+  return loadRuntime(ctx);
 }
 
 function updateStatus(ctx: ExtensionContext, state: RuntimeState): void {
   ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", statusLabel(state)));
 }
 
-async function quickMode(
-  pi: ExtensionAPI,
-  ctx: ExtensionCommandContext,
-  mode: DelegationMode,
-): Promise<void> {
-  const state = await refresh(pi, ctx);
-  state.session = { ...state.session, schemaVersion: 1, mode };
-  pi.appendEntry(SESSION_ENTRY_TYPE, state.session);
-  await refresh(pi, ctx);
-  ctx.ui.notify(`Session delegation mode: ${mode}.`, "info");
+function configuredLabel(value: unknown): string {
+  return value ? "configured" : "unset";
 }
 
 function statusText(state: RuntimeState): string {
-  const preset = state.effective.preset;
-  const skill = preset?.skill ?? "(unset)";
-  const skillAvailable = skill !== "(unset)" && state.skillFiles.has(skill);
-  const skillLoaded = skillAvailable && skillIsLoaded(state, skill);
+  const { effective } = state;
   const details = [
-    ...state.diagnostics.map((diagnostic) => diagnostic.message),
-    ...state.runtimeErrors,
+    `${statusLabel(state)} intensity=${effective.intensity}`,
+    `preference=${effective.preference} (${effective.source.preference})`,
+    `small=${configuredLabel(effective.small)} (${effective.source.small})`,
+    `medium=${configuredLabel(effective.medium)} (${effective.source.medium})`,
+    `large=${configuredLabel(effective.large)} (${effective.source.large})`,
+    `ui-design=${configuredLabel(effective.uiDesign)} (${effective.source.uiDesign})`,
   ];
-  const errorDetails = details.length ? ` | details=${details.join("; ")}` : "";
-  return (
-    [
-      `${statusLabel(state)} mode=${state.effective.mode}`,
-      `strategy=${state.effective.strategy}`,
-      `preset=${state.effective.activePreset ?? "(none)"}`,
-      `skill=${skill} ${
-        !state.skillsDiscovered
-          ? "unknown"
-          : skillAvailable
-            ? skillLoaded
-              ? "loaded"
-              : "available"
-            : "missing"
-      }`,
-      `enforcement=${preset?.enforcement ? "on" : "off"}`,
-      details.length ? `errors=${details.length}` : "errors=0",
-    ].join(" | ") + errorDetails
-  );
+
+  if (effective.intensity !== "off" && state.runtimeErrors.length > 0) {
+    details.push(`details=${state.runtimeErrors.join("; ")}`);
+  }
+  return details.join(" | ");
+}
+
+async function setSessionIntensity(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  intensity: Intensity,
+): Promise<void> {
+  const state = await refresh(ctx);
+  state.session = { ...state.session, schemaVersion: 2, intensity };
+  sessionEntry(pi, state);
+  const updated = await refresh(ctx);
+  updateStatus(ctx, updated);
+  ctx.ui.notify(`Session delegation intensity: ${intensity}.`, "info");
+}
+
+async function resetSession(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+  const state = await refresh(ctx);
+  state.session = { schemaVersion: 2, intensity: "off" };
+  sessionEntry(pi, state);
+  const updated = await refresh(ctx);
+  updateStatus(ctx, updated);
+  ctx.ui.notify("Session delegation settings reset to off.", "info");
 }
 
 export default function piDelegationPolicy(pi: ExtensionAPI): void {
-  let pendingSkillLoad: string | undefined;
-
   pi.registerCommand("delegate", {
-    description: "Configure delegation policy, presets, skills, and exact model assignments",
+    description: "Configure delegation intensity and exact role model references",
     getArgumentCompletions,
     handler: async (args, ctx) => {
       const action = parseCommand(args);
@@ -121,20 +103,17 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
         return;
       }
       if (action.kind === "status") {
-        const state = await refresh(pi, ctx);
+        const state = await refresh(ctx);
+        updateStatus(ctx, state);
         ctx.ui.notify(statusText(state), hasRuntimeError(state) ? "error" : "info");
         return;
       }
       if (action.kind === "reset") {
-        const state = await refresh(pi, ctx);
-        state.session = { schemaVersion: 1, reset: true };
-        pi.appendEntry(SESSION_ENTRY_TYPE, state.session);
-        await refresh(pi, ctx);
-        ctx.ui.notify("Session delegation overrides reset.", "info");
+        await resetSession(pi, ctx);
         return;
       }
-      if (action.kind === "mode") {
-        await quickMode(pi, ctx, action.mode);
+      if (action.kind === "intensity") {
+        await setSessionIntensity(pi, ctx, action.intensity);
         return;
       }
       ctx.ui.notify("Usage: /delegate, /delegate off|normal|aggressive|status|reset", "error");
@@ -146,68 +125,19 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
     handler: async (ctx) => openDelegateEditor(ctx, pi),
   });
 
-  pi.on("session_start", async (event, ctx) => {
-    let state = await refresh(pi, ctx);
-    if (event.reason === "reload") {
-      resetLoadedSkills(pi, state);
-      state = await refresh(pi, ctx);
-    }
-    updateStatus(ctx, state);
+  pi.on("session_start", async (_event, ctx) => {
+    updateStatus(ctx, await refresh(ctx));
   });
   pi.on("session_tree", async (_event, ctx) => {
-    const state = await refresh(pi, ctx);
-    updateStatus(ctx, state);
+    updateStatus(ctx, await refresh(ctx));
   });
   pi.on("before_agent_start", async (event, ctx) => {
-    const state = await refresh(pi, ctx);
-    state.skillFiles = new Map(
-      (event.systemPromptOptions.skills ?? []).map((skill) => [skill.name, skill.filePath]),
-    );
-    state.skillsDiscovered = true;
-    recordSkillFromExpandedPrompt(pi, state, pendingSkillLoad, event.prompt);
-    pendingSkillLoad = undefined;
-    await validateRuntime(ctx, state);
-    validateExecutorTools(
-      state,
-      pi.getAllTools().map((tool) => tool.name),
-    );
+    const state = await refresh(ctx);
     updateStatus(ctx, state);
     const policy = buildDelegationPolicy(state);
     return policy ? { systemPrompt: `${event.systemPrompt}\n\n${policy}` } : undefined;
   });
-  pi.on("input", (event) => {
-    const state = currentState(pi);
-    const skill = state?.effective.preset?.skill;
-    const commandExists =
-      !!skill &&
-      pi
-        .getCommands()
-        .some((command) => command.source === "skill" && command.name === `skill:${skill}`);
-    pendingSkillLoad =
-      commandExists && event.text.trim().match(/^\/skill:([^\s]+)(?:\s|$)/)?.[1] === skill
-        ? skill
-        : undefined;
-  });
-  pi.on("tool_result", (event, _ctx) => {
-    const state = currentState(pi);
-    if (state && event.toolName === "read" && !event.isError)
-      recordSkillFromRead(pi, state, event.input);
-  });
-  pi.on("tool_call", (event) => {
-    const state = currentState(pi);
-    if (!state || !executorBlocked(state, event.toolName)) return;
-    const skill = state.effective.preset?.skill;
-    return {
-      block: true,
-      reason: `Load the configured skill "${skill}" before using ${event.toolName}.`,
-    };
-  });
-  pi.on("session_compact", (_event, _ctx) => {
-    const state = currentState(pi);
-    if (state) resetLoadedSkills(pi, state);
-  });
   pi.on("session_shutdown", (_event, ctx) => {
-    pendingSkillLoad = undefined;
     ctx.ui.setStatus(STATUS_KEY, undefined);
   });
 }

@@ -17,11 +17,12 @@ Pull requests should:
 - include focused tests for behavior changes;
 - keep the public package English-only;
 - use fictional examples and provider-agnostic documentation;
-- preserve the boundary: this package does not create, launch, route, or manage subagents;
-- preserve exact assignments and the absence of hidden fallbacks;
+- preserve exact role references and the absence of model fallbacks;
+- preserve the boundary: this package guides the main agent and does not create, launch, route, supervise, or block subagents;
+- avoid project configuration, credential handling, telemetry, and network requests;
 - run `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`.
 
-Changes to configuration schemas or public commands need documentation and migration notes.
+Changes to schema 2, public commands, or the delegated-work policy need documentation and migration notes.
 
 ## Code of conduct
 

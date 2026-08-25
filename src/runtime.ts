@@ -1,286 +1,150 @@
-import { resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
-  getConfigPaths,
+  getGlobalConfigPath,
   readConfig,
-  restoreLoadedSkills,
-  restoreSessionState,
-  resolveConfig,
-  SKILL_LOADED_ENTRY_TYPE,
-  SKILL_RESET_ENTRY_TYPE,
   SESSION_ENTRY_TYPE,
+  resolveDelegateState,
+  restoreSessionState,
   type ConfigDiagnostic,
 } from "./config.ts";
 import {
-  TASK_CATEGORIES,
-  TIERED_CATEGORIES,
-  type DelegationCategory,
-  type EffectiveConfig,
-  type ModelAssignment,
+  MODEL_ROLES,
+  ROLE_LABELS,
+  type EffectiveDelegateState,
+  type GlobalDefaults,
+  type ModelConfigKey,
+  type ModelRef,
+  type ModelRole,
   type ModelStatus,
+  type SessionDelegateState,
 } from "./types.ts";
 
 export type RuntimeState = {
-  effective: EffectiveConfig;
-  global: Awaited<ReturnType<typeof readConfig>>["config"];
-  project: Awaited<ReturnType<typeof readConfig>>["config"];
-  session: ReturnType<typeof restoreSessionState>;
+  effective: EffectiveDelegateState;
+  global: GlobalDefaults;
+  session: SessionDelegateState;
   diagnostics: ConfigDiagnostic[];
-  loadedSkills: Map<string, string>;
-  skillFiles: Map<string, string>;
-  skillsDiscovered: boolean;
-  assignmentStatuses: Map<string, ModelStatus>;
+  modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
-  cwd: string;
 };
 
-function discoveredSkillFiles(ctx: ExtensionContext): {
-  files: Map<string, string>;
-  discovered: boolean;
-} {
-  const options = (
-    ctx as ExtensionContext & {
-      getSystemPromptOptions?: () => { skills?: Array<{ name: string; filePath: string }> };
-    }
-  ).getSystemPromptOptions?.();
-  return {
-    files: new Map((options?.skills ?? []).map((skill) => [skill.name, skill.filePath])),
-    discovered: options !== undefined,
-  };
+function matchesReference(model: Model<Api>, reference: ModelRef): boolean {
+  return model.provider === reference.provider && model.id === reference.model;
 }
 
-export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> {
-  const paths = getConfigPaths(ctx.cwd);
-  const global = await readConfig(paths.global, "global");
-  const project = ctx.isProjectTrusted()
-    ? await readConfig(paths.project, "project")
-    : { config: { schemaVersion: 1 as const, presets: {} }, diagnostics: [] };
-  const branch = ctx.sessionManager.getBranch();
-  const session = restoreSessionState(branch);
-  const loadedSkills = restoreLoadedSkills(branch);
-  const skills = discoveredSkillFiles(ctx);
-  const state: RuntimeState = {
-    effective: resolveConfig(global.config, project.config, session),
-    global: global.config,
-    project: project.config,
-    session,
-    diagnostics: [...global.diagnostics, ...project.diagnostics],
-    loadedSkills,
-    skillFiles: skills.files,
-    skillsDiscovered: skills.discovered,
-    assignmentStatuses: new Map(),
-    runtimeErrors: [],
-    cwd: ctx.cwd,
-  };
-  await validateRuntime(ctx, state);
-  return state;
-}
-
-export function assignmentFor(
-  state: RuntimeState,
-  category: DelegationCategory,
-): ModelAssignment | undefined {
-  const preset = state.effective.preset;
-  if (!preset) return undefined;
-  return state.effective.strategy === "tiered"
-    ? preset.tiered[category as (typeof TIERED_CATEGORIES)[number]]
-    : preset.taskBased[category as (typeof TASK_CATEGORIES)[number]];
-}
-
-export function activeCategories(state: RuntimeState): readonly string[] {
-  return state.effective.strategy === "tiered" ? TIERED_CATEGORIES : TASK_CATEGORIES;
-}
-
-export function skillIsLoaded(state: RuntimeState, skillName: string | undefined): boolean {
-  if (!skillName) return false;
-  const loadedPath = state.loadedSkills.get(skillName);
-  const currentPath = state.skillFiles.get(skillName);
-  return (
-    !!loadedPath &&
-    !!currentPath &&
-    normalizePathForComparison(state.cwd, loadedPath) ===
-      normalizePathForComparison(state.cwd, currentPath)
-  );
-}
-
-export function markSkillLoaded(
-  pi: { appendEntry: (type: string, data?: unknown) => void },
-  state: RuntimeState,
-  skillName: string,
-): void {
-  const filePath = state.skillFiles.get(skillName);
-  if (!filePath || skillIsLoaded(state, skillName)) return;
-  state.loadedSkills.set(skillName, filePath);
-  pi.appendEntry(SKILL_LOADED_ENTRY_TYPE, { name: skillName, filePath });
-}
-
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-
-export function supportedThinkingLevels(model: Model<Api>): string[] {
-  if (!model.reasoning) return ["off"];
-  const map = model.thinkingLevelMap;
-  if (!map) return THINKING_LEVELS.slice(0, 5);
-  return THINKING_LEVELS.filter((level) => {
-    if (level === "xhigh" || level === "max") return map[level] != null;
-    return map[level] !== null;
+function uniqueModels(models: readonly Model<Api>[]): Model<Api>[] {
+  const seen = new Set<string>();
+  return models.filter((model) => {
+    const key = `${model.provider}\u0000${model.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 
-export function supportedThinking(model: Model<Api>, thinking: string): boolean {
-  return supportedThinkingLevels(model).includes(thinking);
+export function modelCandidates(ctx: ExtensionContext): Model<Api>[] {
+  const scopedModels = ctx.scopedModels ?? [];
+  const models = scopedModels.length
+    ? scopedModels.map(({ model }) => model)
+    : ctx.modelRegistry.getAvailable();
+  return uniqueModels(models).filter((model) => ctx.modelRegistry.hasConfiguredAuth(model));
 }
 
-export async function validateAssignment(
-  ctx: ExtensionContext,
-  assignment: ModelAssignment | undefined,
-): Promise<ModelStatus | undefined> {
-  if (!assignment) return undefined;
-  const model = ctx.modelRegistry.find(assignment.provider, assignment.model);
-  if (!model) return { kind: "missing-model" };
-  if (!supportedThinking(model, assignment.thinking))
-    return { kind: "unsupported-thinking", model };
-  if (!ctx.modelRegistry.hasConfiguredAuth(model)) return { kind: "no-credentials", model };
-  return { kind: "available", model };
+export function validateModelReference(ctx: ExtensionContext, reference: ModelRef): ModelStatus {
+  const registered = ctx.modelRegistry.find(reference.provider, reference.model);
+  if (!registered) return { kind: "missing-model" };
+
+  const scopedModels = ctx.scopedModels ?? [];
+  if (scopedModels.length > 0) {
+    const scoped = scopedModels
+      .map(({ model }) => model)
+      .find((model) => matchesReference(model, reference));
+    if (!scoped) return { kind: "outside-scope" };
+    if (!ctx.modelRegistry.hasConfiguredAuth(scoped)) return { kind: "no-credentials" };
+    return { kind: "available", model: scoped };
+  }
+
+  const available = ctx.modelRegistry
+    .getAvailable()
+    .find((model) => matchesReference(model, reference));
+  if (!available) return { kind: "unavailable" };
+  if (!ctx.modelRegistry.hasConfiguredAuth(available)) return { kind: "no-credentials" };
+  return { kind: "available", model: available };
 }
 
-function skillIsAvailable(state: RuntimeState, skillName: string | undefined): boolean {
-  return !!skillName && state.skillFiles.has(skillName);
+function statusDetail(status: ModelStatus): string {
+  switch (status.kind) {
+    case "missing-model":
+      return "is not registered in Pi";
+    case "outside-scope":
+      return "is outside the current model scope";
+    case "unavailable":
+      return "is not available";
+    case "no-credentials":
+      return "has no configured authentication";
+    case "available":
+      return "is available";
+  }
 }
 
-export function assignmentStatusKey(strategy: string, category: string): string {
-  return `${strategy}:${category}`;
+function referenceFor(state: RuntimeState, role: ModelRole): ModelRef | undefined {
+  return state.effective[role];
 }
 
-export function modelStatusDetail(status: ModelStatus): string {
-  if (status.kind === "available") return "available";
-  if (status.kind === "missing-model") return "model not found in Pi's registry";
-  if (status.kind === "no-credentials") return "provider has no configured credentials";
-  return "thinking level is unsupported by the model";
+function validateRole(ctx: ExtensionContext, state: RuntimeState, role: ModelConfigKey): void {
+  const reference = role === "uiDesign" ? state.effective.uiDesign : referenceFor(state, role);
+  if (!reference) {
+    state.runtimeErrors.push(`${ROLE_LABELS[role]} model is not configured.`);
+    return;
+  }
+
+  const status = validateModelReference(ctx, reference);
+  state.modelStatuses.set(role, status);
+  if (status.kind !== "available") {
+    state.runtimeErrors.push(`${ROLE_LABELS[role]} model ${statusDetail(status)}.`);
+  }
 }
 
-export async function validateRuntime(ctx: ExtensionContext, state: RuntimeState): Promise<void> {
-  state.assignmentStatuses.clear();
+export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> {
+  const loaded = await readConfig(getGlobalConfigPath());
+  const session = restoreSessionState(ctx.sessionManager.getBranch());
+  const state: RuntimeState = {
+    effective: resolveDelegateState(loaded.defaults, session),
+    global: loaded.defaults,
+    session,
+    diagnostics: loaded.diagnostics,
+    modelStatuses: new Map(),
+    runtimeErrors: [],
+  };
+  validateRuntime(ctx, state);
+  return state;
+}
+
+export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): void {
+  state.effective = resolveDelegateState(state.global, state.session);
+  state.modelStatuses.clear();
   state.runtimeErrors = [];
-  if (state.effective.mode === "off" || !state.effective.preset) return;
-  for (const category of activeCategories(state)) {
-    const assignment = assignmentFor(state, category as DelegationCategory);
-    if (!assignment) continue;
-    const status = await validateAssignment(ctx, assignment);
-    if (!status) continue;
-    state.assignmentStatuses.set(assignmentStatusKey(state.effective.strategy, category), status);
-    if (status.kind !== "available") {
-      state.runtimeErrors.push(
-        `${category}: ${formatAssignment(assignment)} (${modelStatusDetail(status)})`,
-      );
-    }
-  }
-  const preset = state.effective.preset;
-  if (state.skillsDiscovered && !skillIsAvailable(state, preset.skill)) {
-    state.runtimeErrors.push(
-      `skill: ${preset.skill ? `"${preset.skill}" is not discovered` : "no external skill is configured"}`,
-    );
-  }
-}
 
-export function validateExecutorTools(state: RuntimeState, toolNames: Iterable<string>): void {
-  if (state.effective.mode === "off" || !state.effective.preset) return;
-  const available = new Set(toolNames);
-  for (const tool of state.effective.preset.executorTools) {
-    if (!available.has(tool))
-      state.runtimeErrors.push(`executor tool: "${tool}" is not registered`);
-  }
+  if (state.effective.intensity === "off") return;
+
+  for (const diagnostic of state.diagnostics) state.runtimeErrors.push(diagnostic.message);
+  for (const role of MODEL_ROLES) validateRole(ctx, state, role);
+  if (state.effective.uiDesign) validateRole(ctx, state, "uiDesign");
 }
 
 export function hasRuntimeError(state: RuntimeState): boolean {
-  const preset = state.effective.preset;
-  if (state.diagnostics.length > 0 || state.runtimeErrors.length > 0) return true;
-  if (state.effective.mode === "off") return false;
-  if (!preset) return true;
-  return state.skillsDiscovered && !skillIsAvailable(state, preset.skill);
-}
-
-export function recordSkillFromExpandedPrompt(
-  pi: { appendEntry: (type: string, data?: unknown) => void },
-  state: RuntimeState,
-  pendingSkill: string | undefined,
-  prompt: string,
-): void {
-  const skillName = state.effective.preset?.skill;
-  if (!skillName || pendingSkill !== skillName) return;
-  const skillPath = state.skillFiles.get(skillName);
-  if (!skillPath) return;
-  const opener = `<skill name="${skillName}" location="${skillPath}">`;
-  if (prompt.startsWith(`${opener}\n`) && prompt.includes("\n</skill>"))
-    markSkillLoaded(pi, state, skillName);
-}
-
-export function resetLoadedSkills(
-  pi: { appendEntry: (type: string, data?: unknown) => void },
-  state: RuntimeState,
-): void {
-  state.loadedSkills.clear();
-  pi.appendEntry(SKILL_RESET_ENTRY_TYPE, true);
-}
-
-export function normalizePathForComparison(
-  cwd: string,
-  value: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  const normalized = resolve(cwd, value.replace(/^@/, "")).replaceAll("\\", "/");
-  return platform === "win32" ? normalized.toLowerCase() : normalized;
-}
-
-export function recordSkillFromRead(
-  pi: { appendEntry: (type: string, data?: unknown) => void },
-  state: RuntimeState,
-  input: unknown,
-): void {
-  const skillName = state.effective.preset?.skill;
-  if (!skillName || typeof input !== "object" || input === null) return;
-  const path = (input as { path?: unknown }).path;
-  const skillPath = state.skillFiles.get(skillName);
-  if (typeof path !== "string" || !skillPath) return;
-  if (
-    normalizePathForComparison(state.cwd, path) === normalizePathForComparison(state.cwd, skillPath)
-  ) {
-    markSkillLoaded(pi, state, skillName);
-  }
-}
-
-export function executorBlocked(state: RuntimeState, toolName: string): boolean {
-  const preset = state.effective.preset;
-  return (
-    state.effective.mode !== "off" &&
-    !!preset?.enforcement &&
-    !!preset.skill &&
-    preset.executorTools.includes(toolName) &&
-    !skillIsLoaded(state, preset.skill)
-  );
-}
-
-export function formatAssignment(assignment: ModelAssignment | undefined): string {
-  if (!assignment) return "unassigned";
-  return `${assignment.provider}/${assignment.model}:${assignment.thinking}`;
-}
-
-export function assignmentDisplay(
-  state: RuntimeState,
-  category: string,
-  assignment: ModelAssignment | undefined,
-): string {
-  const status = state.assignmentStatuses.get(
-    assignmentStatusKey(state.effective.strategy, category),
-  );
-  if (!assignment || !status || status.kind === "available") return formatAssignment(assignment);
-  return `${formatAssignment(assignment)} [unavailable: ${modelStatusDetail(status)}]`;
+  return state.effective.intensity !== "off" && state.runtimeErrors.length > 0;
 }
 
 export function statusLabel(state: RuntimeState): string {
+  if (state.effective.intensity === "off") return "D:OFF";
   if (hasRuntimeError(state)) return "D:ERR";
-  if (state.effective.mode === "off") return "D:OFF";
-  return state.effective.mode === "normal" ? "D:NORM" : "D:AGG";
+  return state.effective.intensity === "normal" ? "D:NORM" : "D:AGG";
+}
+
+export function formatModelRef(reference: ModelRef | undefined): string {
+  return reference ? `${reference.provider}/${reference.model}` : "not configured";
 }
 
 export function sessionEntry(

@@ -1,37 +1,56 @@
-import {
-  activeCategories,
-  assignmentDisplay,
-  assignmentFor,
-  type RuntimeState,
-} from "./runtime.ts";
+import { hasRuntimeError, type RuntimeState } from "./runtime.ts";
+import type { ModelRef, Preference } from "./types.ts";
 
 const NORMAL_POLICY =
-  "Delegate work when it materially reduces effort without losing essential context. Favor delegation for substantial research, broad exploration, independent searches, bounded implementation, tests, checks, documentation, and parallelizable work. Keep architecture, global strategy, coordination, integration, important review, and difficult blockers in the main agent. Do not delegate trivial work merely to create an agent.";
+  "Delegate substantial, bounded, and independent work when doing so reduces effort without losing essential context. Keep architecture, global strategy, coordination, integration, final review, and work whose context is costly or risky to transfer in the main agent.";
 const AGGRESSIVE_POLICY =
-  "Act primarily as architect, coordinator, integrator, and final reviewer. By default, delegate substantial work that can be isolated with a clear objective and acceptance criteria. Look for independent research, broad exploration, self-contained implementation, tests, and validation. Keep global decisions, strategy, integration, final review, and context that is costly or risky to transfer in the main agent.";
+  "Default to delegating substantial work with a clear objective and acceptance criteria. Keep global decisions, coordination, integration, final review, and work whose context is costly or risky to transfer in the main agent.";
+
+function preferenceGuidance(preference: Preference): string {
+  if (preference === "efficient") {
+    return "Favor Small for routine delegated work. Medium and Large remain available when the task warrants them.";
+  }
+  if (preference === "intensive") {
+    return "Favor Medium for substantial delegated work. Small and Large remain available when the task warrants them.";
+  }
+  return "Use Small for routine delegated work, Medium for planning, ambiguity, or broad synthesis, and Large only for exceptional blockers.";
+}
+
+function promptString(value: string): string {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026");
+}
+
+function formatReference(reference: ModelRef): string {
+  return `provider=${promptString(reference.provider)} model=${promptString(reference.model)}`;
+}
 
 export function buildDelegationPolicy(state: RuntimeState): string | undefined {
-  if (state.effective.mode === "off") return undefined;
-  const preset = state.effective.preset;
-  if (!preset) {
-    return "<delegation_policy>\nDelegation disabled: no active preset is configured.\n</delegation_policy>";
-  }
-  if (!preset.skill || !state.skillFiles.has(preset.skill)) {
-    return `<delegation_policy>\nDelegation disabled: the configured external skill ${preset.skill ? `"${preset.skill}"` : "(none)"} is not available. Configure a discovered skill before delegating.\n</delegation_policy>`;
-  }
-  if (state.runtimeErrors.length > 0) {
-    const details = state.runtimeErrors.join("; ") || "invalid runtime configuration";
-    return `<delegation_policy>\nDelegation disabled: configured delegation assignments are unavailable. ${details}\n</delegation_policy>`;
-  }
-  const categories = activeCategories(state)
-    .map((category) => {
-      const assignment = assignmentFor(state, category as never);
-      return `- ${category}: ${assignmentDisplay(state, category, assignment)}`;
-    })
-    .join("\n");
-  const modeText = state.effective.mode === "normal" ? NORMAL_POLICY : AGGRESSIVE_POLICY;
-  const uiDesign = categories.includes("ui-design")
-    ? " ui-design is visual design only: do not implement the interface."
+  if (state.effective.intensity === "off" || hasRuntimeError(state)) return undefined;
+
+  const { effective } = state;
+  if (!effective.small || !effective.medium || !effective.large) return undefined;
+
+  const intensityPolicy = effective.intensity === "normal" ? NORMAL_POLICY : AGGRESSIVE_POLICY;
+  const uiDesign = effective.uiDesign
+    ? `\n- UI Design: ${formatReference(effective.uiDesign)}. Use this role only for visual design direction, exploration, or review. Never use it to implement an interface, write code, or run tests.`
     : "";
-  return `<delegation_policy>\nMode: ${state.effective.mode}. Strategy: ${state.effective.strategy}.\n${modeText}${uiDesign}\n\nBefore creating a subagent, load the complete external skill named "${preset.skill}" if it is not already loaded. Follow that skill's execution procedure; this extension does not create, launch, route, or manage subagents. After reading the skill, choose the category that best matches the work and use only the exact configured provider, model, and thinking assignment shown below. Do not invent fallbacks or silently switch assignments.\n\nConfigured assignments:\n${categories}\n\nCreating or updating a TODO is not delegation. Do not repeat delegated work in full; integrate it, verify a concrete point, or recover only when the result is insufficient.\n</delegation_policy>`;
+
+  return `<delegation_policy>
+Intensity: ${effective.intensity}.
+${intensityPolicy}
+
+Model preference: ${effective.preference}. ${preferenceGuidance(effective.preference)}
+
+Use the exact provider and model for the selected role. The references below use JSON string syntax; interpret escaped characters as JSON before use. Do not invent a fallback model or role. Choose thinking dynamically for each delegation from the task, difficulty, volume, and the selected model's capabilities. Do not treat thinking as persisted configuration.
+
+Roles:
+- Small: ${formatReference(effective.small)}
+- Medium: ${formatReference(effective.medium)}
+- Large: ${formatReference(effective.large)}${uiDesign}
+
+This is guidance for the main agent. It does not create, execute, route, supervise, or enforce delegated work.
+</delegation_policy>`;
 }

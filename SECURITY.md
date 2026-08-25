@@ -2,9 +2,9 @@
 
 ## Scope
 
-This project is a local Pi extension. It stores delegation policy data and model identifiers. It does not store credentials, execute subagents, or make network requests.
+This project is a local Pi extension. It stores delegation policy data and model identifiers in global defaults and session entries. It does not store credentials, execute subagents, intercept tools, or make network requests.
 
-Project configuration is executable input to an agent's system prompt and tool policy. Review a repository before trusting its `.pi` resources.
+The policy guides the main agent. It cannot guarantee that another system will follow a configured role or thinking choice. Review local configuration before using it.
 
 ## Reporting
 

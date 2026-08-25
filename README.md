@@ -1,127 +1,119 @@
 # pi-delegation-policy
 
-A Pi extension that makes delegation policy and exact subagent model assignments configurable without becoming a subagent runner.
+A local Pi extension that lets you choose delegation intensity and exact model references for Small, Medium, Large, and an optional UI Design role. It guides the main agent; it does not run, route, or enforce delegated work.
 
-> **Status:** early development. This package is not published yet and defaults to `off`.
+> **Status:** Pre-release. The package is unpublished and starts every new session at `off`.
 
 ## What it does
 
-- Controls delegation intensity with `off`, `normal`, and `aggressive`.
-- Stores named, autonomous presets.
-- Supports two assignment strategies:
-  - **Tiered:** `general`, `strong`, `ui-design`.
-  - **Task-based:** `planning`, `research`, `implementation`, `debugging`, `review`, `ui-design`.
-- Stores exact `provider`, `model`, and `thinking` values for each assignment.
-- Supports global, trusted-project, and session scopes.
-- Injects one short policy block through Pi's public `before_agent_start` extension event.
-- Can require a configured external skill before configured executor tools run.
-- Validates models and authentication through Pi's current model registry.
-
-`ui-design` is visual design work only. It must not implement the interface. Implementation belongs to `implementation`, `general`, or `strong` according to the selected strategy.
+- Sets delegation intensity to `off`, `normal`, or `aggressive` for the current session branch.
+- Keeps global defaults for model references, preference, and the optional UI Design role.
+- Stores session changes in Pi's session branch, so they survive reload, resume, and tree navigation.
+- Uses Pi's scoped models when configured, otherwise its available authenticated models.
+- Injects one policy block through Pi's public `before_agent_start` event when the active configuration is valid.
 
 ## What it does not do
 
-This package does not create, launch, route, manage, or monitor subagents. It does not register a subagent tool, change the main session model, include an execution skill, choose hidden fallbacks, or make network requests.
-
-A separate skill or extension must explain how your chosen subagent system executes work. The policy extension only tells the main agent when delegation is appropriate and which exact configured assignment to use.
+This package does not create, launch, route, supervise, or block subagents. It does not change Pi's main model or thinking level. It has no presets, project configuration, external skill loading, tool interception, model fallback, telemetry, credential storage, or network requests.
 
 ## Install from source
 
-The package is currently unpublished and private. There is no public registry or remote install URL yet.
-
-For a local checkout:
+The package is private and unpublished. From a parent directory containing a local checkout:
 
 ```bash
 pi install ./pi-delegation-policy
 ```
 
-The package requires Pi `0.84.1` or newer. Restart Pi or run `/reload` after installation.
+It supports Pi `0.84.1`. Restart Pi or run `/reload` after installation.
 
 ## Commands
 
 ```text
-/delegate                         Open the policy editor
-/delegate off                     Session override: no policy injection
-/delegate normal                  Session override: balanced delegation
-/delegate aggressive              Session override: delegation-first behavior
-/delegate status                  Show effective policy and validation state
-/delegate reset                   Remove session overrides
+/delegate                         Open the keyboard-first selector
+/delegate off                     Disable policy injection for this session branch
+/delegate normal                  Enable balanced delegation guidance
+/delegate aggressive              Enable delegation-first guidance
+/delegate status                  Show the effective session state
+/delegate reset                   Reset this session branch to off
 ```
 
-`Ctrl+Shift+D` opens the editor when the shortcut is available.
+`Ctrl+Shift+D` opens the selector when the shortcut is available. The footer shows `D:OFF`, `D:NORM`, `D:AGG`, or `D:ERR` without replacing Pi's own status.
 
-The footer shows `D:OFF`, `D:NORM`, `D:AGG`, or `D:ERR` without replacing Pi's footer.
+## Configuration
 
-## Configuration scopes
+Global defaults live at:
 
 ```text
-Global:  ~/.pi/agent/delegation-policy.json
-Project: <trusted-project>/.pi/delegation-policy.json
-Session: custom entries in the active Pi session branch
+~/.pi/agent/delegation-policy.json
 ```
 
-Precedence is `Session > Project > Global > safe defaults`. Project configuration is ignored unless Pi reports the project as trusted. Presets merge by name; a same-name preset in a higher scope replaces the complete lower-scope preset. There are no implicit list concatenations.
-
-A preset contains its own assignments and can contain one or both strategies:
+They use schema version 2. The file stores model references, preference, and an optional UI Design model. It never stores intensity or thinking.
 
 ```json
 {
-  "schemaVersion": 1,
-  "activePreset": "balanced",
-  "presets": {
-    "balanced": {
-      "defaultMode": "normal",
-      "defaultStrategy": "task-based",
-      "skill": "your-subagent-skill",
-      "enforcement": true,
-      "executorTools": ["subagent"],
-      "tiered": {
-        "general": {
-          "provider": "your-provider",
-          "model": "your-general-model",
-          "thinking": "medium"
-        }
-      },
-      "taskBased": {
-        "implementation": {
-          "provider": "your-provider",
-          "model": "your-implementation-model",
-          "thinking": "high"
-        },
-        "ui-design": {
-          "provider": "your-provider",
-          "model": "your-visual-designer",
-          "thinking": "high"
-        }
-      }
-    }
+  "schemaVersion": 2,
+  "preference": "standard",
+  "small": {
+    "provider": "example-provider",
+    "model": "example-small"
+  },
+  "medium": {
+    "provider": "example-provider",
+    "model": "example-medium"
+  },
+  "large": {
+    "provider": "example-provider",
+    "model": "example-large"
+  },
+  "uiDesign": {
+    "provider": "example-provider",
+    "model": "example-ui-design"
   }
 }
 ```
 
-Use `/delegate` to edit this data. The editor can create, duplicate, rename, and delete presets; choose scopes; select discovered skills; configure enforcement and executor tools; and select provider, model, and thinking values from Pi's registry.
+See [`examples/global.json`](examples/global.json) and the bundled [JSON Schema](schema/delegation-policy.schema.json). The values are fictional.
 
-The public defaults are safe:
+Schema version 1 is inactive and is not migrated automatically. Open `/delegate`, configure schema version 2, and save the effective configuration as defaults before using an active intensity.
 
-```text
-mode: off
-active preset: none
-skill: unset
-presets: {}
-```
+### Global defaults and session branches
 
-See [`examples/global.json`](examples/global.json) and [`examples/project.json`](examples/project.json) for fictional values only.
+A new session or branch always starts at `off`. It inherits global model references and preference until `/delegate` changes a field in that branch. Session fields override only their matching global values. Selecting **Save effective configuration as defaults** copies the current roles, preference, and UI Design setting to the global file without copying intensity.
 
-## External skill and enforcement
+`/delegate reset` writes a session state with `off` and returns non-intensity fields to their global defaults.
 
-Set `skill` to the exact discovered skill name. With enforcement enabled, only the listed `executorTools` are blocked, and only until the configured skill is loaded or its `SKILL.md` is successfully read. The extension never substitutes another skill or creates a replacement executor.
+### Intensity
 
-Enforcement is a coordination guard, not a sandbox. Another extension can start work through a path that is not listed in `executorTools`.
+- `off` injects nothing. Invalid or incomplete defaults still show `D:OFF`.
+- `normal` delegates substantial, bounded, independent work when doing so saves effort without losing essential context.
+- `aggressive` favors delegating that work when its objective and acceptance criteria are clear.
+
+The main agent keeps global decisions, coordination, integration, and final review in every mode.
+
+### Model roles and preference
+
+Active modes require exact `provider` and `model` references for Small, Medium, and Large. Pi must expose each reference in the current scope or available model catalog, and its provider must be authenticated. A missing, out-of-scope, unavailable, or unauthenticated role produces `D:ERR` and injects no policy. The extension never substitutes another model or role.
+
+The preference only changes the policy's selection bias:
+
+- `efficient` favors Small.
+- `standard` uses Small for routine work, Medium for planning, ambiguity, or broad synthesis, and Large for exceptional blockers.
+- `intensive` favors Medium.
+
+All three ordinary roles remain available in every preference. The main agent chooses thinking for each delegated task from the task, difficulty, volume, and model capabilities. Thinking is not configured or persisted by this extension.
+
+UI Design is optional. When configured, it is limited to visual design direction, exploration, and review. It must not implement an interface, write code, or run tests. When it is off, ordinary roles handle design-related work.
+
+## Security and privacy
+
+The extension stores provider and model identifiers in local configuration and session entries. It does not store credentials, send telemetry, or make network requests. Review configuration before using it and remove credentials, prompts, personal paths, session files, and unredacted logs from reports.
+
+Read [`SECURITY.md`](SECURITY.md) for reporting guidance.
 
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run format:check
 npm run lint
 npm run typecheck
@@ -130,17 +122,11 @@ npm run build
 npm run pack:check
 ```
 
-Tests use mocks and do not make paid model calls or network requests.
-
-## Security and privacy
-
-The extension stores provider and model identifiers, not credentials. It does not contact providers, send telemetry, or phone home. Review project configuration before trusting a repository: a project file can change delegation instructions and tool enforcement for that project.
-
-Report vulnerabilities privately through GitHub's private vulnerability reporting for this repository. Do not include credentials, session files, prompts, or unredacted logs in public issues.
+The tests use local mocks and make no paid model calls or network requests.
 
 ## Contributing
 
-Issues and pull requests are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md), run the full local checks, and keep all examples fictional and provider-agnostic. This repository does not accept changes that add a subagent runner, hidden model fallback, telemetry, or credential handling.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions must preserve the boundary: this extension guides the main agent and does not become a subagent runner, tool interceptor, credential store, or telemetry client.
 
 ## License
 
