@@ -2,7 +2,7 @@
 
 A local Pi extension that lets you choose delegation intensity and exact model references for Small, Medium, Large, and an optional UI Design role. It guides the main agent; it does not run, route, or enforce delegated work.
 
-> **Status:** Version 0.2.0 is available from npm.
+> **Status:** Version 0.2.1 is available from npm.
 >
 > **Documentation:** Read the [documentation site](https://yivas.github.io/pi-delegation-policy/).
 
@@ -39,7 +39,7 @@ It supports Pi `0.84.1`. Restart Pi or run `/reload` after installation. To inst
 /delegate reset                   Reset this session branch to off
 ```
 
-`Ctrl+Alt+D` opens the selector when the shortcut is available. There is no separate off shortcut; use `/delegate off` or choose `off` in the selector. Changes apply to the next agent run. An agent already running keeps the system prompt it started with.
+`Alt+G` opens the selector when the shortcut is available. There is no separate off shortcut; use `/delegate off` or choose `off` in the selector. Changes apply to the next agent run. An agent already running keeps the system prompt it started with.
 
 The footer shows `D:OFF`, `D:NORM`, `D:AGG`, or `D:ERR` without replacing Pi's own status.
 

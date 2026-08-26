@@ -125,7 +125,7 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
     },
   });
 
-  pi.registerShortcut("ctrl+alt+d", {
+  pi.registerShortcut("alt+g", {
     description: "Open delegation policy",
     handler: async (ctx) => openEditor(pi, ctx),
   });

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-08-26
+
+### Fixed
+
+- Replaced `Ctrl+Alt+D` with the terminal-safe, conflict-free `Alt+G` shortcut.
+
 ## 0.2.0 - 2026-08-26
 
 ### Added

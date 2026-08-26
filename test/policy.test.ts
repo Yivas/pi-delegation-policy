@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { matchesKey } from "@earendil-works/pi-tui";
 import piDelegationPolicy, {
   getArgumentCompletions,
   parseCommand,
@@ -530,7 +531,9 @@ test("the extension uses only the approved lifecycle events and never accumulate
       "session_tree",
     ]);
     assert.ok(commands.has("delegate"));
-    assert.deepEqual([...shortcuts.keys()], ["ctrl+alt+d"]);
+    assert.deepEqual([...shortcuts.keys()], ["alt+g"]);
+    assert.equal(matchesKey("\x1bg", "alt+g"), true);
+    assert.equal(matchesKey("\x04", "alt+g"), false);
 
     await handlers.get("session_start")?.({ type: "session_start" }, current);
     assert.equal(statuses.at(-1), "D:OFF");
@@ -546,7 +549,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
         ? options.find((option) => option.startsWith("Intensity:"))
         : options.find((option) => option.startsWith("Apply changes"));
     };
-    await shortcuts.get("ctrl+alt+d")?.handler(current);
+    await shortcuts.get("alt+g")?.handler(current);
     assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 2, intensity: "aggressive" });
     assert.equal(statuses.at(-1), "D:AGG");
     current.ui.select = async () => undefined;
@@ -698,7 +701,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.2.0");
+  assert.equal(packageJson.version, "0.2.1");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
 
