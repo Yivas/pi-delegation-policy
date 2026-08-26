@@ -7,12 +7,17 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import piDelegationPolicy, {
   getArgumentCompletions,
   parseCommand,
   statusText,
 } from "../src/index.ts";
+import {
+  DelegatePanel,
+  sameSessionState,
+  type DelegatePanelResult,
+} from "../src/delegate-panel.ts";
 import {
   defaultsFromEffectiveState,
   getGlobalConfigPath,
@@ -64,9 +69,12 @@ function model(reference: ModelRef, name = reference.model) {
 
 type TestModel = ReturnType<typeof model>;
 
+type InteractiveComponent = Component & { focused?: boolean };
+
 type TestContext = {
   cwd: string;
   hasUI: boolean;
+  mode: "tui" | "rpc";
   scopedModels: Array<{ model: TestModel }>;
   sessionManager: { getBranch: () => unknown[] };
   modelRegistry: {
@@ -75,10 +83,21 @@ type TestContext = {
     hasConfiguredAuth: (candidate: TestModel) => boolean;
   };
   ui: {
-    theme: { fg: (color: string, text: string) => string };
+    theme: {
+      fg: (color: string, text: string) => string;
+      bg: (color: string, text: string) => string;
+      bold: (text: string) => string;
+    };
     notify: (message: string, type?: string) => void;
     setStatus: (key: string, value: string | undefined) => void;
-    select: (title: string, options: string[]) => Promise<string | undefined>;
+    custom: <T>(
+      factory: (
+        tui: unknown,
+        theme: unknown,
+        keybindings: unknown,
+        done: (result: T) => void,
+      ) => Component,
+    ) => Promise<T>;
   };
 };
 
@@ -89,6 +108,9 @@ function context(
     availableModels?: TestModel[];
     registeredModels?: TestModel[];
     authenticated?: (candidate: TestModel) => boolean;
+    terminalRows?: number;
+    mode?: "tui" | "rpc";
+    runCustom?: (component: InteractiveComponent) => void | Promise<void>;
   } = {},
 ): TestContext & ExtensionContext {
   const availableModels = options.availableModels ?? [
@@ -98,9 +120,19 @@ function context(
     model(uiDesign),
   ];
   const registeredModels = options.registeredModels ?? availableModels;
+  const theme = {
+    fg: (_color: string, text: string) => text,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  };
+  const tui = {
+    terminal: { rows: options.terminalRows ?? 30 },
+    requestRender: () => undefined,
+  };
   return {
     cwd: "/project",
     hasUI: true,
+    mode: options.mode ?? "tui",
     scopedModels: options.scopedModels ?? [],
     sessionManager: { getBranch: () => options.branch ?? [] },
     modelRegistry: {
@@ -113,10 +145,22 @@ function context(
         options.authenticated ? options.authenticated(candidate) : true,
     },
     ui: {
-      theme: { fg: (_color: string, text: string) => text },
+      theme,
       notify: () => undefined,
       setStatus: () => undefined,
-      select: async () => undefined,
+      custom: <T>(
+        factory: (
+          tui: unknown,
+          theme: unknown,
+          keybindings: unknown,
+          done: (result: T) => void,
+        ) => Component,
+      ) =>
+        new Promise<T>((resolve, reject) => {
+          const component = factory(tui, theme, {}, resolve) as InteractiveComponent;
+          if ("focused" in component) component.focused = true;
+          Promise.resolve(options.runCustom?.(component)).catch(reject);
+        }),
     },
   } as unknown as TestContext & ExtensionContext;
 }
@@ -520,7 +564,8 @@ test("the extension uses only the approved lifecycle events and never accumulate
       appendEntry: (customType: string, data?: unknown) =>
         branch.push({ type: "custom", customType, data }),
     };
-    const current = context({ branch });
+    let runEditor: ((component: InteractiveComponent) => void | Promise<void>) | undefined;
+    const current = context({ branch, runCustom: (component) => runEditor?.(component) });
     current.ui.setStatus = (_key: string, value: string | undefined) => statuses.push(value);
 
     piDelegationPolicy(pi as never);
@@ -541,18 +586,18 @@ test("the extension uses only the approved lifecycle events and never accumulate
     const event = { type: "before_agent_start", systemPrompt: "BASE", prompt: "work" };
     assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
 
-    let editorSelections = 0;
-    current.ui.select = async (title: string, options: string[]) => {
-      if (title === "Delegation intensity") return "aggressive";
-      editorSelections += 1;
-      return editorSelections === 1
-        ? options.find((option) => option.startsWith("Intensity:"))
-        : options.find((option) => option.startsWith("Apply changes"));
+    runEditor = (component) => {
+      component.handleInput?.("\r");
+      component.handleInput?.("\x1b[B");
+      component.handleInput?.("\x1b[B");
+      component.handleInput?.("\x1b[B");
+      component.handleInput?.("\r");
+      component.handleInput?.("a");
     };
     await shortcuts.get("alt+g")?.handler(current);
     assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 2, intensity: "aggressive" });
     assert.equal(statuses.at(-1), "D:AGG");
-    current.ui.select = async () => undefined;
+    runEditor = undefined;
 
     await commands.get("delegate")?.handler("normal", current);
     assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 2, intensity: "normal" });
@@ -586,94 +631,378 @@ test("the extension uses only the approved lifecycle events and never accumulate
   });
 });
 
-test("the selector stages session edits, inherits intensity, resets drafts, and saves defaults", async () => {
+const KEY_UP = "\x1b[A";
+const KEY_DOWN = "\x1b[B";
+const KEY_HOME = "\x1b[H";
+const KEY_END = "\x1b[F";
+const KEY_ENTER = "\r";
+const KEY_ESCAPE = "\x1b";
+
+function sendKeys(component: InteractiveComponent, ...keys: string[]): void {
+  for (const key of keys) component.handleInput?.(key);
+}
+
+function createPanelHarness(
+  options: {
+    rows?: number;
+    global?: GlobalDefaults;
+    session?: SessionDelegateState;
+    candidates?: TestModel[];
+    diagnostics?: string[];
+    onApply?: (draft: SessionDelegateState) => Promise<boolean>;
+    onSaveDefaults?: (draft: SessionDelegateState) => Promise<GlobalDefaults | undefined>;
+  } = {},
+) {
+  const terminal = { rows: options.rows ?? 30 };
+  const theme = {
+    fg: (_color: string, text: string) => text,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  };
+  const done: DelegatePanelResult[] = [];
+  const panel = new DelegatePanel({
+    tui: { terminal, requestRender: () => undefined } as never,
+    theme: theme as never,
+    global: options.global ?? defaults,
+    session: options.session ?? { schemaVersion: 2 },
+    candidates: (options.candidates ?? [
+      model(small, "Tiny Worker"),
+      model(medium, "Planning Sonnet"),
+      model(large, "Large Reasoner"),
+      model(uiDesign, "Visual Designer"),
+    ]) as never,
+    diagnostics: options.diagnostics ?? [],
+    onApply: options.onApply ?? (async () => true),
+    onSaveDefaults: options.onSaveDefaults ?? (async () => defaults),
+    onDone: (result) => done.push(result),
+  });
+  panel.focused = true;
+  return { panel, terminal, done };
+}
+
+test("session draft equality distinguishes inheritance, disable, and model identity", () => {
+  assert.equal(
+    sameSessionState(
+      { schemaVersion: 2, small: { ...small }, uiDesign: null },
+      { schemaVersion: 2, small: { ...small }, uiDesign: null },
+    ),
+    true,
+  );
+  assert.equal(sameSessionState({ schemaVersion: 2, uiDesign: null }, { schemaVersion: 2 }), false);
+  assert.equal(
+    sameSessionState(
+      { schemaVersion: 2, small },
+      { schemaVersion: 2, small: { provider: small.provider, model: "different" } },
+    ),
+    false,
+  );
+});
+
+test("the delegate panel is responsive and exposes values with all sources", () => {
+  const { panel, terminal } = createPanelHarness({
+    session: { schemaVersion: 2, intensity: "aggressive", uiDesign: null },
+  });
+
+  for (const width of [100, 60, 40]) {
+    const lines = panel.render(width);
+    assert.ok(lines.length <= terminal.rows);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    const rendered = lines.join("\n");
+    if (width >= 60) {
+      for (const label of [
+        "Intensity",
+        "Preference",
+        "Small model",
+        "Medium model",
+        "Large model",
+        "UI Design",
+      ]) {
+        assert.match(rendered, new RegExp(label));
+      }
+    }
+    assert.match(rendered, /built-in/);
+    assert.match(rendered, /global/);
+    assert.match(rendered, /session/);
+  }
+
+  terminal.rows = 8;
+  sendKeys(panel, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN);
+  const compact = panel.render(36);
+  assert.ok(compact.length <= 8);
+  assert.ok(compact.every((line) => visibleWidth(line) <= 36));
+  assert.match(compact.join("\n"), /Terminal too small/);
+
+  const manyModels = Array.from({ length: 24 }, (_, index) =>
+    model({ provider: `provider-${index % 3}`, model: `model-${index}` }, `Model ${index}`),
+  );
+  const modelViewport = createPanelHarness({ rows: 10, candidates: manyModels });
+  sendKeys(modelViewport.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  for (let index = 0; index < 12; index += 1) sendKeys(modelViewport.panel, KEY_DOWN);
+  const modelLines = modelViewport.panel.render(64);
+  assert.ok(modelLines.length <= 10);
+  assert.ok(modelLines.every((line) => visibleWidth(line) <= 64));
+  assert.match(modelLines.join("\n"), /Use global default/);
+  assert.match(modelLines.join("\n"), /of 24/);
+
+  const uiModelViewport = createPanelHarness({ rows: 9, candidates: manyModels });
+  sendKeys(uiModelViewport.panel, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  for (let index = 0; index < 12; index += 1) sendKeys(uiModelViewport.panel, KEY_DOWN);
+  const uiModelLines = uiModelViewport.panel.render(64);
+  assert.match(uiModelLines.join("\n"), /Use global default/);
+  assert.match(uiModelLines.join("\n"), /Disable for this session/);
+  assert.ok(uiModelLines.length <= 9);
+
+  const compactDiscard = createPanelHarness({ rows: 30, session: { schemaVersion: 2 } });
+  sendKeys(compactDiscard.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  const dirtyBeforeCompact = compactDiscard.panel.getDraft();
+  compactDiscard.terminal.rows = 7;
+  compactDiscard.panel.render(24);
+  sendKeys(compactDiscard.panel, KEY_ENTER, KEY_DOWN);
+  assert.deepEqual(compactDiscard.panel.getDraft(), dirtyBeforeCompact);
+  sendKeys(compactDiscard.panel, KEY_ESCAPE);
+  const discardLines = compactDiscard.panel.render(24);
+  assert.ok(discardLines.every((line) => visibleWidth(line) <= 24));
+  assert.match(discardLines.join("\n"), /Keep editing/);
+  assert.match(discardLines.join("\n"), /Discard changes/);
+
+  const extremeDiscard = createPanelHarness({ rows: 30 });
+  sendKeys(extremeDiscard.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_ESCAPE);
+  extremeDiscard.terminal.rows = 1;
+  extremeDiscard.panel.render(24);
+  sendKeys(extremeDiscard.panel, KEY_DOWN, KEY_ENTER);
+  assert.deepEqual(extremeDiscard.done, []);
+  sendKeys(extremeDiscard.panel, KEY_ESCAPE, KEY_ESCAPE);
+  extremeDiscard.terminal.rows = 2;
+  const twoRowDiscard = extremeDiscard.panel.render(24);
+  assert.match(twoRowDiscard.join("\n"), /Keep editing/);
+  assert.match(twoRowDiscard.join("\n"), /Discard changes/);
+  sendKeys(extremeDiscard.panel, KEY_DOWN, KEY_ENTER);
+  assert.deepEqual(extremeDiscard.done, ["cancelled"]);
+
+  const narrowDiscard = createPanelHarness({ rows: 30 });
+  sendKeys(narrowDiscard.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_ESCAPE);
+  narrowDiscard.panel.render(16);
+  sendKeys(narrowDiscard.panel, KEY_DOWN, KEY_ENTER);
+  assert.deepEqual(narrowDiscard.done, []);
+
+  const narrowEdit = createPanelHarness({ rows: 20 });
+  narrowEdit.panel.render(23);
+  sendKeys(narrowEdit.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  assert.deepEqual(narrowEdit.panel.getDraft(), { schemaVersion: 2 });
+
+  const longQuery = createPanelHarness({ rows: 10, candidates: [] });
+  sendKeys(longQuery.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  for (const character of "a-query-that-is-much-longer-than-the-terminal") {
+    sendKeys(longQuery.panel, character);
+  }
+  const narrowModel = longQuery.panel.render(24);
+  assert.ok(narrowModel.every((line) => visibleWidth(line) <= 24));
+});
+
+test("the delegate panel searches models, keeps pinned actions, and stages safe edits", () => {
+  const { panel, done } = createPanelHarness({
+    session: { schemaVersion: 2, intensity: "normal" },
+  });
+
+  sendKeys(panel, KEY_ENTER, KEY_HOME, KEY_ENTER);
+  assert.equal(panel.getDraft().intensity, undefined);
+  assert.equal(panel.isDirty(), true);
+
+  sendKeys(panel, KEY_ESCAPE);
+  assert.match(panel.render(80).join("\n"), /Discard unapplied changes/);
+  sendKeys(panel, KEY_ESCAPE);
+  assert.equal(panel.isDirty(), true);
+  assert.deepEqual(done, []);
+  sendKeys(panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  assert.equal(panel.isDirty(), false);
+
+  const searchable = createPanelHarness();
+  sendKeys(searchable.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  for (const character of "planning") sendKeys(searchable.panel, character);
+  const modelView = searchable.panel.render(80).join("\n");
+  assert.equal(modelView.includes("\x1b_pi:c"), true);
+  searchable.panel.focused = false;
+  assert.equal(searchable.panel.render(80).join("\n").includes("\x1b_pi:c"), false);
+  searchable.panel.focused = true;
+  assert.match(modelView, /planning/);
+  assert.match(modelView, /Use global default/);
+  assert.match(modelView, /example\/medium/);
+  assert.equal(modelView.match(/example\/small/g)?.length, 1);
+  sendKeys(searchable.panel, KEY_DOWN, KEY_ENTER);
+  assert.deepEqual(searchable.panel.getDraft().small, medium);
+
+  const byProvider = createPanelHarness({
+    candidates: [model(small), model({ provider: "other", model: "special" }, "Distinct")],
+  });
+  sendKeys(byProvider.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  for (const character of "other") sendKeys(byProvider.panel, character);
+  assert.match(byProvider.panel.render(80).join("\n"), /other\/special/);
+  sendKeys(byProvider.panel, KEY_DOWN, KEY_ENTER);
+  assert.deepEqual(byProvider.panel.getDraft().small, {
+    provider: "other",
+    model: "special",
+  });
+
+  const noMatches = createPanelHarness({ candidates: [] });
+  sendKeys(noMatches.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER, "x");
+  const emptyView = noMatches.panel.render(80).join("\n");
+  assert.match(emptyView, /Use global default/);
+  assert.match(emptyView, /No models match/);
+
+  const uiRole = createPanelHarness();
+  sendKeys(
+    uiRole.panel,
+    KEY_DOWN,
+    KEY_DOWN,
+    KEY_DOWN,
+    KEY_DOWN,
+    KEY_DOWN,
+    KEY_ENTER,
+    KEY_DOWN,
+    KEY_ENTER,
+  );
+  assert.equal(uiRole.panel.getDraft().uiDesign, null);
+
+  const reset = createPanelHarness({
+    session: { schemaVersion: 2, intensity: "aggressive", small },
+  });
+  sendKeys(reset.panel, KEY_END, KEY_UP, KEY_ENTER);
+  assert.deepEqual(reset.panel.getDraft(), { schemaVersion: 2, intensity: "off" });
+});
+
+test("the delegate panel preserves dirty drafts when apply or default saving fails", async () => {
+  const failedApply = createPanelHarness({ onApply: async () => false });
+  sendKeys(failedApply.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, "a");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(failedApply.panel.render(80).join("\n"), /Could not apply session settings/);
+  assert.equal(failedApply.panel.isDirty(), true);
+  assert.deepEqual(failedApply.done, []);
+
+  const rejectedApply = createPanelHarness({
+    onApply: async () => {
+      throw new Error("append failed");
+    },
+  });
+  sendKeys(rejectedApply.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, "a");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(rejectedApply.panel.render(80).join("\n"), /Could not apply session settings/);
+  assert.deepEqual(rejectedApply.done, []);
+
+  let finishApply: ((value: boolean) => void) | undefined;
+  let applyCalls = 0;
+  const pendingApply = createPanelHarness({
+    onApply: () => {
+      applyCalls += 1;
+      return new Promise<boolean>((resolve) => {
+        finishApply = resolve;
+      });
+    },
+  });
+  sendKeys(pendingApply.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, "a");
+  assert.match(pendingApply.panel.render(80).join("\n"), /Applying changes/);
+  sendKeys(pendingApply.panel, "a", KEY_ESCAPE, KEY_DOWN);
+  assert.equal(applyCalls, 1);
+  assert.deepEqual(pendingApply.done, []);
+  finishApply?.(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(pendingApply.done, ["applied"]);
+
+  const missingSave = createPanelHarness({ onSaveDefaults: async () => undefined });
+  sendKeys(missingSave.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(missingSave.panel.render(80).join("\n"), /Could not save global defaults/);
+
+  const failedSave = createPanelHarness({
+    onSaveDefaults: async () => {
+      throw new Error("write failed");
+    },
+  });
+  sendKeys(failedSave.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(failedSave.panel.render(80).join("\n"), /Could not save global defaults/);
+  assert.deepEqual(failedSave.done, []);
+
+  const repairedDefaults = createPanelHarness({ diagnostics: ["invalid defaults"] });
+  assert.match(repairedDefaults.panel.render(80).join("\n"), /global defaults are invalid/);
+  sendKeys(repairedDefaults.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.doesNotMatch(repairedDefaults.panel.render(80).join("\n"), /global defaults are invalid/);
+});
+
+test("the custom editor applies, discards, inherits, and saves defaults", async () => {
   await withAgentDirectory(async (directory) => {
     await writeConfig(getGlobalConfigPath(directory), defaults);
-    const branch: Array<Record<string, unknown>> = [];
-    const pi = {
-      appendEntry: (customType: string, data?: unknown) =>
-        branch.push({ type: "custom", customType, data }),
-    };
 
-    let mainSelections = 0;
-    const applyContext = context({ branch });
-    applyContext.ui.select = async (title: string, options: string[]) => {
-      if (title === "Delegation intensity") return "normal";
-      mainSelections += 1;
-      return mainSelections === 1
-        ? options.find((option) => option.startsWith("Intensity:"))
-        : options.find((option) => option.startsWith("Apply changes"));
-    };
-    await openDelegateEditor(applyContext, pi as never);
-    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 2, intensity: "normal" });
-
-    const cancelled: Array<Record<string, unknown>> = [];
-    let cancelSelections = 0;
-    const cancelContext = context({ branch: cancelled });
-    cancelContext.ui.select = async (title: string, options: string[]) => {
-      if (title === "Delegation intensity") return "aggressive";
-      cancelSelections += 1;
-      return cancelSelections === 1
-        ? options.find((option) => option.startsWith("Intensity:"))
-        : options.find((option) => option === "Cancel");
-    };
-    await openDelegateEditor(cancelContext, { appendEntry: () => undefined } as never);
-    assert.equal(cancelled.length, 0);
-
-    const resetBranch: Array<Record<string, unknown>> = [
-      {
-        type: "custom",
-        customType: SESSION_ENTRY_TYPE,
-        data: { schemaVersion: 2, intensity: "normal" },
+    const applied: Array<Record<string, unknown>> = [];
+    const applyContext = context({
+      branch: applied,
+      runCustom: (component) => {
+        sendKeys(component, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, "a");
       },
-    ];
-    let resetSelections = 0;
-    const resetContext = context({ branch: resetBranch });
-    resetContext.ui.select = async (_title: string, options: string[]) => {
-      resetSelections += 1;
-      return resetSelections === 1
-        ? options.find((option) => option === "Reset draft to off")
-        : options.find((option) => option.startsWith("Apply changes"));
+    });
+    applyContext.ui.notify = () => {
+      throw new Error("notification unavailable");
     };
-    await openDelegateEditor(resetContext, {
+    await openDelegateEditor(applyContext, {
       appendEntry: (customType: string, data?: unknown) =>
-        resetBranch.push({ type: "custom", customType, data }),
+        applied.push({ type: "custom", customType, data }),
     } as never);
-    assert.deepEqual(resetBranch.at(-1)?.data, { schemaVersion: 2, intensity: "off" });
+    assert.deepEqual(applied.at(-1)?.data, { schemaVersion: 2, intensity: "normal" });
 
     await writeConfig(getGlobalConfigPath(directory), { ...defaults, intensity: "aggressive" });
-    const inheritedBranch: Array<Record<string, unknown>> = [
+    const inherited: Array<Record<string, unknown>> = [
       {
         type: "custom",
         customType: SESSION_ENTRY_TYPE,
         data: { schemaVersion: 2, intensity: "normal" },
       },
     ];
-    let inheritSelections = 0;
-    const inheritContext = context({ branch: inheritedBranch });
-    inheritContext.ui.select = async (title: string, options: string[]) => {
-      if (title === "Delegation intensity") return "Use global default";
-      inheritSelections += 1;
-      return inheritSelections === 1
-        ? options.find((option) => option.startsWith("Intensity:"))
-        : options.find((option) => option.startsWith("Apply changes"));
-    };
+    const inheritContext = context({
+      branch: inherited,
+      runCustom: (component) => sendKeys(component, KEY_ENTER, KEY_HOME, KEY_ENTER, "a"),
+    });
     await openDelegateEditor(inheritContext, {
       appendEntry: (customType: string, data?: unknown) =>
-        inheritedBranch.push({ type: "custom", customType, data }),
+        inherited.push({ type: "custom", customType, data }),
     } as never);
-    assert.deepEqual(inheritedBranch.at(-1)?.data, { schemaVersion: 2 });
+    assert.deepEqual(inherited.at(-1)?.data, { schemaVersion: 2 });
     assert.equal((await loadRuntime(inheritContext)).effective.intensity, "aggressive");
 
+    const discarded: Array<Record<string, unknown>> = [];
+    const discardContext = context({
+      branch: discarded,
+      runCustom: (component) => {
+        sendKeys(
+          component,
+          KEY_ENTER,
+          KEY_DOWN,
+          KEY_DOWN,
+          KEY_DOWN,
+          KEY_ENTER,
+          KEY_ESCAPE,
+          KEY_DOWN,
+          KEY_ENTER,
+        );
+      },
+    });
+    await openDelegateEditor(discardContext, {
+      appendEntry: (customType: string, data?: unknown) =>
+        discarded.push({ type: "custom", customType, data }),
+    } as never);
+    assert.equal(discarded.length, 0);
+
     await writeConfig(getGlobalConfigPath(directory), defaults);
-    const saveContext = context({ branch: [] });
-    let saveSelections = 0;
-    saveContext.ui.select = async (_title: string, options: string[]) => {
-      saveSelections += 1;
-      return saveSelections === 1
-        ? options.find((option) => option.startsWith("Save effective"))
-        : options.find((option) => option === "Cancel");
-    };
+    const saveContext = context({
+      branch: [],
+      runCustom: async (component) => {
+        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          if (!component.render(80).join("\n").includes("Saving defaults")) break;
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        sendKeys(component, KEY_ESCAPE);
+      },
+    });
     await openDelegateEditor(saveContext, { appendEntry: () => undefined } as never);
     const saved = JSON.parse(await readFile(getGlobalConfigPath(directory), "utf8"));
     assert.equal(saved.intensity, "off");
@@ -682,8 +1011,32 @@ test("the selector stages session edits, inherits intensity, resets drafts, and 
   });
 });
 
+test("the interactive editor reports its TUI requirement in RPC mode", async () => {
+  let notification: { message: string; type?: string } | undefined;
+  const rpcContext = context({
+    mode: "rpc",
+    runCustom: () => {
+      throw new Error("custom UI must not open in RPC mode");
+    },
+  });
+  rpcContext.ui.notify = (message, type) => {
+    notification = { message, type };
+  };
+
+  await openDelegateEditor(rpcContext, { appendEntry: () => undefined } as never);
+  assert.match(notification?.message ?? "", /requires TUI mode/);
+  assert.equal(notification?.type, "warning");
+});
+
 test("source code has no runner, tool interception, model control, or network client", async () => {
-  const sourceFiles = ["config.ts", "runtime.ts", "prompt.ts", "ui.ts", "index.ts"];
+  const sourceFiles = [
+    "config.ts",
+    "delegate-panel.ts",
+    "runtime.ts",
+    "prompt.ts",
+    "ui.ts",
+    "index.ts",
+  ];
   const source = await Promise.all(
     sourceFiles.map((file) => readFile(join(process.cwd(), "src", file), "utf8")),
   );
@@ -701,7 +1054,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.2.1");
+  assert.equal(packageJson.version, "0.3.0");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
 
@@ -727,6 +1080,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "package.json",
     "schema/delegation-policy.schema.json",
     "src/config.ts",
+    "src/delegate-panel.ts",
     "src/index.ts",
     "src/prompt.ts",
     "src/runtime.ts",

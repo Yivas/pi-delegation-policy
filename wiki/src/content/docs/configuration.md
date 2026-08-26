@@ -31,8 +31,10 @@ tree navigation. A branch inherits global intensity and other defaults until it 
 overrides; missing global intensity falls back to `off`. A fork restores the latest valid delegation
 entry in its active history.
 
-The intensity selector includes **Use global default**. Selecting **Save effective configuration as
-defaults** copies the complete effective configuration, including intensity, to the global file.
+Each setting in the editor can return to **Use global default**. Model fields provide local fuzzy
+search by provider, model ID, and display name; searching does not hide the inheritance action.
+Selecting **Save effective configuration as defaults** copies the complete effective configuration,
+including intensity, to the global file without applying the session draft.
 
 `/delegate reset` remains an explicit safety action: it writes `off` for the branch and returns all
 other fields to their global defaults.

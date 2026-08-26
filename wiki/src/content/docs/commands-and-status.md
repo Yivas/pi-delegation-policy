@@ -14,8 +14,27 @@ description: Use /delegate and interpret the delegation status shown in Pi.
 | `/delegate status`     | Show the effective session state.                        |
 | `/delegate reset`      | Reset the current session branch to `off`.               |
 
-`Alt+G` opens the selector when the shortcut is available. There is no separate off
-shortcut; run `/delegate off` or choose `off` in the selector.
+`Alt+G` opens the same editor when the shortcut is available. There is no separate off
+shortcut; run `/delegate off` or choose `off` in the editor.
+
+## Editor controls
+
+The interactive editor requires Pi's TUI mode; quick command arguments remain available in other
+modes. The editor uses one bounded panel and keeps the current draft while you move between settings.
+Every setting shows its effective value together with the built-in, global, and session values.
+
+- Use `Up` and `Down` to move, then `Enter` or `Space` to edit.
+- In a model field, type to search by provider, model ID, or display name. Use `Page Up` and
+  `Page Down` for long result sets.
+- Select **Use global default** to remove that session override. UI Design also offers
+  **Disable for this session**.
+- Select **Apply changes** or press `A` to write the draft to the current branch.
+- **Save effective configuration as defaults** changes the global file without applying the draft.
+- **Reset draft to off** stays local until it is applied.
+- `Escape` returns from a field. Closing a modified draft requires explicit confirmation.
+
+The panel adjusts its viewport to the terminal height. It scrolls complete settings and model
+results rather than extending beyond the screen.
 
 Changes apply to the next agent run. Pi rebuilds the system prompt for each run, so switching to
 `off` leaves out a policy injected into an earlier run. It cannot rewrite an agent that is already

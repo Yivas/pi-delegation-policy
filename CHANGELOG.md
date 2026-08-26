@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-26
+
+### Added
+
+- Added live fuzzy model search by provider, model ID, and display name.
+
+### Changed
+
+- Replaced the chain of unbounded selectors with one responsive, keyboard-first settings panel.
+- Made session edits explicit drafts with visible sources, bounded scrolling, and safe discard confirmation.
+
 ## 0.2.1 - 2026-08-26
 
 ### Fixed
