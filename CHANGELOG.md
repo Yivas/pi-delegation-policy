@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.2 - 2026-08-26
+
+### Documentation
+
+- Refreshed the README and wiki with the current package status, safe first-use path, panel behavior, configuration hierarchy, and privacy boundaries.
+
 ## 0.3.1 - 2026-08-26
 
 ### Fixed

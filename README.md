@@ -1,130 +1,55 @@
 # pi-delegation-policy
 
-A local Pi extension that lets you choose delegation intensity and exact model references for Small, Medium, Large, and an optional UI Design role. It guides the main agent; it does not run, route, or enforce delegated work.
+A local Pi extension that helps the main agent decide **when delegation is worth it** and which exact models to use for the Small, Medium, Large, and optional UI Design roles. It provides guidance; it is not a subagent runner.
 
-> **Status:** Version 0.3.0 is available from npm.
+> **Status:** Version **0.3.2** is the latest published package. The package accepts Pi `>=0.84.1`; Pi `0.84.1` is the explicitly validated baseline (newer versions are not claimed as tested).
 >
-> **Documentation:** Read the [documentation site](https://yivas.github.io/pi-delegation-policy/).
+> **Docs:** [Read the documentation site](https://yivas.github.io/pi-delegation-policy/).
 
-## What it does
+## Value and boundary
 
-- Sets delegation intensity to `off`, `normal`, or `aggressive` globally or for the current session branch.
-- Keeps global defaults for intensity, model references, preference, and the optional UI Design role.
-- Stores session changes in Pi's session branch, so they survive reload, resume, and tree navigation.
-- Uses Pi's scoped models when configured, otherwise its available authenticated models.
-- Injects one policy block through Pi's public `before_agent_start` event when the active configuration is valid.
+- Choose `off`, `normal`, or `aggressive` delegation intensity globally or for the current session branch.
+- Configure exact provider/model references for Small, Medium, Large, and optionally UI Design.
+- Keep global defaults and session-branch overrides across reload, resume, and tree navigation.
+- Validate active configurations before injecting one policy block through Pi's public `before_agent_start` event.
 
-## What it does not do
+The extension guides the main agent. It never creates, launches, routes, supervises, or blocks subagents; changes Pi's main model or thinking; stores credentials; intercepts tools; or makes its own network requests. It has no model fallback, telemetry, project configuration, presets, or external skill loading.
 
-This package does not create, launch, route, supervise, or block subagents. It does not change Pi's main model or thinking level. It has no presets, project configuration, external skill loading, tool interception, model fallback, telemetry, credential storage, or network requests.
+## Install and start
 
-## Install
-
-Install the package in your Pi user settings:
+Install the published package in Pi's user settings, then reload Pi:
 
 ```bash
 pi install npm:pi-delegation-policy
+# restart Pi, or run /reload
 ```
 
-It supports Pi `0.84.1`. Restart Pi or run `/reload` after installation. To install a local checkout instead, use `pi install ./pi-delegation-policy`.
+1. Open `/delegate` (or press `Alt+G` in Pi's TUI).
+2. Configure exact, authenticated Small, Medium, and Large provider/model references. UI Design is optional.
+3. Select `normal` or `aggressive`, then choose **Apply changes**.
+4. Run `/delegate status` and inspect the footer for `D:NORM` or `D:AGG`. `D:ERR` means an active required role is invalid; no policy is injected.
+5. The applied state affects the **next** agent run. An agent already running is not rewritten.
 
-## Commands
+See the [end-to-end getting-started guide](https://yivas.github.io/pi-delegation-policy/getting-started/) and [configuration reference](https://yivas.github.io/pi-delegation-policy/configuration/) for details.
+
+## Essential commands
 
 ```text
-/delegate                         Open the keyboard-first selector
-/delegate off                     Disable policy injection for this session branch
+/delegate                         Open the editor
+/delegate off                     Disable policy for this session branch
 /delegate normal                  Enable balanced delegation guidance
 /delegate aggressive              Enable delegation-first guidance
-/delegate status                  Show the effective session state
-/delegate reset                   Reset this session branch to off
+/delegate status                  Show effective session state
+/delegate reset                   Reset this branch to off and other fields to global defaults
 ```
 
-`Alt+G` opens the same editor when the shortcut is available. There is no separate off shortcut; use `/delegate off` or choose `off` in the editor. Changes apply to the next agent run. An agent already running keeps the system prompt it started with.
+The editor is a bounded, keyboard-first panel. It shows model ID first and `[provider]` last, fuzzy-searches provider, model ID, and display name, and shows at most 10 model rows. Inheritance actions stay pinned while searching. Changes are drafts until **Apply changes**; saving effective configuration as defaults updates the global file without applying the draft, and closing a modified draft requires explicit discard.
 
-The interactive editor requires Pi's TUI mode; quick `/delegate` arguments remain available in other modes. The editor is one bounded, keyboard-first panel. It shows the effective value and the built-in, global, and session value for each setting. Model fields use the same compact presentation as Pi's `/model` selector: model ID first with `[provider]` at the end, live fuzzy search over provider, model ID, and display name, and at most ten visible model rows before scrolling. **Use global default** remains available while searching, and UI Design also offers **Disable for this session**.
+## Configuration and safety
 
-Edits stay in a draft until **Apply changes** is selected or `A` is pressed. **Save effective configuration as defaults** updates the global file without applying the session draft. **Reset draft to off** remains local until Apply. Escape returns from a field editor; closing a modified draft requires explicit discard confirmation.
+Global defaults are stored at `~/.pi/agent/delegation-policy.json` (schema version 2). The file stores optional intensity, preference, exact role references, and an optional UI Design reference; it never stores thinking. A valid active mode requires exact, available, in-scope, authenticated Small, Medium, and Large references. Invalid active configuration fails closed as `D:ERR` with no policy injection; `off` is always `D:OFF`.
 
-The footer shows `D:OFF`, `D:NORM`, `D:AGG`, or `D:ERR` without replacing Pi's own status.
-
-## Configuration
-
-Global defaults live at:
-
-```text
-~/.pi/agent/delegation-policy.json
-```
-
-They use schema version 2. The file stores optional intensity, model references, preference, and an optional UI Design model. It never stores thinking.
-
-```json
-{
-  "schemaVersion": 2,
-  "intensity": "normal",
-  "preference": "standard",
-  "small": {
-    "provider": "example-provider",
-    "model": "example-small"
-  },
-  "medium": {
-    "provider": "example-provider",
-    "model": "example-medium"
-  },
-  "large": {
-    "provider": "example-provider",
-    "model": "example-large"
-  },
-  "uiDesign": {
-    "provider": "example-provider",
-    "model": "example-ui-design"
-  }
-}
-```
-
-See [`examples/global.json`](examples/global.json) and the bundled [JSON Schema](schema/delegation-policy.schema.json). The values are fictional.
-
-Schema version 1 is inactive and is not migrated automatically. Open `/delegate`, configure schema version 2, and save the effective configuration as defaults before using an active intensity.
-
-### Global defaults and session branches
-
-A session branch inherits global intensity, model references, preference, and UI Design until it records matching overrides. If global intensity is absent, the built-in default is `off`. A fork restores the latest valid delegation entry in its active history. The intensity selector can return a branch to **Use global default**.
-
-Selecting **Save effective configuration as defaults** copies the complete effective configuration, including intensity, to the global file. `/delegate reset` remains an explicit safety action: it writes a branch state with `off` and returns every other field to its global default.
-
-### Intensity
-
-- `off` injects nothing into the next agent run. Pi rebuilds the system prompt for each run, so a policy injected into an earlier run is absent; an agent already running is not rewritten. Invalid or incomplete defaults still show `D:OFF`.
-- `normal` delegates substantial, separable work only when the expected benefit clearly outweighs briefing, supervision, review, and integration. It keeps borderline work with the main agent.
-- `aggressive` delegates substantial, separable, independently checkable work by default when it has a clear objective and acceptance criteria. A plausible benefit can be enough, but tightly coupled work or clearly prohibitive overhead stays with the main agent.
-
-The main agent keeps global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer in every mode.
-
-### Model roles and preference
-
-Active modes require exact `provider` and `model` references for Small, Medium, and Large. Pi must expose each reference in the current scope or available model catalog, and its provider must be authenticated. A missing, out-of-scope, unavailable, or unauthenticated role produces `D:ERR` and injects no policy. The extension never substitutes another model or role.
-
-The policy chooses a role and thinking together from task demand, difficulty, and quantity. No single factor decides the role:
-
-- Small is habitual for bounded, planned, and verifiable execution. Difficult but well-defined work can remain Small with higher thinking.
-- Medium can be selected directly when the combined demands materially require planning, ambiguity reduction, broad synthesis, several-module tracing, comparison, context coordination, or difficult decisions. Small does not need to fail first.
-- Large is exceptional and only unblocks genuinely stuck work, such as persistent failures, severe framework conflicts, or contradictory hypotheses. Reliable prior evidence can justify it without ceremonial failed attempts.
-- Large quantities of repetitive, independent work favor multiple Small delegations. Agent type does not determine the model role.
-
-Preference shifts credible Small/Medium choices; a clearly better task fit overrides it:
-
-- `efficient` favors Small more strongly and uses Medium when it provides a material advantage.
-- `standard` reproduces the canonical policy and chooses Small on a genuine Small/Medium tie.
-- `intensive` normally favors Medium for non-trivial bounded work when both roles are credible, while retaining Small for clearly narrow, routine, mechanical, or especially clear Small work.
-
-All three ordinary roles remain available in every preference. The main agent chooses thinking for each delegated task from task demand, difficulty, quantity, and model capabilities. Thinking is not configured or persisted by this extension.
-
-UI Design is optional. When configured, it is limited to visual design direction, exploration, and review. It must not implement an interface, write code, or run tests. When it is off, ordinary roles handle design-related work.
-
-## Security and privacy
-
-The extension stores intensity, preference, and provider/model identifiers in local configuration and session entries. It does not store credentials, send telemetry, or make network requests. Review configuration before using it and remove credentials, prompts, personal paths, session files, and unredacted logs from reports.
-
-Read [`SECURITY.md`](SECURITY.md) for reporting guidance.
+The extension stores only policy settings and provider/model identifiers in local defaults and session entries. Review local configuration before sharing diagnostics, and remove credentials, prompts, personal paths, session files, and unredacted logs from reports. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/) and [security policy](https://github.com/Yivas/pi-delegation-policy/blob/main/SECURITY.md).
 
 ## Development
 
@@ -138,12 +63,8 @@ npm run build
 npm run pack:check
 ```
 
-The tests use local mocks and make no paid model calls or network requests.
-
-## Contributing
-
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions must preserve the boundary: this extension guides the main agent and does not become a subagent runner, tool interceptor, credential store, or telemetry client.
+Tests use local mocks and do not make paid model calls or network requests. See [CONTRIBUTING.md](https://github.com/Yivas/pi-delegation-policy/blob/main/CONTRIBUTING.md) for contribution guidance.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT. See [LICENSE](https://github.com/Yivas/pi-delegation-policy/blob/main/LICENSE).
