@@ -26,7 +26,8 @@ provider and model exposed by Pi in the current scope and authenticated for its 
 ## Session branches
 
 `/delegate` stores changes in the current session branch. Those changes survive reload, resume, and
-tree navigation. A session field overrides only the matching global field.
+tree navigation. A fork inherits the latest valid delegation entry in its active history; a branch
+with no such entry starts at `off`. A session field overrides only the matching global field.
 
 Selecting **Save effective configuration as defaults** copies the effective roles, preference, and
 UI Design setting to global defaults. It does not copy intensity.
@@ -36,20 +37,37 @@ global defaults.
 
 ## Intensity and preference
 
-- `off` injects no delegation policy.
-- `normal` delegates substantial, bounded, independent work when it helps without losing essential
-  context.
-- `aggressive` favors delegation when the objective and acceptance criteria are clear.
+- `off` injects no delegation policy into the next agent run. Pi rebuilds the system prompt for each
+  run, so an earlier policy block is absent; an agent already running keeps its starting prompt.
+- `normal` delegates substantial, separable work only when the expected benefit clearly outweighs
+  briefing, supervision, review, and integration. Borderline work stays with the main agent.
+- `aggressive` delegates substantial, separable, independently checkable work by default when its
+  objective and acceptance criteria are clear. Plausible benefit can be enough, but tightly coupled
+  work or clearly prohibitive overhead stays with the main agent.
 
-Preference affects selection guidance, not availability:
+The policy evaluates task demand, difficulty, and quantity together. No single factor selects a
+role:
 
-- `efficient` favors Small.
-- `standard` uses Small for routine work, Medium for planning or broad synthesis, and Large for
-  exceptional blockers.
-- `intensive` favors Medium.
+- Small is habitual for bounded, planned, and verifiable execution. Difficult but well-defined work
+  can remain Small with higher thinking.
+- Medium can be selected directly for meaningful planning, ambiguity reduction, broad synthesis,
+  several-module tracing, comparison, context coordination, or difficult decisions. Small does not
+  need to fail first.
+- Large is exceptional and unblocks genuinely stuck work, including persistent failures, severe
+  framework conflicts, or contradictory hypotheses. Reliable prior evidence can justify it without
+  ceremonial failed attempts.
+- Repetitive independent volume favors multiple Small delegations rather than a larger role.
 
-All three ordinary roles remain available in every preference. The main agent chooses thinking for
-each task; this extension does not configure or persist it.
+Preference shifts credible Small/Medium choices; a clearly better task fit overrides it:
+
+- `efficient` favors Small more strongly and uses Medium when it provides a material advantage.
+- `standard` reproduces the canonical policy and chooses Small on a genuine Small/Medium tie.
+- `intensive` normally favors Medium for non-trivial bounded work when both roles are credible, but
+  retains Small for clearly narrow, routine, mechanical, or especially clear Small work.
+
+All three ordinary roles remain available in every preference. Agent type does not select the model
+role. The main agent chooses thinking for each task from its demand, difficulty, quantity, and model
+capabilities; this extension does not configure or persist it.
 
 ## UI Design
 

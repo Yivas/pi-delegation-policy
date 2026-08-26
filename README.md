@@ -2,7 +2,7 @@
 
 A local Pi extension that lets you choose delegation intensity and exact model references for Small, Medium, Large, and an optional UI Design role. It guides the main agent; it does not run, route, or enforce delegated work.
 
-> **Status:** Version 0.1.1 is available from npm. Every new session starts at `off`.
+> **Status:** Version 0.1.2 is available from npm. Every new session starts at `off`.
 >
 > **Documentation:** Read the [documentation site](https://yivas.github.io/pi-delegation-policy/).
 
@@ -39,7 +39,9 @@ It supports Pi `0.84.1`. Restart Pi or run `/reload` after installation. To inst
 /delegate reset                   Reset this session branch to off
 ```
 
-`Ctrl+Shift+D` opens the selector when the shortcut is available. The footer shows `D:OFF`, `D:NORM`, `D:AGG`, or `D:ERR` without replacing Pi's own status.
+`Ctrl+Shift+D` opens the selector when the shortcut is available. There is no separate off shortcut; use `/delegate off` or choose `off` in the selector. Changes apply to the next agent run. An agent already running keeps the system prompt it started with.
+
+The footer shows `D:OFF`, `D:NORM`, `D:AGG`, or `D:ERR` without replacing Pi's own status.
 
 ## Configuration
 
@@ -80,29 +82,36 @@ Schema version 1 is inactive and is not migrated automatically. Open `/delegate`
 
 ### Global defaults and session branches
 
-A new session or branch always starts at `off`. It inherits global model references and preference until `/delegate` changes a field in that branch. Session fields override only their matching global values. Selecting **Save effective configuration as defaults** copies the current roles, preference, and UI Design setting to the global file without copying intensity.
+A new session with no delegation entry starts at `off`. A branch restores the latest valid delegation entry in its active history, so a fork created after `normal`, `aggressive`, or `off` inherits that state until the branch records another change. Global model references and preference apply until the session branch overrides their matching fields. Selecting **Save effective configuration as defaults** copies the current roles, preference, and UI Design setting to the global file without copying intensity.
 
 `/delegate reset` writes a session state with `off` and returns non-intensity fields to their global defaults.
 
 ### Intensity
 
-- `off` injects nothing. Invalid or incomplete defaults still show `D:OFF`.
-- `normal` delegates substantial, bounded, independent work when doing so saves effort without losing essential context.
-- `aggressive` favors delegating that work when its objective and acceptance criteria are clear.
+- `off` injects nothing into the next agent run. Pi rebuilds the system prompt for each run, so a policy injected into an earlier run is absent; an agent already running is not rewritten. Invalid or incomplete defaults still show `D:OFF`.
+- `normal` delegates substantial, separable work only when the expected benefit clearly outweighs briefing, supervision, review, and integration. It keeps borderline work with the main agent.
+- `aggressive` delegates substantial, separable, independently checkable work by default when it has a clear objective and acceptance criteria. A plausible benefit can be enough, but tightly coupled work or clearly prohibitive overhead stays with the main agent.
 
-The main agent keeps global decisions, coordination, integration, and final review in every mode.
+The main agent keeps global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer in every mode.
 
 ### Model roles and preference
 
 Active modes require exact `provider` and `model` references for Small, Medium, and Large. Pi must expose each reference in the current scope or available model catalog, and its provider must be authenticated. A missing, out-of-scope, unavailable, or unauthenticated role produces `D:ERR` and injects no policy. The extension never substitutes another model or role.
 
-The preference only changes the policy's selection bias:
+The policy chooses a role and thinking together from task demand, difficulty, and quantity. No single factor decides the role:
 
-- `efficient` favors Small.
-- `standard` uses Small for routine work, Medium for planning, ambiguity, or broad synthesis, and Large for exceptional blockers.
-- `intensive` favors Medium.
+- Small is habitual for bounded, planned, and verifiable execution. Difficult but well-defined work can remain Small with higher thinking.
+- Medium can be selected directly when the combined demands materially require planning, ambiguity reduction, broad synthesis, several-module tracing, comparison, context coordination, or difficult decisions. Small does not need to fail first.
+- Large is exceptional and only unblocks genuinely stuck work, such as persistent failures, severe framework conflicts, or contradictory hypotheses. Reliable prior evidence can justify it without ceremonial failed attempts.
+- Large quantities of repetitive, independent work favor multiple Small delegations. Agent type does not determine the model role.
 
-All three ordinary roles remain available in every preference. The main agent chooses thinking for each delegated task from the task, difficulty, volume, and model capabilities. Thinking is not configured or persisted by this extension.
+Preference shifts credible Small/Medium choices; a clearly better task fit overrides it:
+
+- `efficient` favors Small more strongly and uses Medium when it provides a material advantage.
+- `standard` reproduces the canonical policy and chooses Small on a genuine Small/Medium tie.
+- `intensive` normally favors Medium for non-trivial bounded work when both roles are credible, while retaining Small for clearly narrow, routine, mechanical, or especially clear Small work.
+
+All three ordinary roles remain available in every preference. The main agent chooses thinking for each delegated task from task demand, difficulty, quantity, and model capabilities. Thinking is not configured or persisted by this extension.
 
 UI Design is optional. When configured, it is limited to visual design direction, exploration, and review. It must not implement an interface, write code, or run tests. When it is off, ordinary roles handle design-related work.
 

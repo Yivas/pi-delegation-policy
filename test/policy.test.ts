@@ -237,7 +237,7 @@ test("global defaults combine with field-level session overrides while intensity
   assert.equal(saved.preference, "efficient");
 });
 
-test("a new session or branch starts off and restoration uses the latest valid branch entry", () => {
+test("a session without policy state starts off and restoration uses the latest valid branch entry", () => {
   const normal = { schemaVersion: 2, intensity: "normal" };
   const aggressive = { schemaVersion: 2, intensity: "aggressive" };
   const entries = [
@@ -265,12 +265,22 @@ test("runtime restores the active branch without leaking state from another bran
         data: { schemaVersion: 2, intensity: "normal" },
       },
     ];
-    const offBranch: unknown[] = [];
+    const inheritedBranch = [...normalBranch, { type: "message", role: "user", content: "work" }];
+    const resetBranch = [
+      ...normalBranch,
+      {
+        type: "custom",
+        customType: SESSION_ENTRY_TYPE,
+        data: { schemaVersion: 2, intensity: "off" },
+      },
+    ];
+    const emptyBranch: unknown[] = [];
     assert.equal(
-      (await loadRuntime(context({ branch: normalBranch }))).effective.intensity,
+      (await loadRuntime(context({ branch: inheritedBranch }))).effective.intensity,
       "normal",
     );
-    assert.equal((await loadRuntime(context({ branch: offBranch }))).effective.intensity, "off");
+    assert.equal((await loadRuntime(context({ branch: resetBranch }))).effective.intensity, "off");
+    assert.equal((await loadRuntime(context({ branch: emptyBranch }))).effective.intensity, "off");
   });
 });
 
@@ -345,6 +355,46 @@ test("all active intensities and preferences produce one deterministic policy bl
   }
 });
 
+test("generated guidance preserves canonical roles and operational mode boundaries", () => {
+  const policy = (intensity: "normal" | "aggressive", preference: GlobalDefaults["preference"]) =>
+    buildDelegationPolicy(
+      runtime({ schemaVersion: 2, intensity }, { ...defaults, preference, uiDesign: undefined }),
+    ) ?? "";
+
+  const standard = policy("normal", "standard");
+  for (const expected of [
+    "No single factor decides the role.",
+    "Difficult but well-defined execution can remain Small with higher thinking.",
+    "Small does not need to fail first.",
+    "Do not require ceremonial failed attempts.",
+    "multiple Small delegations",
+    "volume alone does not justify Medium or Large",
+    "Agent type does not determine the model role.",
+    "A clearly better task fit overrides preference",
+    "keep global strategy, coordination, integration, final review",
+  ]) {
+    assert.ok(standard.includes(expected), `Missing policy guarantee: ${expected}`);
+  }
+
+  assert.ok(standard.includes("expected benefit clearly outweighs"));
+  assert.ok(standard.includes("merely possible fresh perspective is not enough"));
+  assert.ok(standard.includes("Keep borderline work with the main agent"));
+  assert.ok(standard.includes("genuine Small/Medium tie"));
+
+  const aggressive = policy("aggressive", "standard");
+  assert.ok(aggressive.includes("benefit is plausible even if not proven"));
+  assert.ok(aggressive.includes("poorly bounded, tightly coupled"));
+  assert.ok(aggressive.includes("clearly prohibitive delegation overhead"));
+
+  const efficient = policy("normal", "efficient");
+  assert.ok(efficient.includes("Favor Small more strongly than standard"));
+  assert.ok(efficient.includes("material advantage"));
+
+  const intensive = policy("normal", "intensive");
+  assert.ok(intensive.includes("both credible, normally prefer Medium"));
+  assert.ok(intensive.includes("especially clear Small fit"));
+});
+
 test("UI Design only participates when configured and policy values cannot close its block", () => {
   const disabled = runtime(
     { schemaVersion: 2, intensity: "normal", uiDesign: null },
@@ -383,6 +433,7 @@ test("UI Design only participates when configured and policy values cannot close
 test("commands expose only the supported quick actions and completions", () => {
   assert.deepEqual(parseCommand(""), { kind: "open" });
   assert.deepEqual(parseCommand("normal"), { kind: "intensity", intensity: "normal" });
+  assert.deepEqual(parseCommand("off"), { kind: "intensity", intensity: "off" });
   assert.deepEqual(parseCommand("status"), { kind: "status" });
   assert.deepEqual(parseCommand("reset"), { kind: "reset" });
   assert.deepEqual(parseCommand("normal extra"), { kind: "invalid" });
@@ -448,8 +499,14 @@ test("the extension uses only the approved lifecycle events and never accumulate
     assert.equal(first.systemPrompt, second.systemPrompt);
     assert.equal((first.systemPrompt?.match(/<delegation_policy>/g) ?? []).length, 1);
 
+    await commands.get("delegate")?.handler("off", current);
+    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 2, intensity: "off" });
+    assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
+
+    await commands.get("delegate")?.handler("normal", current);
     await commands.get("delegate")?.handler("reset", current);
     assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 2, intensity: "off" });
+    assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
     await handlers.get("session_tree")?.({ type: "session_tree" }, current);
     assert.equal(statuses.at(-1), "D:OFF");
 
@@ -548,7 +605,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.1.1");
+  assert.equal(packageJson.version, "0.1.2");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
 

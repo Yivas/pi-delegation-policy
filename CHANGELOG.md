@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.2 - 2026-08-26
+
+### Fixed
+
+- Restored the canonical role-selection guidance for bounded execution, planning and ambiguity, repetitive volume, and exceptional blockers.
+- Made the `normal` and `aggressive` thresholds and the three Small/Medium preference biases operational at their boundaries.
+- Corrected session-branch guidance: a session without policy state starts at `off`, while a fork inherits the latest valid entry in its active history.
+
 ## 0.1.1 - 2026-08-26
 
 ### Added
