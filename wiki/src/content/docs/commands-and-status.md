@@ -24,8 +24,9 @@ modes. The editor uses one bounded panel and keeps the current draft while you m
 Every setting shows its effective value together with the built-in, global, and session values.
 
 - Use `Up` and `Down` to move, then `Enter` or `Space` to edit.
-- In a model field, type to search by provider, model ID, or display name. Use `Page Up` and
-  `Page Down` for long result sets.
+- In a model field, results follow Pi's `/model` layout: model ID first and `[provider]` last. Type
+  to search by provider, model ID, or display name. Up to ten model rows remain visible; use
+  `Page Up` and `Page Down` for longer result sets.
 - Select **Use global default** to remove that session override. UI Design also offers
   **Disable for this session**.
 - Select **Apply changes** or press `A` to write the draft to the current branch.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-08-26
+
+### Fixed
+
+- Matched model results to Pi's `/model` presentation: model ID first, `[provider]` last, with no more than ten visible model rows.
+
 ## 0.3.0 - 2026-08-26
 
 ### Added

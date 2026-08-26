@@ -735,14 +735,21 @@ test("the delegate panel is responsive and exposes values with all sources", () 
   const manyModels = Array.from({ length: 24 }, (_, index) =>
     model({ provider: `provider-${index % 3}`, model: `model-${index}` }, `Model ${index}`),
   );
-  const modelViewport = createPanelHarness({ rows: 10, candidates: manyModels });
+  const modelViewport = createPanelHarness({ rows: 40, candidates: manyModels });
   sendKeys(modelViewport.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   for (let index = 0; index < 12; index += 1) sendKeys(modelViewport.panel, KEY_DOWN);
   const modelLines = modelViewport.panel.render(64);
-  assert.ok(modelLines.length <= 10);
+  assert.ok(modelLines.length <= 40);
   assert.ok(modelLines.every((line) => visibleWidth(line) <= 64));
   assert.match(modelLines.join("\n"), /Use global default/);
   assert.match(modelLines.join("\n"), /of 24/);
+  assert.ok((modelLines.join("\n").match(/\[provider-/g) ?? []).length <= 10);
+
+  const elevenModelViewport = createPanelHarness({ rows: 40, candidates: manyModels.slice(0, 11) });
+  sendKeys(elevenModelViewport.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  const elevenModelLines = elevenModelViewport.panel.render(64);
+  assert.match(elevenModelLines.join("\n"), /of 11/);
+  assert.equal((elevenModelLines.join("\n").match(/\[provider-/g) ?? []).length, 10);
 
   const uiModelViewport = createPanelHarness({ rows: 9, candidates: manyModels });
   sendKeys(uiModelViewport.panel, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
@@ -826,7 +833,7 @@ test("the delegate panel searches models, keeps pinned actions, and stages safe 
   searchable.panel.focused = true;
   assert.match(modelView, /planning/);
   assert.match(modelView, /Use global default/);
-  assert.match(modelView, /example\/medium/);
+  assert.match(modelView, /medium \[example\]/);
   assert.equal(modelView.match(/example\/small/g)?.length, 1);
   sendKeys(searchable.panel, KEY_DOWN, KEY_ENTER);
   assert.deepEqual(searchable.panel.getDraft().small, medium);
@@ -836,7 +843,7 @@ test("the delegate panel searches models, keeps pinned actions, and stages safe 
   });
   sendKeys(byProvider.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   for (const character of "other") sendKeys(byProvider.panel, character);
-  assert.match(byProvider.panel.render(80).join("\n"), /other\/special/);
+  assert.match(byProvider.panel.render(80).join("\n"), /special \[other\]/);
   sendKeys(byProvider.panel, KEY_DOWN, KEY_ENTER);
   assert.deepEqual(byProvider.panel.getDraft().small, {
     provider: "other",
@@ -1054,7 +1061,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.3.0");
+  assert.equal(packageJson.version, "0.3.1");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
 

@@ -470,22 +470,29 @@ export class DelegatePanel implements Component, Focusable {
       ),
     );
     const dividerRows = budget > pinnedLines.length + 3 ? 1 : 0;
-    const listBudget = Math.max(0, budget - 2 - pinnedLines.length - dividerRows);
-    const showDescriptions = listBudget >= 3;
+    const selectedChoice = choices[mode.selected];
+    const selectedName =
+      selectedChoice?.kind === "model" && selectedChoice.description
+        ? [`  Model Name: ${selectedChoice.description}`]
+        : [];
+    const detailRows = selectedName.length > 0 && budget > pinnedLines.length + 6 ? 2 : 0;
+    const availableListRows = Math.max(
+      0,
+      budget - 2 - pinnedLines.length - dividerRows - detailRows,
+    );
+    const listBudget = Math.min(11, availableListRows);
     const modelBlocks = models.map((choice, index) => {
       const combinedIndex = index + pinnedCount;
-      const lines = [
-        selectedLine(this.theme, choice.label, width, mode.selected === combinedIndex),
-      ];
-      if (showDescriptions && choice.description) {
-        lines.push(truncateToWidth(this.theme.fg("muted", `  ${choice.description}`), width, ""));
-      }
-      return lines;
+      const provider = choice.kind === "model" ? choice.reference.provider : "";
+      const label = provider
+        ? `${choice.label} ${this.theme.fg("muted", `[${provider}]`)}`
+        : choice.label;
+      return [selectedLine(this.theme, label, width, mode.selected === combinedIndex)];
     });
     const modelSelected = Math.max(0, mode.selected - pinnedCount);
     const modelLines =
       listBudget > 0 && modelBlocks.length > 0
-        ? this.renderBlockViewport(modelBlocks, modelSelected, width, listBudget)
+        ? this.renderBlockViewport(modelBlocks, modelSelected, width, listBudget, 10)
         : [];
     if (models.length === 0 && modelLines.length < listBudget) {
       modelLines.push(
@@ -505,6 +512,7 @@ export class DelegatePanel implements Component, Focusable {
       ...pinnedLines,
       ...(dividerRows ? [this.theme.fg("borderMuted", "─".repeat(width))] : []),
       ...modelLines,
+      ...(detailRows ? ["", ...selectedName.map((line) => this.theme.fg("muted", line))] : []),
     ].slice(0, budget);
   }
 
@@ -523,10 +531,11 @@ export class DelegatePanel implements Component, Focusable {
     selected: number,
     width: number,
     budget: number,
+    maxVisibleBlocks = Number.POSITIVE_INFINITY,
   ): string[] {
     const totalRows = blocks.reduce((sum, block) => sum + block.length, 0);
-    const reserveIndicator = totalRows > budget ? 1 : 0;
-    const contentBudget = Math.max(1, budget - reserveIndicator);
+    const reserveIndicator = totalRows > budget || blocks.length > maxVisibleBlocks ? 1 : 0;
+    const contentBudget = Math.max(1, Math.min(budget - reserveIndicator, maxVisibleBlocks));
     const [start, end] = visibleBlockRange(blocks, selected, contentBudget);
     const lines = blocks
       .slice(start, end)
@@ -672,7 +681,7 @@ export class DelegatePanel implements Component, Focusable {
     }
     const filtered = query
       ? fuzzyFilter(this.candidates, query, (model) =>
-          `${model.provider}/${model.id} ${model.name ?? ""}`.trim(),
+          `${model.provider} ${model.provider}/${model.id} ${model.provider} ${model.id} ${model.name ?? ""}`.trim(),
         )
       : this.candidates;
     return [
@@ -680,7 +689,7 @@ export class DelegatePanel implements Component, Focusable {
       ...filtered.map<ModelChoice>((model) => ({
         kind: "model",
         key: modelKey({ provider: model.provider, model: model.id }),
-        label: `${model.provider}/${model.id}`,
+        label: model.id,
         ...(model.name && model.name !== model.id ? { description: model.name } : {}),
         reference: { provider: model.provider, model: model.id },
       })),
