@@ -2,14 +2,14 @@
 
 A local Pi extension that lets you choose delegation intensity and exact model references for Small, Medium, Large, and an optional UI Design role. It guides the main agent; it does not run, route, or enforce delegated work.
 
-> **Status:** Version 0.1.2 is available from npm. Every new session starts at `off`.
+> **Status:** Version 0.2.0 is available from npm.
 >
 > **Documentation:** Read the [documentation site](https://yivas.github.io/pi-delegation-policy/).
 
 ## What it does
 
-- Sets delegation intensity to `off`, `normal`, or `aggressive` for the current session branch.
-- Keeps global defaults for model references, preference, and the optional UI Design role.
+- Sets delegation intensity to `off`, `normal`, or `aggressive` globally or for the current session branch.
+- Keeps global defaults for intensity, model references, preference, and the optional UI Design role.
 - Stores session changes in Pi's session branch, so they survive reload, resume, and tree navigation.
 - Uses Pi's scoped models when configured, otherwise its available authenticated models.
 - Injects one policy block through Pi's public `before_agent_start` event when the active configuration is valid.
@@ -39,7 +39,7 @@ It supports Pi `0.84.1`. Restart Pi or run `/reload` after installation. To inst
 /delegate reset                   Reset this session branch to off
 ```
 
-`Ctrl+Shift+D` opens the selector when the shortcut is available. There is no separate off shortcut; use `/delegate off` or choose `off` in the selector. Changes apply to the next agent run. An agent already running keeps the system prompt it started with.
+`Ctrl+Alt+D` opens the selector when the shortcut is available. There is no separate off shortcut; use `/delegate off` or choose `off` in the selector. Changes apply to the next agent run. An agent already running keeps the system prompt it started with.
 
 The footer shows `D:OFF`, `D:NORM`, `D:AGG`, or `D:ERR` without replacing Pi's own status.
 
@@ -51,11 +51,12 @@ Global defaults live at:
 ~/.pi/agent/delegation-policy.json
 ```
 
-They use schema version 2. The file stores model references, preference, and an optional UI Design model. It never stores intensity or thinking.
+They use schema version 2. The file stores optional intensity, model references, preference, and an optional UI Design model. It never stores thinking.
 
 ```json
 {
   "schemaVersion": 2,
+  "intensity": "normal",
   "preference": "standard",
   "small": {
     "provider": "example-provider",
@@ -82,9 +83,9 @@ Schema version 1 is inactive and is not migrated automatically. Open `/delegate`
 
 ### Global defaults and session branches
 
-A new session with no delegation entry starts at `off`. A branch restores the latest valid delegation entry in its active history, so a fork created after `normal`, `aggressive`, or `off` inherits that state until the branch records another change. Global model references and preference apply until the session branch overrides their matching fields. Selecting **Save effective configuration as defaults** copies the current roles, preference, and UI Design setting to the global file without copying intensity.
+A session branch inherits global intensity, model references, preference, and UI Design until it records matching overrides. If global intensity is absent, the built-in default is `off`. A fork restores the latest valid delegation entry in its active history. The intensity selector can return a branch to **Use global default**.
 
-`/delegate reset` writes a session state with `off` and returns non-intensity fields to their global defaults.
+Selecting **Save effective configuration as defaults** copies the complete effective configuration, including intensity, to the global file. `/delegate reset` remains an explicit safety action: it writes a branch state with `off` and returns every other field to its global default.
 
 ### Intensity
 
@@ -117,7 +118,7 @@ UI Design is optional. When configured, it is limited to visual design direction
 
 ## Security and privacy
 
-The extension stores provider and model identifiers in local configuration and session entries. It does not store credentials, send telemetry, or make network requests. Review configuration before using it and remove credentials, prompts, personal paths, session files, and unredacted logs from reports.
+The extension stores intensity, preference, and provider/model identifiers in local configuration and session entries. It does not store credentials, send telemetry, or make network requests. Review configuration before using it and remove credentials, prompts, personal paths, session files, and unredacted logs from reports.
 
 Read [`SECURITY.md`](SECURITY.md) for reporting guidance.
 

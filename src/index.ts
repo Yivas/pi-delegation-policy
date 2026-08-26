@@ -49,14 +49,19 @@ function updateStatus(ctx: ExtensionContext, state: RuntimeState): void {
   ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", statusLabel(state)));
 }
 
+async function openEditor(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  await openDelegateEditor(ctx, pi);
+  updateStatus(ctx, await refresh(ctx));
+}
+
 function configuredLabel(value: unknown): string {
   return value ? "configured" : "unset";
 }
 
-function statusText(state: RuntimeState): string {
+export function statusText(state: RuntimeState): string {
   const { effective } = state;
   const details = [
-    `${statusLabel(state)} intensity=${effective.intensity}`,
+    `${statusLabel(state)} intensity=${effective.intensity} (${effective.source.intensity})`,
     `preference=${effective.preference} (${effective.source.preference})`,
     `small=${configuredLabel(effective.small)} (${effective.source.small})`,
     `medium=${configuredLabel(effective.medium)} (${effective.source.medium})`,
@@ -99,7 +104,7 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const action = parseCommand(args);
       if (action.kind === "open") {
-        await openDelegateEditor(ctx, pi);
+        await openEditor(pi, ctx);
         return;
       }
       if (action.kind === "status") {
@@ -120,9 +125,9 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
     },
   });
 
-  pi.registerShortcut("ctrl+shift+d", {
+  pi.registerShortcut("ctrl+alt+d", {
     description: "Open delegation policy",
-    handler: async (ctx) => openDelegateEditor(ctx, pi),
+    handler: async (ctx) => openEditor(pi, ctx),
   });
 
   pi.on("session_start", async (_event, ctx) => {

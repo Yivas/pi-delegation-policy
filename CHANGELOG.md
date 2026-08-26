@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-26
+
+### Added
+
+- Added optional global intensity with session-branch overrides and a built-in `off` fallback.
+- Added **Use global default** to the intensity selector.
+
+### Fixed
+
+- Replaced the terminal-ambiguous `Ctrl+Shift+D` shortcut with `Ctrl+Alt+D`.
+
 ## 0.1.2 - 2026-08-26
 
 ### Fixed

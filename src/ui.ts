@@ -13,7 +13,6 @@ import {
   type RuntimeState,
 } from "./runtime.ts";
 import {
-  emptySessionState,
   INTENSITIES,
   MODEL_ROLES,
   PREFERENCES,
@@ -109,8 +108,13 @@ async function selectUiDesign(ctx: ExtensionContext, draft: SessionDelegateState
 }
 
 async function selectIntensity(ctx: ExtensionContext, draft: SessionDelegateState): Promise<void> {
-  const selected = await selectOrCancel(ctx, "Delegation intensity", [...INTENSITIES]);
-  if (selected) draft.intensity = selected as Intensity;
+  const selected = await selectOrCancel(ctx, "Delegation intensity", [
+    USE_GLOBAL_DEFAULT,
+    ...INTENSITIES,
+  ]);
+  if (!selected) return;
+  if (selected === USE_GLOBAL_DEFAULT) delete draft.intensity;
+  else draft.intensity = selected as Intensity;
 }
 
 async function selectPreference(ctx: ExtensionContext, draft: SessionDelegateState): Promise<void> {
@@ -194,7 +198,7 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
         await writeConfig(getGlobalConfigPath(), defaults);
         state.global = defaults;
         state.diagnostics = [];
-        ctx.ui.notify("Saved effective role settings as global defaults.", "info");
+        ctx.ui.notify("Saved effective delegation settings as global defaults.", "info");
       } catch {
         ctx.ui.notify(
           "Could not save global defaults. Session settings were not changed.",
@@ -203,7 +207,7 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
       }
     }
     if (selected === RESET_SESSION) {
-      draft = emptySessionState();
+      draft = { schemaVersion: 2, intensity: "off" };
     }
   }
 }

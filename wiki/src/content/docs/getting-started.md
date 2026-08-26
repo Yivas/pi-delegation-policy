@@ -28,9 +28,9 @@ pi install ./pi-delegation-policy
 
 ## Start safely
 
-A new session without a delegation entry starts with intensity set to `off`, even when global
-defaults exist. A branch inherits the latest valid delegation entry in the history at its fork
-point. Open `/delegate` when you are ready to change that branch's model references or intensity.
+A new session inherits global intensity when configured and otherwise uses the built-in `off`
+default. A branch can override that value or return to **Use global default**; a fork restores the
+latest valid delegation entry in its history. Open `/delegate` to choose the behavior you want.
 
 ## Next step
 

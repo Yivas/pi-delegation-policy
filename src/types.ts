@@ -24,6 +24,7 @@ export type ModelRef = {
 
 export type GlobalDefaults = {
   schemaVersion: 2;
+  intensity?: Intensity;
   preference?: Preference;
   small?: ModelRef;
   medium?: ModelRef;
@@ -33,7 +34,7 @@ export type GlobalDefaults = {
 
 export type SessionDelegateState = {
   schemaVersion: 2;
-  intensity: Intensity;
+  intensity?: Intensity;
   preference?: Preference;
   small?: ModelRef;
   medium?: ModelRef;
@@ -52,7 +53,7 @@ export type EffectiveDelegateState = {
   large?: ModelRef;
   uiDesign?: ModelRef;
   source: {
-    intensity: "session";
+    intensity: ValueSource;
     preference: ValueSource;
     small: ValueSource;
     medium: ValueSource;
@@ -73,5 +74,5 @@ export function emptyGlobalDefaults(): GlobalDefaults {
 }
 
 export function emptySessionState(): SessionDelegateState {
-  return { schemaVersion: 2, intensity: "off" };
+  return { schemaVersion: 2 };
 }

@@ -6,6 +6,7 @@
   "required": ["schemaVersion"],
   "properties": {
     "schemaVersion": { "const": 2 },
+    "intensity": { "enum": ["off", "normal", "aggressive"] },
     "preference": { "enum": ["efficient", "standard", "intensive"] },
     "small": { "$ref": "#/$defs/modelRef" },
     "medium": { "$ref": "#/$defs/modelRef" },

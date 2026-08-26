@@ -1,17 +1,18 @@
 ---
 title: Configuration
-description: Set global defaults and session-branch overrides without persisting intensity or thinking.
+description: Set global defaults and session-branch overrides without persisting thinking.
 ---
 
 ## Global defaults
 
 Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 2. They store
-model references, model preference, and an optional UI Design model. They never store intensity or
-thinking.
+optional intensity, model references, model preference, and an optional UI Design model. They never
+store thinking.
 
 ```json
 {
   "schemaVersion": 2,
+  "intensity": "normal",
   "preference": "standard",
   "small": { "provider": "example-provider", "model": "example-small" },
   "medium": { "provider": "example-provider", "model": "example-medium" },
@@ -26,14 +27,15 @@ provider and model exposed by Pi in the current scope and authenticated for its 
 ## Session branches
 
 `/delegate` stores changes in the current session branch. Those changes survive reload, resume, and
-tree navigation. A fork inherits the latest valid delegation entry in its active history; a branch
-with no such entry starts at `off`. A session field overrides only the matching global field.
+tree navigation. A branch inherits global intensity and other defaults until it records matching
+overrides; missing global intensity falls back to `off`. A fork restores the latest valid delegation
+entry in its active history.
 
-Selecting **Save effective configuration as defaults** copies the effective roles, preference, and
-UI Design setting to global defaults. It does not copy intensity.
+The intensity selector includes **Use global default**. Selecting **Save effective configuration as
+defaults** copies the complete effective configuration, including intensity, to the global file.
 
-`/delegate reset` writes an `off` state for the branch and returns non-intensity fields to their
-global defaults.
+`/delegate reset` remains an explicit safety action: it writes `off` for the branch and returns all
+other fields to their global defaults.
 
 ## Intensity and preference
 

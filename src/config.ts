@@ -67,8 +67,17 @@ function copyModelRef(value: ModelRef | undefined): ModelRef | undefined {
 export function parseConfig(value: unknown): GlobalDefaults | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["schemaVersion", "preference", "small", "medium", "large", "uiDesign"]) ||
+    !hasOnlyKeys(value, [
+      "schemaVersion",
+      "intensity",
+      "preference",
+      "small",
+      "medium",
+      "large",
+      "uiDesign",
+    ]) ||
     value.schemaVersion !== 2 ||
+    (value.intensity !== undefined && !isIntensity(value.intensity)) ||
     (value.preference !== undefined && !isPreference(value.preference))
   )
     return undefined;
@@ -88,6 +97,7 @@ export function parseConfig(value: unknown): GlobalDefaults | undefined {
 
   return {
     schemaVersion: 2,
+    ...(value.intensity ? { intensity: value.intensity } : {}),
     ...(value.preference ? { preference: value.preference } : {}),
     ...(small ? { small } : {}),
     ...(medium ? { medium } : {}),
@@ -109,7 +119,7 @@ export function parseSessionState(value: unknown): SessionDelegateState | undefi
       "uiDesign",
     ]) ||
     value.schemaVersion !== 2 ||
-    !isIntensity(value.intensity) ||
+    (value.intensity !== undefined && !isIntensity(value.intensity)) ||
     (value.preference !== undefined && !isPreference(value.preference))
   )
     return undefined;
@@ -132,7 +142,7 @@ export function parseSessionState(value: unknown): SessionDelegateState | undefi
 
   return {
     schemaVersion: 2,
-    intensity: value.intensity,
+    ...(value.intensity ? { intensity: value.intensity } : {}),
     ...(value.preference ? { preference: value.preference } : {}),
     ...(small ? { small } : {}),
     ...(medium ? { medium } : {}),
@@ -218,14 +228,14 @@ export function resolveDelegateState(
         : copyModelRef(session.uiDesign);
 
   return {
-    intensity: session.intensity,
+    intensity: session.intensity ?? defaults.intensity ?? "off",
     preference: session.preference ?? defaults.preference ?? "standard",
     small: copyModelRef(session.small ?? defaults.small),
     medium: copyModelRef(session.medium ?? defaults.medium),
     large: copyModelRef(session.large ?? defaults.large),
     ...(uiDesign ? { uiDesign } : {}),
     source: {
-      intensity: "session",
+      intensity: sourceFor(session.intensity, defaults.intensity),
       preference: sourceFor(session.preference, defaults.preference),
       small: sourceFor(session.small, defaults.small),
       medium: sourceFor(session.medium, defaults.medium),
@@ -238,6 +248,7 @@ export function resolveDelegateState(
 export function defaultsFromEffectiveState(state: EffectiveDelegateState): GlobalDefaults {
   return {
     schemaVersion: 2,
+    intensity: state.intensity,
     preference: state.preference,
     ...(state.small ? { small: { ...state.small } } : {}),
     ...(state.medium ? { medium: { ...state.medium } } : {}),

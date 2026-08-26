@@ -7,7 +7,11 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import piDelegationPolicy, { getArgumentCompletions, parseCommand } from "../src/index.ts";
+import piDelegationPolicy, {
+  getArgumentCompletions,
+  parseCommand,
+  statusText,
+} from "../src/index.ts";
 import {
   defaultsFromEffectiveState,
   getGlobalConfigPath,
@@ -153,10 +157,11 @@ test("schema 2 parser and JSON Schema accept the same global defaults", async ()
   assert.ok(validate(defaults), JSON.stringify(validate.errors));
   assert.ok(parseConfig(defaults));
   assert.ok(validate(example), JSON.stringify(validate.errors));
-  assert.ok(parseConfig(example));
+  assert.equal(parseConfig(example)?.intensity, "normal");
 
   const invalidDocuments = [
     { schemaVersion: 1, presets: {} },
+    { schemaVersion: 2, intensity: "unsupported" },
     { schemaVersion: 2, preference: "standard", thinking: "high" },
     { schemaVersion: 2, small: { provider: "example", model: "small", label: "Small" } },
     { schemaVersion: 2, strategy: "tiered" },
@@ -169,7 +174,7 @@ test("schema 2 parser and JSON Schema accept the same global defaults", async ()
 
   assert.ok(parseSessionState({ schemaVersion: 2, intensity: "off" }));
   assert.ok(parseSessionState({ schemaVersion: 2, intensity: "normal", uiDesign: null }));
-  assert.equal(parseSessionState({ schemaVersion: 2 }), undefined);
+  assert.deepEqual(parseSessionState({ schemaVersion: 2 }), { schemaVersion: 2 });
   assert.equal(
     parseSessionState({ schemaVersion: 2, intensity: "normal", thinking: "high" }),
     undefined,
@@ -179,6 +184,9 @@ test("schema 2 parser and JSON Schema accept the same global defaults", async ()
 test("legacy and malformed defaults are inactive and diagnostics are sanitized", async () => {
   await withAgentDirectory(async (directory) => {
     const path = getGlobalConfigPath(directory);
+    await writeFile(path, JSON.stringify(defaults), "utf8");
+    assert.deepEqual((await readConfig(path)).defaults, defaults);
+
     await writeFile(path, '{"schemaVersion":1,"secret":"PRIVATE_FRAGMENT"}', "utf8");
     const legacy = await readConfig(path);
     assert.deepEqual(legacy.defaults, { schemaVersion: 2 });
@@ -212,7 +220,8 @@ test("writing refuses invalid global defaults before touching disk", async () =>
   }
 });
 
-test("global defaults combine with field-level session overrides while intensity stays session-only", () => {
+test("global defaults combine with field-level session overrides including intensity", () => {
+  const global = { ...defaults, intensity: "normal" as const };
   const session: SessionDelegateState = {
     schemaVersion: 2,
     intensity: "aggressive",
@@ -220,19 +229,28 @@ test("global defaults combine with field-level session overrides while intensity
     small: { provider: "session", model: "small" },
     uiDesign: null,
   };
-  const effective = resolveDelegateState(defaults, session);
+  const effective = resolveDelegateState(global, session);
 
   assert.equal(effective.intensity, "aggressive");
   assert.equal(effective.preference, "efficient");
   assert.deepEqual(effective.small, { provider: "session", model: "small" });
   assert.deepEqual(effective.medium, medium);
   assert.equal(effective.uiDesign, undefined);
+  assert.equal(effective.source.intensity, "session");
   assert.equal(effective.source.small, "session");
   assert.equal(effective.source.medium, "global");
   assert.equal(effective.source.uiDesign, "session");
 
+  const inherited = resolveDelegateState(global, { schemaVersion: 2 });
+  assert.equal(inherited.intensity, "normal");
+  assert.equal(inherited.source.intensity, "global");
+
+  const fallback = resolveDelegateState(defaults, { schemaVersion: 2 });
+  assert.equal(fallback.intensity, "off");
+  assert.equal(fallback.source.intensity, "default");
+
   const saved = defaultsFromEffectiveState(effective);
-  assert.equal("intensity" in saved, false);
+  assert.equal(saved.intensity, "aggressive");
   assert.equal("uiDesign" in saved, false);
   assert.equal(saved.preference, "efficient");
 });
@@ -251,13 +269,13 @@ test("a session without policy state starts off and restoration uses the latest 
   ];
 
   assert.equal(restoreSessionState(entries).intensity, "aggressive");
-  assert.equal(restoreSessionState([]).intensity, "off");
+  assert.equal(restoreSessionState([]).intensity, undefined);
   assert.equal(resolveDelegateState(defaults, restoreSessionState([])).intensity, "off");
 });
 
-test("runtime restores the active branch without leaking state from another branch", async () => {
+test("runtime restores global intensity and active branch overrides without leaking state", async () => {
   await withAgentDirectory(async (directory) => {
-    await writeConfig(getGlobalConfigPath(directory), defaults);
+    await writeConfig(getGlobalConfigPath(directory), { ...defaults, intensity: "aggressive" });
     const normalBranch = [
       {
         type: "custom",
@@ -266,8 +284,12 @@ test("runtime restores the active branch without leaking state from another bran
       },
     ];
     const inheritedBranch = [...normalBranch, { type: "message", role: "user", content: "work" }];
-    const resetBranch = [
+    const useGlobalBranch = [
       ...normalBranch,
+      { type: "custom", customType: SESSION_ENTRY_TYPE, data: { schemaVersion: 2 } },
+    ];
+    const resetBranch = [
+      ...useGlobalBranch,
       {
         type: "custom",
         customType: SESSION_ENTRY_TYPE,
@@ -279,8 +301,15 @@ test("runtime restores the active branch without leaking state from another bran
       (await loadRuntime(context({ branch: inheritedBranch }))).effective.intensity,
       "normal",
     );
+    assert.equal(
+      (await loadRuntime(context({ branch: useGlobalBranch }))).effective.intensity,
+      "aggressive",
+    );
     assert.equal((await loadRuntime(context({ branch: resetBranch }))).effective.intensity, "off");
-    assert.equal((await loadRuntime(context({ branch: emptyBranch }))).effective.intensity, "off");
+    assert.equal(
+      (await loadRuntime(context({ branch: emptyBranch }))).effective.intensity,
+      "aggressive",
+    );
   });
 });
 
@@ -430,6 +459,23 @@ test("UI Design only participates when configured and policy values cannot close
   assert.match(policy, /\\u0026/);
 });
 
+test("status reports built-in, global, and session intensity sources", () => {
+  const builtIn = runtime({ schemaVersion: 2 }, defaults);
+  validateRuntime(context(), builtIn);
+  assert.match(statusText(builtIn), /^D:OFF intensity=off \(default\)/);
+
+  const global = runtime({ schemaVersion: 2 }, { ...defaults, intensity: "normal" });
+  validateRuntime(context(), global);
+  assert.match(statusText(global), /^D:NORM intensity=normal \(global\)/);
+
+  const session = runtime(
+    { schemaVersion: 2, intensity: "aggressive" },
+    { ...defaults, intensity: "normal" },
+  );
+  validateRuntime(context(), session);
+  assert.match(statusText(session), /^D:AGG intensity=aggressive \(session\)/);
+});
+
 test("commands expose only the supported quick actions and completions", () => {
   assert.deepEqual(parseCommand(""), { kind: "open" });
   assert.deepEqual(parseCommand("normal"), { kind: "intensity", intensity: "normal" });
@@ -456,6 +502,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
       { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
     >();
     const statuses: Array<string | undefined> = [];
+    const shortcuts = new Map<string, { handler: (ctx: ExtensionContext) => Promise<void> }>();
     const pi = {
       on: (
         name: string,
@@ -465,7 +512,10 @@ test("the extension uses only the approved lifecycle events and never accumulate
         name: string,
         options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
       ) => commands.set(name, options),
-      registerShortcut: () => undefined,
+      registerShortcut: (
+        shortcut: string,
+        options: { handler: (ctx: ExtensionContext) => Promise<void> },
+      ) => shortcuts.set(shortcut, options),
       appendEntry: (customType: string, data?: unknown) =>
         branch.push({ type: "custom", customType, data }),
     };
@@ -480,6 +530,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
       "session_tree",
     ]);
     assert.ok(commands.has("delegate"));
+    assert.deepEqual([...shortcuts.keys()], ["ctrl+alt+d"]);
 
     await handlers.get("session_start")?.({ type: "session_start" }, current);
     assert.equal(statuses.at(-1), "D:OFF");
@@ -487,8 +538,25 @@ test("the extension uses only the approved lifecycle events and never accumulate
     const event = { type: "before_agent_start", systemPrompt: "BASE", prompt: "work" };
     assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
 
+    let editorSelections = 0;
+    current.ui.select = async (title: string, options: string[]) => {
+      if (title === "Delegation intensity") return "aggressive";
+      editorSelections += 1;
+      return editorSelections === 1
+        ? options.find((option) => option.startsWith("Intensity:"))
+        : options.find((option) => option.startsWith("Apply changes"));
+    };
+    await shortcuts.get("ctrl+alt+d")?.handler(current);
+    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 2, intensity: "aggressive" });
+    assert.equal(statuses.at(-1), "D:AGG");
+    current.ui.select = async () => undefined;
+
     await commands.get("delegate")?.handler("normal", current);
     assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 2, intensity: "normal" });
+    for (const reason of ["reload", "resume", "fork"]) {
+      await handlers.get("session_start")?.({ type: "session_start", reason }, current);
+      assert.equal(statuses.at(-1), "D:NORM");
+    }
 
     const first = (await handlers.get("before_agent_start")?.(event, current)) as {
       systemPrompt?: string;
@@ -515,7 +583,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
   });
 });
 
-test("the selector stages session edits, supports cancellation, resets drafts, and saves defaults without intensity", async () => {
+test("the selector stages session edits, inherits intensity, resets drafts, and saves defaults", async () => {
   await withAgentDirectory(async (directory) => {
     await writeConfig(getGlobalConfigPath(directory), defaults);
     const branch: Array<Record<string, unknown>> = [];
@@ -570,6 +638,31 @@ test("the selector stages session edits, supports cancellation, resets drafts, a
     } as never);
     assert.deepEqual(resetBranch.at(-1)?.data, { schemaVersion: 2, intensity: "off" });
 
+    await writeConfig(getGlobalConfigPath(directory), { ...defaults, intensity: "aggressive" });
+    const inheritedBranch: Array<Record<string, unknown>> = [
+      {
+        type: "custom",
+        customType: SESSION_ENTRY_TYPE,
+        data: { schemaVersion: 2, intensity: "normal" },
+      },
+    ];
+    let inheritSelections = 0;
+    const inheritContext = context({ branch: inheritedBranch });
+    inheritContext.ui.select = async (title: string, options: string[]) => {
+      if (title === "Delegation intensity") return "Use global default";
+      inheritSelections += 1;
+      return inheritSelections === 1
+        ? options.find((option) => option.startsWith("Intensity:"))
+        : options.find((option) => option.startsWith("Apply changes"));
+    };
+    await openDelegateEditor(inheritContext, {
+      appendEntry: (customType: string, data?: unknown) =>
+        inheritedBranch.push({ type: "custom", customType, data }),
+    } as never);
+    assert.deepEqual(inheritedBranch.at(-1)?.data, { schemaVersion: 2 });
+    assert.equal((await loadRuntime(inheritContext)).effective.intensity, "aggressive");
+
+    await writeConfig(getGlobalConfigPath(directory), defaults);
     const saveContext = context({ branch: [] });
     let saveSelections = 0;
     saveContext.ui.select = async (_title: string, options: string[]) => {
@@ -580,7 +673,7 @@ test("the selector stages session edits, supports cancellation, resets drafts, a
     };
     await openDelegateEditor(saveContext, { appendEntry: () => undefined } as never);
     const saved = JSON.parse(await readFile(getGlobalConfigPath(directory), "utf8"));
-    assert.equal("intensity" in saved, false);
+    assert.equal(saved.intensity, "off");
     assert.equal(saved.schemaVersion, 2);
     assert.deepEqual(saved.small, small);
   });
@@ -605,7 +698,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.1.2");
+  assert.equal(packageJson.version, "0.2.0");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
 

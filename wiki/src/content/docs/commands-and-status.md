@@ -14,7 +14,7 @@ description: Use /delegate and interpret the delegation status shown in Pi.
 | `/delegate status`     | Show the effective session state.                        |
 | `/delegate reset`      | Reset the current session branch to `off`.               |
 
-`Ctrl+Shift+D` opens the selector when the shortcut is available. There is no separate off
+`Ctrl+Alt+D` opens the selector when the shortcut is available. There is no separate off
 shortcut; run `/delegate off` or choose `off` in the selector.
 
 Changes apply to the next agent run. Pi rebuilds the system prompt for each run, so switching to

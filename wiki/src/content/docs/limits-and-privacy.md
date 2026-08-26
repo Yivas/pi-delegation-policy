@@ -22,8 +22,8 @@ the guidance once it is injected.
 
 ## Local data
 
-The extension stores provider and model identifiers in global defaults and session entries. Review
-configuration before sharing diagnostics. Remove credentials, prompts, personal paths, session
+The extension stores intensity, preference, and provider/model identifiers in global defaults and
+session entries. Review configuration before sharing diagnostics. Remove credentials, prompts, personal paths, session
 files, and unredacted logs from reports.
 
 ## Security and contributions

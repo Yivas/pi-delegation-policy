@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "intensity": "normal",
   "preference": "standard",
   "small": {
     "provider": "example-provider",
