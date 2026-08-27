@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-08-28
+
 ### Added
 
 - Expanded the optional visual specialist to create assets and complete bounded presentation-layer changes when behavior and data contracts are already defined.
