@@ -6,6 +6,7 @@ import type {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { buildDelegationPolicy } from "./prompt.ts";
 import {
+  formatModelRef,
   hasRuntimeError,
   loadRuntime,
   sessionEntry,
@@ -54,19 +55,15 @@ async function openEditor(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
   updateStatus(ctx, await refresh(ctx));
 }
 
-function configuredLabel(value: unknown): string {
-  return value ? "configured" : "unset";
-}
-
 export function statusText(state: RuntimeState): string {
   const { effective } = state;
   const details = [
     `${statusLabel(state)} intensity=${effective.intensity} (${effective.source.intensity})`,
     `preference=${effective.preference} (${effective.source.preference})`,
-    `small=${configuredLabel(effective.small)} (${effective.source.small})`,
-    `medium=${configuredLabel(effective.medium)} (${effective.source.medium})`,
-    `large=${configuredLabel(effective.large)} (${effective.source.large})`,
-    `ui-design=${configuredLabel(effective.uiDesign)} (${effective.source.uiDesign})`,
+    `small=${formatModelRef(effective.small)} (${effective.source.small})`,
+    `medium=${formatModelRef(effective.medium)} (${effective.source.medium})`,
+    `large=${formatModelRef(effective.large)} (${effective.source.large})`,
+    `ui-design=${formatModelRef(effective.uiDesign)} (${effective.source.uiDesign})`,
   ];
 
   if (effective.intensity !== "off" && state.runtimeErrors.length > 0) {

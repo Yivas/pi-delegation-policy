@@ -5,8 +5,8 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 ## Requirements
 
-- Pi `>=0.84.1` satisfies the package peer dependency.
-- Pi `0.84.1` is the explicitly validated baseline; newer Pi versions are not claimed as tested.
+- Pi `>=0.84.3` satisfies the package peer requirement.
+- Pi `0.84.3` is the explicitly checked baseline; newer Pi versions are not claimed as tested.
 - Access to npm to install the latest published package, currently `0.3.2`.
 - Authenticated providers exposing the exact Small, Medium, and Large model references you intend to use in Pi's current scope. UI Design is optional.
 
@@ -34,7 +34,18 @@ Open `/delegate` in Pi's TUI (or press `Alt+G` when that shortcut is available).
 5. Keep the values as a draft while editing. Choose **Apply changes** only after all required roles are ready.
 
 The panel displays model ID first and `[provider]` last, and searches provider, model ID, and display
-name. It does not substitute a different model when a reference is unavailable.
+name. It also shows a compact effective-policy preview and short explanations for each field. When Pi
+supplies public model metadata, the model selector can show its name, API, reasoning support, context
+window, and maximum output. This metadata is transient and is not stored in policy settings.
+
+Each configured role stores separate provider and model values, but every delegated launch must send
+the selected role's exact combined reference:
+
+```text
+model: "provider/model"
+```
+
+The policy does not substitute a different model or rely on an ambient launcher default.
 
 ### 3. Select an active intensity and apply
 
@@ -54,10 +65,11 @@ Run:
 /delegate status
 ```
 
-Confirm the footer shows `D:NORM` or `D:AGG`. These labels mean the selected active intensity has a
-valid required configuration. `D:ERR` means an active required role is missing, unavailable,
-out-of-scope, or unauthenticated; no policy is injected. Correct the role and apply again. `D:OFF`
-means injection is disabled.
+The status output shows each effective role's exact `provider/model` reference and its provenance:
+`default`, `global`, or `session`. Confirm the footer shows `D:NORM` or `D:AGG`. These labels mean the
+selected active intensity has a valid required configuration. `D:ERR` means an active required role is
+missing, unavailable, out-of-scope, or unauthenticated; no policy is injected. Correct the role and
+apply again. `D:OFF` means injection is disabled.
 
 ### 5. Start the next agent run
 

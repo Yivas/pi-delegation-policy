@@ -29,7 +29,7 @@ import {
   SESSION_ENTRY_TYPE,
   writeConfig,
 } from "../src/config.ts";
-import { buildDelegationPolicy } from "../src/prompt.ts";
+import { buildDelegationPolicy, buildPolicyPreview } from "../src/prompt.ts";
 import {
   hasRuntimeError,
   loadRuntime,
@@ -444,7 +444,9 @@ test("generated guidance preserves canonical roles and operational mode boundari
     "multiple Small delegations",
     "volume alone does not justify Medium or Large",
     "Agent type does not determine the model role.",
-    "A clearly better task fit overrides preference",
+    "Choose the role by task fit before considering model preference",
+    "error and review cost",
+    "Apply preference only when Small and Medium are comparably credible fits.",
     "keep global strategy, coordination, integration, final review",
   ]) {
     assert.ok(standard.includes(expected), `Missing policy guarantee: ${expected}`);
@@ -453,7 +455,7 @@ test("generated guidance preserves canonical roles and operational mode boundari
   assert.ok(standard.includes("expected benefit clearly outweighs"));
   assert.ok(standard.includes("merely possible fresh perspective is not enough"));
   assert.ok(standard.includes("Keep borderline work with the main agent"));
-  assert.ok(standard.includes("genuine Small/Medium tie"));
+  assert.ok(standard.includes("Standard adds no Small or Medium bias"));
 
   const aggressive = policy("aggressive", "standard");
   assert.ok(aggressive.includes("benefit is plausible even if not proven"));
@@ -461,12 +463,54 @@ test("generated guidance preserves canonical roles and operational mode boundari
   assert.ok(aggressive.includes("clearly prohibitive delegation overhead"));
 
   const efficient = policy("normal", "efficient");
-  assert.ok(efficient.includes("Favor Small more strongly than standard"));
-  assert.ok(efficient.includes("material advantage"));
+  assert.ok(efficient.includes("only as a Small tie-break"));
+  assert.ok(efficient.includes("materially better task fit"));
 
   const intensive = policy("normal", "intensive");
-  assert.ok(intensive.includes("both credible, normally prefer Medium"));
-  assert.ok(intensive.includes("especially clear Small fit"));
+  assert.ok(intensive.includes("only as a Medium tie-break"));
+  assert.ok(intensive.includes("clearly better task fit"));
+});
+
+test("policy previews and launch instructions preserve exact escaped model references", () => {
+  const active = resolveDelegateState(defaults, { schemaVersion: 2, intensity: "normal" });
+  assert.deepEqual(buildPolicyPreview(resolveDelegateState(defaults, { schemaVersion: 2 })), [
+    "off · no policy injected",
+  ]);
+  assert.deepEqual(
+    buildPolicyPreview(
+      resolveDelegateState({ schemaVersion: 2 }, { schemaVersion: 2, intensity: "normal" }),
+    ),
+    ["active · Small not configured · no policy can be injected"],
+  );
+  assert.match(buildPolicyPreview(active)[0] ?? "", /task fit first/);
+  assert.match(buildPolicyPreview(active)[0] ?? "", /standard has no extra bias/);
+
+  const policy = buildDelegationPolicy(runtime({ schemaVersion: 2, intensity: "normal" })) ?? "";
+  for (const reference of [
+    "example/small",
+    "example/medium",
+    "example/large",
+    "example/ui-design",
+  ]) {
+    assert.match(policy, new RegExp(`model: ${JSON.stringify(reference)}`));
+  }
+  assert.match(policy, /Do not omit model, inherit an ambient launcher default/);
+  assert.match(policy, /Do not.*fallback model or role/);
+
+  const escapedReference = { provider: 'provider/"quoted"', model: "model/with&<>" };
+  const escaped = runtime(
+    { schemaVersion: 2, intensity: "normal" },
+    { schemaVersion: 2, preference: "standard", small: escapedReference, medium, large },
+  );
+  validateRuntime(
+    context({ availableModels: [model(escapedReference), model(medium), model(large)] }),
+    escaped,
+  );
+  const escapedModel = JSON.stringify(`${escapedReference.provider}/${escapedReference.model}`)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026");
+  assert.ok((buildDelegationPolicy(escaped) ?? "").includes(`model: ${escapedModel}`));
 });
 
 test("UI Design only participates when configured and policy values cannot close its block", () => {
@@ -519,6 +563,10 @@ test("status reports built-in, global, and session intensity sources", () => {
   );
   validateRuntime(context(), session);
   assert.match(statusText(session), /^D:AGG intensity=aggressive \(session\)/);
+  assert.match(statusText(session), /small=example\/small \(global\)/);
+  assert.match(statusText(session), /medium=example\/medium \(global\)/);
+  assert.match(statusText(session), /large=example\/large \(global\)/);
+  assert.match(statusText(session), /ui-design=example\/ui-design \(global\)/);
 });
 
 test("commands expose only the supported quick actions and completions", () => {
@@ -649,6 +697,7 @@ function createPanelHarness(
     session?: SessionDelegateState;
     candidates?: TestModel[];
     diagnostics?: string[];
+    hasRuntimeError?: boolean;
     onApply?: (draft: SessionDelegateState) => Promise<boolean>;
     onSaveDefaults?: (draft: SessionDelegateState) => Promise<GlobalDefaults | undefined>;
   } = {},
@@ -672,6 +721,7 @@ function createPanelHarness(
       model(uiDesign, "Visual Designer"),
     ]) as never,
     diagnostics: options.diagnostics ?? [],
+    hasRuntimeError: options.hasRuntimeError ?? false,
     onApply: options.onApply ?? (async () => true),
     onSaveDefaults: options.onSaveDefaults ?? (async () => defaults),
     onDone: (result) => done.push(result),
@@ -806,6 +856,76 @@ test("the delegate panel is responsive and exposes values with all sources", () 
   assert.ok(narrowModel.every((line) => visibleWidth(line) <= 24));
 });
 
+test("the delegate panel explains fields, enum choices, previews, and selected model metadata", () => {
+  const { panel } = createPanelHarness();
+  const settings = panel.render(100).join("\n");
+  assert.match(settings, /Effective policy preview/);
+  assert.match(settings, /When delegation is worth considering/);
+  assert.match(settings, /Tie-break only; task fit decides the role first/);
+  assert.match(settings, /Visual direction and review only/);
+
+  const live = createPanelHarness();
+  sendKeys(live.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  assert.match(live.panel.render(100).join("\n"), /normal · task fit first/);
+  sendKeys(live.panel, KEY_DOWN, KEY_ENTER, KEY_END, KEY_ENTER);
+  assert.match(live.panel.render(100).join("\n"), /intensive breaks comparable fits toward Medium/);
+
+  sendKeys(panel, KEY_ENTER);
+  const intensityChoices = panel.render(100).join("\n");
+  assert.match(intensityChoices, /No policy is injected/);
+  assert.match(intensityChoices, /expected benefit clearly outweighs overhead/);
+  assert.match(intensityChoices, /Delegate suitable substantial work by default/);
+  sendKeys(panel, KEY_ESCAPE, KEY_DOWN, KEY_ENTER);
+  const preferenceChoices = panel.render(100).join("\n");
+  assert.match(preferenceChoices, /Tie-break comparable fits toward Small/);
+  assert.match(preferenceChoices, /No extra Small or Medium bias/);
+  assert.match(preferenceChoices, /Tie-break comparable fits toward Medium/);
+
+  const metadataCandidate = {
+    ...model({ provider: "metadata", model: "complete" }, "Complete model"),
+    api: "openai-responses",
+    reasoning: false,
+    contextWindow: 0,
+    maxTokens: 0,
+  } as TestModel;
+  const metadata = createPanelHarness({ candidates: [metadataCandidate] });
+  sendKeys(metadata.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_DOWN);
+  const metadataView = metadata.panel.render(100).join("\n");
+  for (const detail of [
+    "Model Name: Complete model",
+    "API: openai-responses",
+    "Reasoning: no",
+    "Context: 0",
+    "Max output: 0",
+  ]) {
+    assert.match(metadataView, new RegExp(detail));
+  }
+
+  const absent = createPanelHarness({
+    candidates: [{ provider: "partial", id: "bare", name: "bare" } as TestModel],
+  });
+  sendKeys(absent.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_DOWN);
+  const absentView = absent.panel.render(100).join("\n");
+  assert.doesNotMatch(absentView, /API:|Reasoning:|Context:|Max output:/);
+
+  const runtimeError = createPanelHarness({
+    session: { schemaVersion: 2, intensity: "normal" },
+    diagnostics: ["Small model is outside the current model scope."],
+    hasRuntimeError: true,
+  });
+  const errorView = runtimeError.panel.render(100).join("\n");
+  assert.match(errorView, /D:ERR · policy unavailable/);
+  assert.match(errorView, /Small model is outside the current model scope/);
+
+  const offDraft = createPanelHarness({
+    session: { schemaVersion: 2, intensity: "off" },
+    hasRuntimeError: true,
+  });
+  const offView = offDraft.panel.render(100).join("\n");
+  assert.match(offView, /off · no policy injected/);
+  assert.doesNotMatch(offView, /D:ERR · policy unavailable/);
+});
+
 test("the delegate panel searches models, keeps pinned actions, and stages safe edits", () => {
   const { panel, done } = createPanelHarness({
     session: { schemaVersion: 2, intensity: "normal" },
@@ -930,7 +1050,7 @@ test("the delegate panel preserves dirty drafts when apply or default saving fai
   assert.deepEqual(failedSave.done, []);
 
   const repairedDefaults = createPanelHarness({ diagnostics: ["invalid defaults"] });
-  assert.match(repairedDefaults.panel.render(80).join("\n"), /global defaults are invalid/);
+  assert.match(repairedDefaults.panel.render(80).join("\n"), /invalid defaults/);
   sendKeys(repairedDefaults.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
   await new Promise((resolve) => setImmediate(resolve));
   assert.doesNotMatch(repairedDefaults.panel.render(80).join("\n"), /global defaults are invalid/);

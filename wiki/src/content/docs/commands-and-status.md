@@ -24,13 +24,22 @@ only changes the draft until you apply it.
 
 ## 2. Edit the panel
 
-The panel shows each setting's effective value and its built-in, global, and session sources. Move
-with `Up` and `Down`; press `Enter` or `Space` to edit.
+The panel starts with a compact **Effective policy preview**. It summarizes the effective intensity,
+that task fit comes before preference, the preference tie-break, the exact Small/Medium/Large launch
+references when configured, and dynamic thinking. It also shows each setting's effective value and
+its built-in, global, and session sources. Short explanations describe when to consider delegation,
+what each preference does, and the intended fit of each role.
+
+Move with `Up` and `Down`; press `Enter` or `Space` to edit.
 
 For model fields, the presentation matches Pi's `/model` selector: the model ID comes first and
 `[provider]` comes last. Type to fuzzy-search provider, model ID, or display name. At most 10 model
-rows are visible; use `Page Up` and `Page Down` to move through longer results. **Use global
-default** remains pinned while searching, and UI Design also offers **Disable for this session**.
+rows are visible; use `Page Up` and `Page Down` to move through longer results. **Use global default**
+remains pinned while searching, and UI Design also offers **Disable for this session**.
+
+When Pi supplies public model metadata for the selected row, the panel displays it temporarily:
+model name, API, reasoning support, context window, and maximum output. These details describe the
+catalog entry; they are not saved in global defaults or session entries.
 
 The panel keeps one explicit draft while you move between fields:
 
@@ -58,10 +67,11 @@ the policy off excludes a policy block from later runs; an agent that is already
 prompt it started with.
 
 Active modes require exact, available, in-scope, authenticated Small, Medium, and Large references.
-An optional UI Design reference is validated when configured. The extension never substitutes a
-different model, role, or thinking level.
+An optional UI Design reference is validated when configured. Before every delegated launch, use the
+selected role's exact combined reference as `model: "provider/model"`. The extension never substitutes
+a different model, role, or thinking level. Thinking remains dynamic, advisory, and unpersisted.
 
-## 5. Read the footer
+## 5. Read the footer and status output
 
 Pi keeps its own footer while the extension adds one textual status label:
 
@@ -71,6 +81,16 @@ Pi keeps its own footer while the extension adds one textual status label:
 | `D:NORM` | A valid `normal` configuration is active.                                    | Delegate only with clear expected benefit; keep borderline work with the main agent.           |
 | `D:AGG`  | A valid `aggressive` configuration is active.                                | Delegate suitable substantial work by default unless coupling or overhead clearly dominates.   |
 | `D:ERR`  | An active configuration has an invalid required role. No policy is injected. | Inspect `/delegate status`, correct the affected role, scope, availability, or authentication. |
+
+`/delegate status` reports exact effective references and provenance, for example:
+
+```text
+small=provider/example-small (global) | medium=provider/example-medium (session)
+```
+
+The source in parentheses is `default`, `global`, or `session`. The same output reports the exact
+reference for Large and UI Design when configured, plus any runtime diagnostic. A footer label alone
+is not a role reference.
 
 ## 6. Diagnose `D:ERR`
 

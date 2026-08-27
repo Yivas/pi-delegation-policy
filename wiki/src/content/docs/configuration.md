@@ -24,7 +24,15 @@ Global defaults can also be written at `~/.pi/agent/delegation-policy.json` with
 ```
 
 The provider and model values above are fictional. Replace them with the exact references exposed by
-Pi and authenticated for each provider. The file never stores thinking. See [commands and
+Pi and authenticated for each provider. Configuration stores those values separately. At launch,
+the selected role must use the combined reference in this form:
+
+```text
+model: "provider/model"
+```
+
+This requirement applies to every delegated launch, including UI Design when that role is configured.
+The policy does not substitute another model or inherit an ambient launcher default. See [commands and
 status](/pi-delegation-policy/commands-and-status/) for panel editing and validation feedback.
 
 ## Global defaults
@@ -43,8 +51,8 @@ tree navigation. Each setting can return to **Use global default** to remove its
 fork restores the latest valid delegation entry in its active history.
 
 `/delegate reset` is an explicit safety action: it writes `off` for the branch and returns every
-other field to its global default. In the editor, **Reset draft to off** makes that same shape only
-a local draft until **Apply changes**.
+other field to its global default. In the editor, **Reset draft to off** makes that same shape only a
+local draft until **Apply changes**.
 
 ## Intensity
 
@@ -57,27 +65,38 @@ work whose essential context is too costly or risky to transfer.
 
 ## Preference and role selection
 
-The policy evaluates task demand, difficulty, and quantity together. No single factor decides the
-role:
+The policy evaluates task fit before preference. It considers the task's:
 
-- **Small** is habitual for bounded, planned, and verifiable execution. Difficult but well-defined work can remain Small with higher thinking.
-- **Medium** can be selected directly when the combined demands materially require planning, ambiguity reduction, broad synthesis, several-module tracing, comparison, context coordination, or difficult decisions. Small does not need to fail first.
-- **Large** is exceptional and unblocks genuinely stuck work, such as persistent failures, severe framework conflicts, or contradictory hypotheses. Reliable prior evidence can justify it without ceremonial failed attempts.
-- Large quantities of repetitive, independent work favor multiple Small delegations. Agent type does not determine the model role.
+- demand: execute, search, plan, decide, coordinate, or unblock;
+- difficulty: clarity, ambiguity, dependencies, and competing hypotheses;
+- quantity: files, modules, systems, sources, and context volume;
+- risk: the consequences of a wrong result;
+- error and review cost: what can go wrong, how costly it is to detect, and what evidence review requires.
 
-Preference shifts credible Small/Medium choices, but a clearly better task fit overrides it:
+No single factor decides the role. Select the smallest role that can satisfy the acceptance criteria
+and evidence requirements.
 
-- `efficient` favors Small more strongly and uses Medium when it provides a material advantage.
-- `standard` reproduces the canonical policy and chooses Small on a genuine Small/Medium tie.
-- `intensive` normally favors Medium for non-trivial bounded work when both roles are credible, while retaining Small for clearly narrow, routine, mechanical, or especially clear Small work.
+- **Small** handles bounded, planned, and verifiable execution. Difficult but well-defined work can remain Small with higher thinking.
+- **Medium** handles task fits that materially require planning, ambiguity reduction, broad synthesis, tracing several modules, comparison, context coordination, or difficult decisions. Small does not need to fail first.
+- **Large** is exceptional and unblocks genuinely stuck work, such as persistent failures, severe framework conflicts, contradictory hypotheses, or reliable prior evidence that ordinary roles have not produced a trustworthy answer.
+
+Large quantities of repetitive, independent work favor multiple Small delegations. Volume alone does
+not justify Medium or Large, and agent type does not determine the model role.
+
+Preference is a tie-break between comparably credible Small and Medium fits:
+
+- `efficient` breaks that tie toward Small. It does not override a materially better Medium fit.
+- `standard` adds no Small or Medium bias; follow task fit.
+- `intensive` breaks that tie toward Medium. It does not override a clearly better Small fit.
 
 All three ordinary roles remain available in every preference. Active role references must be available,
-in scope, and authenticated; the extension never substitutes another model or role.
+in scope, and authenticated.
 
 ## Thinking
 
-The main agent chooses thinking for each delegated task from task demand, difficulty, quantity, and
-model capabilities. Thinking is dynamic and is not configured or persisted by this extension.
+The main agent chooses thinking for each delegated task from task demand, difficulty, quantity, risk,
+error and review cost, and the selected model's capabilities. Thinking is dynamic and advisory; this
+extension does not configure or persist it.
 
 ## UI Design
 

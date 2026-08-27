@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Documentation
+
+- Documented the Pi `>=0.84.3` peer requirement and checked `0.84.3` baseline, exact `provider/model` launch references, task-fit role selection, preference tie-breaks, dynamic advisory thinking, and current panel and status diagnostics.
+- Clarified that the published package remains v0.3.2 and npm's existing README will update only through a separately approved release.
+
 ## 0.3.2 - 2026-08-26
 
 ### Documentation

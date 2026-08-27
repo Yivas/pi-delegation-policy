@@ -12,6 +12,7 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import { resolveDelegateState } from "./config.ts";
+import { buildPolicyPreview } from "./prompt.ts";
 import {
   INTENSITIES,
   PREFERENCES,
@@ -52,6 +53,7 @@ export interface DelegatePanelOptions {
   session: SessionDelegateState;
   candidates: Model<Api>[];
   diagnostics: string[];
+  hasRuntimeError: boolean;
   onApply: (draft: SessionDelegateState) => Promise<boolean>;
   onSaveDefaults: (draft: SessionDelegateState) => Promise<GlobalDefaults | undefined>;
   onDone: (result: DelegatePanelResult) => void;
@@ -72,6 +74,15 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   medium: "Medium model",
   large: "Large model",
   uiDesign: "UI Design",
+};
+
+const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
+  intensity: "When delegation is worth considering.",
+  preference: "Tie-break only; task fit decides the role first.",
+  small: "Bounded, planned, and verifiable execution.",
+  medium: "Planning, ambiguity, synthesis, and coordination.",
+  large: "Exceptional unblocker for persistent hard problems.",
+  uiDesign: "Visual direction and review only; never implementation.",
 };
 
 const ACTION_LABELS: Record<PanelAction, string> = {
@@ -132,6 +143,17 @@ function sortedModels(models: readonly Model<Api>[]): Model<Api>[] {
   });
 }
 
+function modelMetadata(model: Model<Api> | undefined): string[] {
+  if (!model) return [];
+  const details: string[] = [];
+  if (model.name !== undefined) details.push(`Model Name: ${model.name}`);
+  if (model.api !== undefined) details.push(`API: ${model.api}`);
+  if (model.reasoning !== undefined) details.push(`Reasoning: ${model.reasoning ? "yes" : "no"}`);
+  if (model.contextWindow !== undefined) details.push(`Context: ${model.contextWindow}`);
+  if (model.maxTokens !== undefined) details.push(`Max output: ${model.maxTokens}`);
+  return details;
+}
+
 function visibleBlockRange(blocks: string[][], selected: number, budget: number): [number, number] {
   if (blocks.length === 0) return [0, 0];
   const safeSelected = Math.max(0, Math.min(selected, blocks.length - 1));
@@ -169,6 +191,7 @@ export class DelegatePanel implements Component, Focusable {
   private readonly theme: Theme;
   private readonly candidates: Model<Api>[];
   private readonly diagnostics: string[];
+  private readonly hasRuntimeError: boolean;
   private readonly onApply: DelegatePanelOptions["onApply"];
   private readonly onSaveDefaults: DelegatePanelOptions["onSaveDefaults"];
   private readonly onDone: DelegatePanelOptions["onDone"];
@@ -191,6 +214,7 @@ export class DelegatePanel implements Component, Focusable {
     this.draft = cloneSession(options.session);
     this.candidates = sortedModels(options.candidates);
     this.diagnostics = [...options.diagnostics];
+    this.hasRuntimeError = options.hasRuntimeError;
     this.onApply = options.onApply;
     this.onSaveDefaults = options.onSaveDefaults;
     this.onDone = options.onDone;
@@ -332,9 +356,7 @@ export class DelegatePanel implements Component, Focusable {
     ];
     const notice =
       this.message ??
-      (this.diagnostics.length > 0
-        ? { kind: "error" as const, text: "Warning: global defaults are invalid." }
-        : undefined);
+      (this.diagnostics[0] ? { kind: "error" as const, text: this.diagnostics[0] } : undefined);
     if (notice) {
       lines.push(
         truncateToWidth(
@@ -365,6 +387,8 @@ export class DelegatePanel implements Component, Focusable {
 
   private renderSettings(width: number, budget: number): string[] {
     const effective = resolveDelegateState(this.global, this.draft);
+    const preview = this.renderPolicyPreview(width, budget, effective);
+    const settingsBudget = Math.max(1, budget - preview.length);
     const blocks = SETTINGS_ITEMS.map((item, index) => {
       const selected = index === this.settingsIndex;
       if (FIELD_IDS.includes(item as DelegateField)) {
@@ -381,6 +405,7 @@ export class DelegatePanel implements Component, Focusable {
         if (width < 48) {
           return [
             selectedLine(this.theme, FIELD_LABELS[field], width, selected),
+            ...wrapTextWithAnsi(`  ${FIELD_DESCRIPTIONS[field]}`, width),
             ...wrapTextWithAnsi(`  ${value}`, width),
             ...details.flatMap((line) =>
               wrapTextWithAnsi(this.theme.fg("dim", `  ${line}`), width),
@@ -391,7 +416,10 @@ export class DelegatePanel implements Component, Focusable {
         const first = `${FIELD_LABELS[field].padEnd(labelWidth)}${value}`;
         return [
           selectedLine(this.theme, first, width, selected),
-          ...wrapTextWithAnsi(this.theme.fg("dim", `  ${details.join(" · ")}`), width),
+          ...wrapTextWithAnsi(
+            this.theme.fg("dim", `  ${FIELD_DESCRIPTIONS[field]} · ${details.join(" · ")}`),
+            width,
+          ),
         ];
       }
       const action = item as PanelAction;
@@ -401,7 +429,25 @@ export class DelegatePanel implements Component, Focusable {
       return [disabled ? this.theme.fg("dim", line) : line];
     });
 
-    return this.renderBlockViewport(blocks, this.settingsIndex, width, budget);
+    return [
+      ...preview,
+      ...this.renderBlockViewport(blocks, this.settingsIndex, width, settingsBudget),
+    ];
+  }
+
+  private renderPolicyPreview(
+    width: number,
+    budget: number,
+    effective: ReturnType<typeof resolveDelegateState>,
+  ): string[] {
+    const lines =
+      effective.intensity !== "off" && this.hasRuntimeError
+        ? ["D:ERR · policy unavailable; fix the reported role diagnostics"]
+        : buildPolicyPreview(effective);
+    const maximum = width >= 60 && budget >= 8 ? 4 : 2;
+    return ["Effective policy preview", ...lines]
+      .slice(0, maximum)
+      .map((line) => truncateToWidth(this.theme.fg("dim", line), width, ""));
   }
 
   private sourceDetails(field: DelegateField): string[] {
@@ -439,12 +485,30 @@ export class DelegatePanel implements Component, Focusable {
     mode: Extract<PanelMode, { kind: "enum" }>,
   ): string[] {
     const values = mode.field === "intensity" ? INTENSITIES : PREFERENCES;
+    const descriptions =
+      mode.field === "intensity"
+        ? {
+            off: "No policy is injected.",
+            normal: "Delegate when the expected benefit clearly outweighs overhead.",
+            aggressive: "Delegate suitable substantial work by default.",
+          }
+        : {
+            efficient: "Tie-break comparable fits toward Small.",
+            standard: "No extra Small or Medium bias.",
+            intensive: "Tie-break comparable fits toward Medium.",
+          };
+    const globalValue =
+      this.global[mode.field] ?? (mode.field === "intensity" ? "off" : "standard");
     const options = [
-      `${USE_GLOBAL_DEFAULT} (${this.global[mode.field] ?? (mode.field === "intensity" ? "off" : "standard")})`,
-      ...values,
+      {
+        label: `${USE_GLOBAL_DEFAULT} (${globalValue})`,
+        description: "Use the current global value.",
+      },
+      ...values.map((value) => ({ label: value, description: descriptions[value] })),
     ];
     const blocks = options.map((option, index) => [
-      selectedLine(this.theme, option, width, index === mode.selected),
+      selectedLine(this.theme, option.label, width, index === mode.selected),
+      ...wrapTextWithAnsi(this.theme.fg("dim", `  ${option.description}`), width),
     ]);
     return this.renderBlockViewport(blocks, mode.selected, width, budget);
   }
@@ -471,15 +535,20 @@ export class DelegatePanel implements Component, Focusable {
     );
     const dividerRows = budget > pinnedLines.length + 3 ? 1 : 0;
     const selectedChoice = choices[mode.selected];
-    const selectedName =
-      selectedChoice?.kind === "model" && selectedChoice.description
-        ? [`  Model Name: ${selectedChoice.description}`]
+    const metadata =
+      selectedChoice?.kind === "model"
+        ? modelMetadata(
+            this.candidates.find(
+              (model) =>
+                modelKey({ provider: model.provider, model: model.id }) === selectedChoice.key,
+            ),
+          )
         : [];
-    const detailRows = selectedName.length > 0 && budget > pinnedLines.length + 6 ? 2 : 0;
-    const availableListRows = Math.max(
-      0,
-      budget - 2 - pinnedLines.length - dividerRows - detailRows,
-    );
+    const fixedRows = 2 + pinnedLines.length + dividerRows;
+    const availableDetailRows = Math.max(0, budget - fixedRows - 1);
+    const details = metadata.slice(0, availableDetailRows);
+    const detailRows = details.length > 0 ? details.length + 1 : 0;
+    const availableListRows = Math.max(0, budget - fixedRows - detailRows);
     const listBudget = Math.min(11, availableListRows);
     const modelBlocks = models.map((choice, index) => {
       const combinedIndex = index + pinnedCount;
@@ -512,7 +581,7 @@ export class DelegatePanel implements Component, Focusable {
       ...pinnedLines,
       ...(dividerRows ? [this.theme.fg("borderMuted", "─".repeat(width))] : []),
       ...modelLines,
-      ...(detailRows ? ["", ...selectedName.map((line) => this.theme.fg("muted", line))] : []),
+      ...(detailRows ? ["", ...details.map((line) => this.theme.fg("muted", `  ${line}`))] : []),
     ].slice(0, budget);
   }
 

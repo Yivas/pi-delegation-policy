@@ -9,12 +9,33 @@ description: Understand the product boundary, fail-closed behavior, local data, 
 `before_agent_start` event when the active configuration is valid. It does not create, launch, route,
 supervise, or block subagents. It does not change Pi's main model or thinking level.
 
+The policy evaluates task fit before preference. It considers demand, difficulty, quantity, risk, and
+error and review cost. `efficient` and `intensive` only break ties between comparably credible Small
+and Medium fits; `standard` adds no extra bias. Thinking is dynamic and advisory for each task, and
+this extension does not persist it.
+
+For every delegated launch, the policy names the selected role's exact combined provider/model
+reference as `model: "provider/model"`. This guidance applies to Small, Medium, Large, and configured
+UI Design. The extension does not supply a fallback or enforce that another system follows the
+reference.
+
 It has no presets, project configuration, external skill loading, tool interception, model fallback,
 enforcement, telemetry, credential storage, or network requests. It is not a subagent runner and
 cannot make another system perform delegation.
 
 The optional UI Design role is limited to visual design direction, exploration, and review. It must
 not implement an interface, write code, or run tests.
+
+## Panel and status limits
+
+The panel shows a compact effective-policy preview and short explanations for its fields and
+selectors. Model selection can show transient public metadata when Pi supplies it: name, API,
+reasoning support, context window, and maximum output. The extension does not persist that metadata.
+
+`/delegate status` shows exact effective `provider/model` references and their provenance (`default`,
+`global`, or `session`), along with runtime diagnostics. `D:NORM` and `D:AGG` show that the active
+configuration passed local validation; they do not mean that a delegated launch occurred or that
+another system followed the guidance.
 
 ## Fail-closed behavior
 
@@ -28,13 +49,13 @@ are incomplete. Turning the policy off affects later runs; it does not rewrite a
 already running.
 
 A valid status only means the extension accepted the local configuration. It cannot guarantee that
-another system follows the role or thinking guidance once it is injected.
+another system follows the role, model, or thinking guidance once it is injected.
 
 ## Local data and privacy
 
 The extension stores intensity, preference, and provider/model identifiers in the local global
-defaults file and Pi session entries. It never stores credentials, prompts, or thinking settings, and
-it does not send telemetry or make network requests.
+defaults file and Pi session entries. It never stores credentials, prompts, thinking settings, or
+panel catalog metadata, and it does not send telemetry or make network requests.
 
 Review local configuration before sharing diagnostics. Remove credentials, prompts, personal paths,
 session files, and unredacted logs from reports. Model identifiers and provider names can still reveal
