@@ -2,10 +2,17 @@
 
 ## Unreleased
 
-### Documentation
+## 0.4.0 - 2026-08-27
 
-- Documented the Pi `>=0.84.3` peer requirement and checked `0.84.3` baseline, exact `provider/model` launch references, task-fit role selection, preference tie-breaks, dynamic advisory thinking, and current panel and status diagnostics.
-- Clarified that the published package remains v0.3.2 and npm's existing README will update only through a separately approved release.
+### Added
+
+- Added a compact effective-policy preview, selector guidance, and available public model metadata to the `/delegate` panel.
+
+### Changed
+
+- Require exact `provider/model` references for delegation guidance instead of relying on a launcher default.
+- Clarified task-fit role selection, preference tie-breaks, dynamic advisory thinking, and current panel and status diagnostics.
+- Raised the Pi peer requirement and explicitly checked baseline to `0.84.3`.
 
 ## 0.3.2 - 2026-08-26
 

@@ -2,7 +2,7 @@
 
 A local Pi extension that helps the main agent decide **when delegation is worth it** and which exact models to use for the Small, Medium, Large, and optional UI Design roles. It provides guidance; it is not a subagent runner.
 
-> **Status:** Version **0.3.2** is the latest published package. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline (newer versions are not claimed as tested). Documentation changes here do not update npm's existing README; that requires a separately approved release.
+> **Status:** Version **0.4.0** is the latest published package. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline (newer versions are not claimed as tested).
 >
 > **Docs:** [Read the documentation site](https://yivas.github.io/pi-delegation-policy/).
 
