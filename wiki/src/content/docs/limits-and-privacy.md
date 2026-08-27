@@ -18,15 +18,22 @@ default. Thinking remains dynamic and advisory, and this extension does not pers
 For every delegated launch, the policy names the selected role's exact `provider/model` base and
 requires the per-task thinking choice to be transmitted through the launcher. `pi-subagents` uses
 `model: "provider/model:LEVEL"`; another launcher may expose a separate field. This guidance applies
-to Small, Medium, Large, and configured UI Design. The extension does not supply a fallback or enforce
+to Small, Medium, Large, and configured Visual Design. The extension does not supply a fallback or enforce
 that another system follows the reference or thinking choice.
 
 It has no presets, project configuration, external skill loading, tool interception, model fallback,
 enforcement, telemetry, credential storage, or network requests. It is not a subagent runner and
 cannot make another system perform delegation.
 
-The optional UI Design role is limited to visual design direction, exploration, and review. It must
-not implement an interface, write code, or run tests.
+The optional Visual Design role may design, create, implement, and review a bounded presentation
+patch only when behavior and data contracts remain unchanged, the affected surface is identifiable,
+and visual quality or user experience is the primary acceptance criterion. It may edit scoped
+presentation code and assets and run the relevant existing checks.
+
+It does not own product behavior, logic, data, APIs, routes, architecture, tooling, interaction,
+semantic or behavioral accessibility, test infrastructure, cross-system integration, or final
+acceptance. These limits are guidance; the extension does not inspect or enforce another system's
+work.
 
 ## Panel and status limits
 
@@ -42,7 +49,7 @@ another system followed the guidance.
 ## Fail-closed behavior
 
 An active `normal` or `aggressive` configuration requires valid Small, Medium, and Large model
-references. A configured UI Design reference must also be valid. Missing, unavailable,
+references. A configured Visual Design reference must also be valid. Missing, unavailable,
 out-of-scope, or unauthenticated references produce `D:ERR` and inject no policy. The extension does
 not substitute another model, role, or thinking level.
 

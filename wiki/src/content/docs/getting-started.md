@@ -8,7 +8,7 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 - Pi `>=0.84.3` satisfies the package peer requirement.
 - Pi `0.84.3` is the explicitly checked baseline; newer Pi versions are not claimed as tested.
 - Access to npm to install the latest published package, currently `0.4.1`.
-- Authenticated providers exposing the exact Small, Medium, and Large model references you intend to use in Pi's current scope. UI Design is optional.
+- Authenticated providers exposing the exact Small, Medium, and Large model references you intend to use in Pi's current scope. Visual Design is optional.
 
 ## Safe first-use path
 
@@ -30,7 +30,7 @@ Open `/delegate` in Pi's TUI (or press `Alt+G` when that shortcut is available).
 1. Set **Small** to an exact provider and model ID exposed by Pi and authenticated for that provider.
 2. Set **Medium** to its own exact provider and model ID.
 3. Set **Large** to its own exact provider and model ID.
-4. Optionally set **UI Design** to an exact reference, or leave it disabled.
+4. Optionally set **Visual Design** to an exact reference, or leave it disabled.
 5. Keep the values as a draft while editing. Choose **Apply changes** only after all required roles are ready.
 
 The panel displays model ID first and `[provider]` last, and searches provider, model ID, and display
@@ -49,6 +49,13 @@ model: "provider/model:LEVEL"
 `LEVEL` is replaced for each run with a level supported by the selected model. Launchers that expose a
 separate per-run thinking field can send the exact `provider/model` base and the level separately. The
 policy does not substitute a different model or rely on ambient model or thinking defaults.
+
+Visual Design can own a bounded presentation patch when its visual result is the primary acceptance
+criterion and existing behavior, data contracts, component scope, and platform remain unchanged. It
+can create and integrate visual assets or edit presentation code, then run relevant existing checks.
+Use Small, Medium, or Large for logic, data, APIs, routes, interaction behavior, application
+architecture, tooling, cross-system integration, and behavior tests. The main agent remains
+responsible for final integration and acceptance.
 
 ### 3. Select an active intensity and apply
 

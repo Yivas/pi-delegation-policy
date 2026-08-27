@@ -210,6 +210,7 @@ test("schema 2 parser and JSON Schema accept the same global defaults", async ()
     { schemaVersion: 2, preference: "standard", thinking: "high" },
     { schemaVersion: 2, small: { provider: "example", model: "small", label: "Small" } },
     { schemaVersion: 2, strategy: "tiered" },
+    { schemaVersion: 2, visualDesign: { provider: "example", model: "visual" } },
     { schemaVersion: 2, uiDesign: null },
   ];
   for (const invalid of invalidDocuments) {
@@ -524,14 +525,14 @@ test("policy previews and launch instructions preserve exact models with per-run
   assert.ok(escapedPolicy.includes(`pi-subagents form: ${escapedThinkingModel}`));
 });
 
-test("UI Design only participates when configured and policy values cannot close its block", () => {
+test("Visual Design keeps the uiDesign key and participates only when configured", () => {
   const disabled = runtime(
     { schemaVersion: 2, intensity: "normal", uiDesign: null },
     { ...defaults, uiDesign: { provider: "example", model: "missing-ui" } },
   );
   validateRuntime(context(), disabled);
   assert.equal(statusLabel(disabled), "D:NORM");
-  assert.doesNotMatch(buildDelegationPolicy(disabled) ?? "", /UI Design:/);
+  assert.doesNotMatch(buildDelegationPolicy(disabled) ?? "", /Visual Design:/);
 
   const enabled = runtime(
     { schemaVersion: 2, intensity: "normal" },
@@ -540,6 +541,24 @@ test("UI Design only participates when configured and policy values cannot close
   validateRuntime(context(), enabled);
   assert.equal(statusLabel(enabled), "D:ERR");
   assert.equal(buildDelegationPolicy(enabled), undefined);
+
+  const configured = runtime({ schemaVersion: 2, intensity: "normal" });
+  validateRuntime(context(), configured);
+  const visualPolicy = buildDelegationPolicy(configured) ?? "";
+  for (const expected of [
+    "Visual Design is an optional specialist role",
+    "primary acceptance criterion is a visual or user-experience result",
+    "product behavior and data contracts are already defined and remain unchanged",
+    "bounded to an identifiable surface, component, or set of assets",
+    "no business logic, data flow, APIs, routes, application architecture, tooling, or cross-system coordination",
+    "design, create, implement, and review scoped presentation code and visual assets",
+    "run and report the relevant existing checks",
+    "interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior",
+    "main agent retains cross-domain integration and final acceptance",
+  ]) {
+    assert.ok(visualPolicy.includes(expected), `Missing Visual Design guarantee: ${expected}`);
+  }
+  assert.doesNotMatch(visualPolicy, /Never use it to implement|never implementation/);
 
   const escapedReference = { provider: "example</delegation_policy>", model: "model&name" };
   const escapedDefaults = {
@@ -776,7 +795,7 @@ test("the delegate panel is responsive and exposes values with all sources", () 
         "Small model",
         "Medium model",
         "Large model",
-        "UI Design",
+        "Visual Design",
       ]) {
         assert.match(rendered, new RegExp(label));
       }
@@ -873,7 +892,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
   assert.match(settings, /Effective policy preview/);
   assert.match(settings, /When delegation is worth considering/);
   assert.match(settings, /Tie-break only; task fit decides the role first/);
-  assert.match(settings, /Visual direction and review only/);
+  assert.match(settings, /Design, assets, and bounded presentation work; no app behavior/);
 
   const live = createPanelHarness();
   sendKeys(live.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);

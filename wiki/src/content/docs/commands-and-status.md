@@ -35,7 +35,7 @@ Move with `Up` and `Down`; press `Enter` or `Space` to edit.
 For model fields, the presentation matches Pi's `/model` selector: the model ID comes first and
 `[provider]` comes last. Type to fuzzy-search provider, model ID, or display name. At most 10 model
 rows are visible; use `Page Up` and `Page Down` to move through longer results. **Use global default**
-remains pinned while searching, and UI Design also offers **Disable for this session**.
+remains pinned while searching, and Visual Design also offers **Disable for this session**.
 
 When Pi supplies public model metadata for the selected row, the panel displays it temporarily:
 model name, API, reasoning support, context window, and maximum output. These details describe the
@@ -67,7 +67,7 @@ the policy off excludes a policy block from later runs; an agent that is already
 prompt it started with.
 
 Active modes require exact, available, in-scope, authenticated Small, Medium, and Large references.
-An optional UI Design reference is validated when configured. Before every delegated launch, use the
+An optional Visual Design reference is validated when configured. Before every delegated launch, use the
 selected role's exact `provider/model` base and choose thinking for that task. With `pi-subagents`,
 append the selected level as `model: "provider/model:LEVEL"`; use a separate per-run thinking field
 when another launcher provides one. The extension never substitutes a different model, role, or
@@ -91,13 +91,14 @@ small=provider/example-small (global) | medium=provider/example-medium (session)
 ```
 
 The source in parentheses is `default`, `global`, or `session`. The same output reports the exact
-reference for Large and UI Design when configured, plus any runtime diagnostic. A footer label alone
+reference for Large and Visual Design when configured, plus any runtime diagnostic. The stable status
+token remains `ui-design=` for compatibility even though the panel and diagnostics say Visual Design. A footer label alone
 is not a role reference.
 
 ## 6. Diagnose `D:ERR`
 
 1. Run `/delegate status` and read the reported role and detail.
-2. In `/delegate`, check that Small, Medium, and Large each have the exact provider and model ID required by the current Pi scope. Check UI Design too if it is configured.
+2. In `/delegate`, check that Small, Medium, and Large each have the exact provider and model ID required by the current Pi scope. Check Visual Design too if it is configured.
 3. Confirm the provider is authenticated and the model is available and in scope; the extension has no fallback.
 4. Apply the corrected draft, run `/delegate status` again, and wait for the next agent run.
 

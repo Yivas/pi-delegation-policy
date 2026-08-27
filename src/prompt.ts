@@ -23,6 +23,16 @@ Large quantities of repetitive, independent work favor multiple Small delegation
 
 In every intensity, keep global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer with the main agent.`;
 
+const VISUAL_DESIGN_POLICY = `Visual Design is an optional specialist role. Use it only when all four conditions hold:
+1. the primary acceptance criterion is a visual or user-experience result;
+2. product behavior and data contracts are already defined and remain unchanged;
+3. the patch is bounded to an identifiable surface, component, or set of assets;
+4. it requires no business logic, data flow, APIs, routes, application architecture, tooling, or cross-system coordination.
+
+When eligible, Visual Design may design, create, implement, and review scoped presentation code and visual assets, including layout, styles, responsive presentation, typography, images, icons, logos, SVGs, diagrams, and documentation visuals. It may address visual accessibility such as contrast and focus visibility. It must run and report the relevant existing checks for its patch.
+
+Route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to Small, Medium, or Large by task fit. If any eligibility condition fails, use an ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration and final acceptance.`;
+
 function preferenceGuidance(preference: Preference): string {
   if (preference === "efficient") {
     return "Use efficient only as a Small tie-break when Small and Medium are comparably credible. Do not choose Small when Medium is a materially better task fit.";
@@ -81,7 +91,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
 
   const intensityPolicy = effective.intensity === "normal" ? NORMAL_POLICY : AGGRESSIVE_POLICY;
   const uiDesign = effective.uiDesign
-    ? `\n- UI Design: ${formatReference(effective.uiDesign)}; exact model base: ${formatLaunchModel(effective.uiDesign)}; pi-subagents form: ${formatThinkingLaunchModel(effective.uiDesign)}. Use this role only for visual design direction, exploration, or review. Never use it to implement an interface, write code, or run tests.`
+    ? `\n- Visual Design: ${formatReference(effective.uiDesign)}; exact model base: ${formatLaunchModel(effective.uiDesign)}; pi-subagents form: ${formatThinkingLaunchModel(effective.uiDesign)}`
     : "";
 
   return `<delegation_policy>
@@ -98,7 +108,7 @@ Roles:
 - Small: ${formatReference(effective.small)}; exact model base: ${formatLaunchModel(effective.small)}; pi-subagents form: ${formatThinkingLaunchModel(effective.small)}
 - Medium: ${formatReference(effective.medium)}; exact model base: ${formatLaunchModel(effective.medium)}; pi-subagents form: ${formatThinkingLaunchModel(effective.medium)}
 - Large: ${formatReference(effective.large)}; exact model base: ${formatLaunchModel(effective.large)}; pi-subagents form: ${formatThinkingLaunchModel(effective.large)}${uiDesign}
-
+${effective.uiDesign ? `\n${VISUAL_DESIGN_POLICY}\n` : ""}
 This is guidance for the main agent. It does not create, execute, route, supervise, or enforce delegated work.
 </delegation_policy>`;
 }

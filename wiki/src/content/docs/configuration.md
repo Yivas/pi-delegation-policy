@@ -7,7 +7,7 @@ description: Set valid global defaults and session-branch overrides without pers
 
 The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply
 the draft. An active `normal` or `aggressive` configuration needs exact, authenticated Small,
-Medium, and Large references in the current scope. UI Design is optional.
+Medium, and Large references in the current scope. Visual Design is optional.
 
 Global defaults can also be written at `~/.pi/agent/delegation-policy.json` with schema version 2:
 
@@ -34,7 +34,7 @@ model: "provider/model:LEVEL"
 
 `LEVEL` stands for the level selected for that run; it is not stored in the role reference. A launcher
 with a separate per-run thinking field can keep `model: "provider/model"` and send the level there.
-This requirement applies to every delegated launch, including UI Design when that role is configured.
+This requirement applies to every delegated launch, including Visual Design when that role is configured.
 The policy does not substitute another model or inherit an ambient model or thinking default. See
 [commands and status](/pi-delegation-policy/commands-and-status/) for panel editing and validation
 feedback.
@@ -42,7 +42,7 @@ feedback.
 ## Global defaults
 
 Global defaults may contain intensity, model preference, exact Small/Medium/Large references, and an
-optional UI Design reference. If global intensity is absent, the built-in default is `off`. A global
+optional Visual Design reference stored under the compatible `uiDesign` key. If global intensity is absent, the built-in default is `off`. A global
 value is inherited by a session branch until that branch records an override.
 
 Selecting **Save effective configuration as defaults** in the panel copies the complete effective
@@ -106,11 +106,30 @@ tasks using the same role may receive different supported levels.
 Thinking is dynamic and advisory. This extension does not configure, validate, or persist it; the
 launcher remains responsible for accepting the per-run value.
 
-## UI Design
+## Visual Design
 
-UI Design is optional. When configured, it is limited to visual design direction, exploration, and
-review. It must not implement an interface, write code, or run tests. When it is disabled, ordinary
-roles handle design-related work.
+Visual Design is an optional specialist; it is not a fourth execution tier. The user-facing name does
+not change the schema 2 key: global and session configuration still use `uiDesign`.
+
+Use Visual Design only when all four conditions hold:
+
+1. The primary acceptance criterion is a visual or user-experience result.
+2. Product behavior and data contracts are already defined and remain unchanged.
+3. The patch is bounded to an identifiable surface, component, or set of assets.
+4. It needs no business logic, data flow, APIs, routes, application architecture, tooling, or cross-system coordination.
+
+When eligible, it may design, create, implement, and review scoped presentation code and assets:
+layout, styles, responsive presentation, typography, images, icons, logos, SVGs, diagrams, and
+documentation visuals. It may address contrast, focus visibility, and other visual accessibility. It
+runs and reports the relevant existing checks for its own patch.
+
+Route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA
+behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership
+to Small, Medium, or Large by task fit. If any condition fails, split the isolated visual portion or
+use an ordinary role for the complete task. The main agent retains cross-domain integration and final
+acceptance.
+
+When Visual Design is disabled, ordinary roles handle visual work according to their normal task fit.
 
 ## Legacy defaults
 

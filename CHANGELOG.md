@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Expanded the optional visual specialist to create assets and complete bounded presentation-layer changes when behavior and data contracts are already defined.
+
+### Changed
+
+- Renamed the user-facing UI Design role to Visual Design while preserving the `uiDesign` configuration key and `ui-design` status token.
+- Clarified routing boundaries for application behavior, accessibility, checks, integration, and final acceptance.
+
 ## 0.4.1 - 2026-08-28
 
 ### Fixed

@@ -1,19 +1,21 @@
 # pi-delegation-policy
 
-A local Pi extension that helps the main agent decide **when delegation is worth it** and which exact models to use for the Small, Medium, Large, and optional UI Design roles. It provides guidance; it is not a subagent runner.
+A local Pi extension that helps the main agent decide **when delegation is worth it** and which exact models to use for the Small, Medium, Large, and optional Visual Design roles. It provides guidance; it is not a subagent runner.
 
-> **Status:** Version **0.4.1** is the latest published package. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline (newer versions are not claimed as tested).
+> **Status:** Version **0.4.1** is the latest published package. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline (newer versions are not claimed as tested). Changes described on `main` reach npm only through a separately approved release.
 >
 > **Docs:** [Read the documentation site](https://yivas.github.io/pi-delegation-policy/).
 
 ## Value and boundary
 
 - Choose `off`, `normal`, or `aggressive` delegation intensity globally or for the current session branch.
-- Configure exact provider/model references for Small, Medium, Large, and optionally UI Design.
+- Configure exact provider/model references for Small, Medium, Large, and optionally Visual Design.
 - Keep global defaults and session-branch overrides across reload, resume, and tree navigation.
 - Validate active configurations before injecting one policy block through Pi's public `before_agent_start` event.
 
 The extension guides the main agent. It never creates, launches, routes, supervises, or blocks subagents; changes Pi's main model or thinking; stores credentials; intercepts tools; or makes its own network requests. It has no model fallback, telemetry, project configuration, presets, or external skill loading.
+
+Visual Design is an optional specialist for direction, assets, bounded presentation-layer implementation, and visual review. Use it only when behavior and data contracts are already defined and unchanged, the affected surface is bounded, and visual quality or user experience is the primary acceptance criterion. Route business logic, data, APIs, routes, application architecture, tooling, interaction behavior, and cross-system integration to Small, Medium, or Large by task fit. The main agent retains final integration and acceptance.
 
 ## Install and start
 
@@ -25,7 +27,7 @@ pi install npm:pi-delegation-policy
 ```
 
 1. Open `/delegate` (or press `Alt+G` in Pi's TUI).
-2. Configure exact, authenticated Small, Medium, and Large provider/model references. UI Design is optional.
+2. Configure exact, authenticated Small, Medium, and Large provider/model references. Visual Design is optional.
 3. Select `normal` or `aggressive`, then choose **Apply changes**.
 4. Run `/delegate status` and inspect the exact role references and their sources. `D:ERR` means an active required role is invalid; no policy is injected.
 5. The applied state affects the **next** agent run. An agent already running is not rewritten.
@@ -47,7 +49,7 @@ The editor is a bounded, keyboard-first panel. It shows model ID first and `[pro
 
 ## Configuration and safety
 
-Global defaults are stored at `~/.pi/agent/delegation-policy.json` (schema version 2). The file stores optional intensity, preference, exact role references, and an optional UI Design reference; it never stores thinking. A valid active mode requires exact, available, in-scope, authenticated Small, Medium, and Large references. Before every delegated launch, the policy requires the selected role's exact `provider/model` base and a thinking level chosen for that task instead of relying on ambient defaults. With `pi-subagents`, the main agent passes both as `model: "provider/model:LEVEL"`; other launchers may expose a separate per-run thinking field. Invalid active configuration fails closed as `D:ERR` with no policy injection; `off` is always `D:OFF`.
+Global defaults are stored at `~/.pi/agent/delegation-policy.json` (schema version 2). The file stores optional intensity, preference, exact role references, and an optional Visual Design reference under the stable `uiDesign` key; it never stores thinking. A valid active mode requires exact, available, in-scope, authenticated Small, Medium, and Large references. Before every delegated launch, the policy requires the selected role's exact `provider/model` base and a thinking level chosen for that task instead of relying on ambient defaults. With `pi-subagents`, the main agent passes both as `model: "provider/model:LEVEL"`; other launchers may expose a separate per-run thinking field. Invalid active configuration fails closed as `D:ERR` with no policy injection; `off` is always `D:OFF`.
 
 The extension stores only policy settings and provider/model identifiers in local defaults and session entries. Review local configuration before sharing diagnostics, and remove credentials, prompts, personal paths, session files, and unredacted logs from reports. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/) and [security policy](https://github.com/Yivas/pi-delegation-policy/blob/main/SECURITY.md).
 

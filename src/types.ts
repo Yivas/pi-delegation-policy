@@ -14,7 +14,7 @@ export const ROLE_LABELS: Record<ModelConfigKey, string> = {
   small: "Small",
   medium: "Medium",
   large: "Large",
-  uiDesign: "UI Design",
+  uiDesign: "Visual Design",
 };
 
 export type ModelRef = {
@@ -39,7 +39,7 @@ export type SessionDelegateState = {
   small?: ModelRef;
   medium?: ModelRef;
   large?: ModelRef;
-  // Null explicitly disables a global UI Design role for this session branch.
+  // Null explicitly disables a global Visual Design role for this session branch.
   uiDesign?: ModelRef | null;
 };
 

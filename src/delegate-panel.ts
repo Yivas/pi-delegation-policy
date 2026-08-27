@@ -73,7 +73,7 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   small: "Small model",
   medium: "Medium model",
   large: "Large model",
-  uiDesign: "UI Design",
+  uiDesign: "Visual Design",
 };
 
 const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
@@ -82,7 +82,7 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
   small: "Bounded, planned, and verifiable execution.",
   medium: "Planning, ambiguity, synthesis, and coordination.",
   large: "Exceptional unblocker for persistent hard problems.",
-  uiDesign: "Visual direction and review only; never implementation.",
+  uiDesign: "Design, assets, and bounded presentation work; no app behavior.",
 };
 
 const ACTION_LABELS: Record<PanelAction, string> = {
