@@ -24,16 +24,20 @@ Global defaults can also be written at `~/.pi/agent/delegation-policy.json` with
 ```
 
 The provider and model values above are fictional. Replace them with the exact references exposed by
-Pi and authenticated for each provider. Configuration stores those values separately. At launch,
-the selected role must use the combined reference in this form:
+Pi and authenticated for each provider. Configuration stores those values separately as the role's
+base identity. At launch, the main agent chooses thinking for the current task and transmits both
+values through the launcher's per-run mechanism. `pi-subagents` encodes the level as a suffix:
 
 ```text
-model: "provider/model"
+model: "provider/model:LEVEL"
 ```
 
+`LEVEL` stands for the level selected for that run; it is not stored in the role reference. A launcher
+with a separate per-run thinking field can keep `model: "provider/model"` and send the level there.
 This requirement applies to every delegated launch, including UI Design when that role is configured.
-The policy does not substitute another model or inherit an ambient launcher default. See [commands and
-status](/pi-delegation-policy/commands-and-status/) for panel editing and validation feedback.
+The policy does not substitute another model or inherit an ambient model or thinking default. See
+[commands and status](/pi-delegation-policy/commands-and-status/) for panel editing and validation
+feedback.
 
 ## Global defaults
 
@@ -95,8 +99,12 @@ in scope, and authenticated.
 ## Thinking
 
 The main agent chooses thinking for each delegated task from task demand, difficulty, quantity, risk,
-error and review cost, and the selected model's capabilities. Thinking is dynamic and advisory; this
-extension does not configure or persist it.
+error and review cost, and the selected model's capabilities. It makes that choice for every launch
+instead of inheriting a global subagent default. The role alone does not fix the level, and different
+tasks using the same role may receive different supported levels.
+
+Thinking is dynamic and advisory. This extension does not configure, validate, or persist it; the
+launcher remains responsible for accepting the per-run value.
 
 ## UI Design
 

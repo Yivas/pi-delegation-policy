@@ -25,8 +25,8 @@ only changes the draft until you apply it.
 ## 2. Edit the panel
 
 The panel starts with a compact **Effective policy preview**. It summarizes the effective intensity,
-that task fit comes before preference, the preference tie-break, the exact Small/Medium/Large launch
-references when configured, and dynamic thinking. It also shows each setting's effective value and
+that task fit comes before preference, the preference tie-break, the exact Small/Medium/Large model
+bases when configured, and the requirement to choose thinking for each launch. It also shows each setting's effective value and
 its built-in, global, and session sources. Short explanations describe when to consider delegation,
 what each preference does, and the intended fit of each role.
 
@@ -68,8 +68,10 @@ prompt it started with.
 
 Active modes require exact, available, in-scope, authenticated Small, Medium, and Large references.
 An optional UI Design reference is validated when configured. Before every delegated launch, use the
-selected role's exact combined reference as `model: "provider/model"`. The extension never substitutes
-a different model, role, or thinking level. Thinking remains dynamic, advisory, and unpersisted.
+selected role's exact `provider/model` base and choose thinking for that task. With `pi-subagents`,
+append the selected level as `model: "provider/model:LEVEL"`; use a separate per-run thinking field
+when another launcher provides one. The extension never substitutes a different model, role, or
+thinking level. Thinking remains dynamic, advisory, and unpersisted.
 
 ## 5. Read the footer and status output
 

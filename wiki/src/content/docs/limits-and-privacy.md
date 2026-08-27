@@ -11,13 +11,15 @@ supervise, or block subagents. It does not change Pi's main model or thinking le
 
 The policy evaluates task fit before preference. It considers demand, difficulty, quantity, risk, and
 error and review cost. `efficient` and `intensive` only break ties between comparably credible Small
-and Medium fits; `standard` adds no extra bias. Thinking is dynamic and advisory for each task, and
-this extension does not persist it.
+and Medium fits; `standard` adds no extra bias. The main agent chooses thinking for every task from
+those factors and the selected model's capabilities instead of inheriting an ambient subagent
+default. Thinking remains dynamic and advisory, and this extension does not persist it.
 
-For every delegated launch, the policy names the selected role's exact combined provider/model
-reference as `model: "provider/model"`. This guidance applies to Small, Medium, Large, and configured
-UI Design. The extension does not supply a fallback or enforce that another system follows the
-reference.
+For every delegated launch, the policy names the selected role's exact `provider/model` base and
+requires the per-task thinking choice to be transmitted through the launcher. `pi-subagents` uses
+`model: "provider/model:LEVEL"`; another launcher may expose a separate field. This guidance applies
+to Small, Medium, Large, and configured UI Design. The extension does not supply a fallback or enforce
+that another system follows the reference or thinking choice.
 
 It has no presets, project configuration, external skill loading, tool interception, model fallback,
 enforcement, telemetry, credential storage, or network requests. It is not a subagent runner and

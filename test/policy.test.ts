@@ -471,7 +471,7 @@ test("generated guidance preserves canonical roles and operational mode boundari
   assert.ok(intensive.includes("clearly better task fit"));
 });
 
-test("policy previews and launch instructions preserve exact escaped model references", () => {
+test("policy previews and launch instructions preserve exact models with per-run thinking", () => {
   const active = resolveDelegateState(defaults, { schemaVersion: 2, intensity: "normal" });
   assert.deepEqual(buildPolicyPreview(resolveDelegateState(defaults, { schemaVersion: 2 })), [
     "off · no policy injected",
@@ -484,18 +484,26 @@ test("policy previews and launch instructions preserve exact escaped model refer
   );
   assert.match(buildPolicyPreview(active)[0] ?? "", /task fit first/);
   assert.match(buildPolicyPreview(active)[0] ?? "", /standard has no extra bias/);
+  assert.match(buildPolicyPreview(active)[2] ?? "", /exact model plus per-task thinking/);
+  assert.match(buildPolicyPreview(active)[2] ?? "", /neither uses an ambient default/);
 
   const policy = buildDelegationPolicy(runtime({ schemaVersion: 2, intensity: "normal" })) ?? "";
+  assert.match(policy, /Choose thinking dynamically for that run/);
+  assert.match(policy, /selected model's capabilities/);
+  assert.doesNotMatch(policy, /defaultThinking|thinking: low|thinking: medium|thinking: high/);
   for (const reference of [
     "example/small",
     "example/medium",
     "example/large",
     "example/ui-design",
   ]) {
-    assert.match(policy, new RegExp(`model: ${JSON.stringify(reference)}`));
+    assert.ok(policy.includes(`exact model base: ${JSON.stringify(reference)}`));
+    assert.ok(policy.includes(`pi-subagents form: ${JSON.stringify(`${reference}:LEVEL`)}`));
   }
-  assert.match(policy, /Do not omit model, inherit an ambient launcher default/);
-  assert.match(policy, /Do not.*fallback model or role/);
+  assert.match(policy, /pass model: "provider\/model:LEVEL"/);
+  assert.match(policy, /Do not omit the model or thinking choice/);
+  assert.match(policy, /ambient launcher default for either/);
+  assert.match(policy, /Do not.*fallback model or role or an unsupported thinking level/);
 
   const escapedReference = { provider: 'provider/"quoted"', model: "model/with&<>" };
   const escaped = runtime(
@@ -510,7 +518,10 @@ test("policy previews and launch instructions preserve exact escaped model refer
     .replaceAll("<", "\\u003c")
     .replaceAll(">", "\\u003e")
     .replaceAll("&", "\\u0026");
-  assert.ok((buildDelegationPolicy(escaped) ?? "").includes(`model: ${escapedModel}`));
+  const escapedThinkingModel = escapedModel.replace(/"$/, ':LEVEL"');
+  const escapedPolicy = buildDelegationPolicy(escaped) ?? "";
+  assert.ok(escapedPolicy.includes(`exact model base: ${escapedModel}`));
+  assert.ok(escapedPolicy.includes(`pi-subagents form: ${escapedThinkingModel}`));
 });
 
 test("UI Design only participates when configured and policy values cannot close its block", () => {
@@ -1173,6 +1184,23 @@ test("source code has no runner, tool interception, model control, or network cl
   assert.doesNotMatch(joined, /tool_call|tool_result|session_compact/);
   assert.doesNotMatch(joined, /setModel|setThinkingLevel/);
   assert.doesNotMatch(joined, /\bfetch\s*\(|https?:\/\//);
+});
+
+test("public documentation matches the declared Pi baseline", async () => {
+  const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
+  const peer = packageJson.peerDependencies["@earendil-works/pi-coding-agent"] as string;
+  const baseline = /^>=(\d+\.\d+\.\d+)$/.exec(peer)?.[1];
+  assert.ok(baseline, `Expected an exact minimum Pi peer, received ${peer}`);
+
+  for (const path of [
+    "README.md",
+    "wiki/src/content/docs/index.mdx",
+    "wiki/src/content/docs/getting-started.md",
+  ]) {
+    const contents = await readFile(join(process.cwd(), path), "utf8");
+    assert.ok(contents.includes(`Pi \`${baseline}\``), `${path} must include the Pi baseline`);
+    assert.ok(contents.includes(`>=${baseline}`), `${path} must include the Pi peer minimum`);
+  }
 });
 
 test("public package contents exclude private planning, tests, archives, and old examples", async () => {

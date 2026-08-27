@@ -38,14 +38,17 @@ name. It also shows a compact effective-policy preview and short explanations fo
 supplies public model metadata, the model selector can show its name, API, reasoning support, context
 window, and maximum output. This metadata is transient and is not stored in policy settings.
 
-Each configured role stores separate provider and model values, but every delegated launch must send
-the selected role's exact combined reference:
+Each configured role stores separate provider and model values as its exact base identity. For every
+delegated launch, the main agent also chooses thinking for the current task. With `pi-subagents`, it
+passes the exact base and chosen level together:
 
 ```text
-model: "provider/model"
+model: "provider/model:LEVEL"
 ```
 
-The policy does not substitute a different model or rely on an ambient launcher default.
+`LEVEL` is replaced for each run with a level supported by the selected model. Launchers that expose a
+separate per-run thinking field can send the exact `provider/model` base and the level separately. The
+policy does not substitute a different model or rely on ambient model or thinking defaults.
 
 ### 3. Select an active intensity and apply
 

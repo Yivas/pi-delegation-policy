@@ -54,6 +54,10 @@ function formatLaunchModel(reference: ModelRef): string {
   return promptString(`${reference.provider}/${reference.model}`);
 }
 
+function formatThinkingLaunchModel(reference: ModelRef): string {
+  return promptString(`${reference.provider}/${reference.model}:LEVEL`);
+}
+
 export function buildPolicyPreview(effective: EffectiveDelegateState): string[] {
   if (effective.intensity === "off") return ["off · no policy injected"];
 
@@ -65,7 +69,7 @@ export function buildPolicyPreview(effective: EffectiveDelegateState): string[] 
   return [
     `${effective.intensity} · task fit first · ${preferencePreview(effective.preference)}`,
     `Small ${formatLaunchModel(small)} · Medium ${formatLaunchModel(medium)} · Large ${formatLaunchModel(large)}`,
-    "Every launch must include the selected exact model; thinking stays dynamic.",
+    "Every launch must include the exact model plus per-task thinking; neither uses an ambient default.",
   ];
 }
 
@@ -77,7 +81,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
 
   const intensityPolicy = effective.intensity === "normal" ? NORMAL_POLICY : AGGRESSIVE_POLICY;
   const uiDesign = effective.uiDesign
-    ? `\n- UI Design: ${formatReference(effective.uiDesign)}; launch with model: ${formatLaunchModel(effective.uiDesign)}. Use this role only for visual design direction, exploration, or review. Never use it to implement an interface, write code, or run tests.`
+    ? `\n- UI Design: ${formatReference(effective.uiDesign)}; exact model base: ${formatLaunchModel(effective.uiDesign)}; pi-subagents form: ${formatThinkingLaunchModel(effective.uiDesign)}. Use this role only for visual design direction, exploration, or review. Never use it to implement an interface, write code, or run tests.`
     : "";
 
   return `<delegation_policy>
@@ -88,12 +92,12 @@ ${ROLE_SELECTION_POLICY}
 
 Model preference: ${effective.preference}. ${preferenceGuidance(effective.preference)}
 
-Before every delegated launch, name the selected role, take its exact combined provider/model reference below, and include it in the call as model: "provider/model" using the JSON-escaped value shown for that role. Do not omit model, inherit an ambient launcher default, substitute another model, or invent a fallback model or role. Choose thinking dynamically for each delegation from task demand, difficulty, quantity, risk, review cost, and the selected model's capabilities. Thinking is advisory and is not persisted configuration.
+Before every delegated launch, name the selected role and take its exact combined provider/model base below. Choose thinking dynamically for that run from task demand, difficulty, quantity, risk, review cost, and the selected model's capabilities. Then transmit both through the launcher's per-run mechanism without changing the provider/model base. When the launcher encodes thinking as a model suffix, replace LEVEL in the shown pi-subagents form and pass model: "provider/model:LEVEL". Do not omit the model or thinking choice, inherit an ambient launcher default for either, substitute another model, persist the thinking level, or invent a fallback model or role or an unsupported thinking level.
 
 Roles:
-- Small: ${formatReference(effective.small)}; launch with model: ${formatLaunchModel(effective.small)}
-- Medium: ${formatReference(effective.medium)}; launch with model: ${formatLaunchModel(effective.medium)}
-- Large: ${formatReference(effective.large)}; launch with model: ${formatLaunchModel(effective.large)}${uiDesign}
+- Small: ${formatReference(effective.small)}; exact model base: ${formatLaunchModel(effective.small)}; pi-subagents form: ${formatThinkingLaunchModel(effective.small)}
+- Medium: ${formatReference(effective.medium)}; exact model base: ${formatLaunchModel(effective.medium)}; pi-subagents form: ${formatThinkingLaunchModel(effective.medium)}
+- Large: ${formatReference(effective.large)}; exact model base: ${formatLaunchModel(effective.large)}; pi-subagents form: ${formatThinkingLaunchModel(effective.large)}${uiDesign}
 
 This is guidance for the main agent. It does not create, execute, route, supervise, or enforce delegated work.
 </delegation_policy>`;

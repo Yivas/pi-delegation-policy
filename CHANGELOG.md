@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Restored per-launch thinking selection so delegation guidance transmits the chosen level with the exact configured model instead of falling through to an ambient subagent default.
+
 ## 0.4.0 - 2026-08-27
 
 ### Added
