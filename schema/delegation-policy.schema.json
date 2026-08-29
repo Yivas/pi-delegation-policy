@@ -5,12 +5,12 @@
   "type": "object",
   "required": ["schemaVersion"],
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": { "const": 3 },
     "intensity": { "enum": ["off", "normal", "aggressive"] },
     "preference": { "enum": ["efficient", "standard", "intensive"] },
-    "small": { "$ref": "#/$defs/modelRef" },
-    "medium": { "$ref": "#/$defs/modelRef" },
-    "large": { "$ref": "#/$defs/modelRef" },
+    "small": { "$ref": "#/$defs/ordinaryRole" },
+    "medium": { "$ref": "#/$defs/ordinaryRole" },
+    "large": { "$ref": "#/$defs/ordinaryRole" },
     "uiDesign": { "$ref": "#/$defs/modelRef" }
   },
   "$defs": {
@@ -22,6 +22,9 @@
         "model": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
+    },
+    "ordinaryRole": {
+      "anyOf": [{ "$ref": "#/$defs/modelRef" }, { "type": "null" }]
     }
   },
   "additionalProperties": false

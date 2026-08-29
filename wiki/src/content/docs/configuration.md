@@ -5,109 +5,58 @@ description: Set valid global defaults and session-branch overrides without pers
 
 ## Quick valid configuration
 
-The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply
-the draft. An active `normal` or `aggressive` configuration needs exact, authenticated Small,
-Medium, and Large references in the current scope. UI Design is optional.
+The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply the draft. In an active policy, every ordinary role needs an explicit decision: an exact, authenticated reference or `disabled`; at least one ordinary role must be enabled. Visual Design is optional and does not satisfy that minimum.
 
-Global defaults can also be written at `~/.pi/agent/delegation-policy.json` with schema version 2:
+Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 3:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "intensity": "normal",
   "preference": "standard",
   "small": { "provider": "example-provider", "model": "example-small" },
   "medium": { "provider": "example-provider", "model": "example-medium" },
-  "large": { "provider": "example-provider", "model": "example-large" },
+  "large": null,
   "uiDesign": { "provider": "example-provider", "model": "example-ui-design" }
 }
 ```
 
-The provider and model values above are fictional. Replace them with the exact references exposed by
-Pi and authenticated for each provider. Configuration stores those values separately. At launch,
-the selected role must use the combined reference in this form:
+The references are fictional. An absent setting inherits in a session or is **not configured** without a global value; an exact `{ "provider", "model" }` reference enables an ordinary role; `null` explicitly disables it. Global `uiDesign`, when present, remains an exact reference; only a session override may use `null` to disable Visual Design.
 
-```text
-model: "provider/model"
-```
+## Global defaults and session inheritance
 
-This requirement applies to every delegated launch, including UI Design when that role is configured.
-The policy does not substitute another model or inherit an ambient launcher default. See [commands and
-status](/pi-delegation-policy/commands-and-status/) for panel editing and validation feedback.
+Global defaults may contain intensity, preference, tri-state ordinary roles, and the compatible `uiDesign` key. If global intensity is absent, the built-in default is `off`. A branch inherits a global value until it records an override. **Use global default** removes that branch override. A session `null` wins over a global model; a session model wins over a global `null`. Sources are `default`, `global`, or `session`.
 
-## Global defaults
+**Save effective configuration as defaults** copies the effective configuration to the global file, including ordinary `null` values, but does not apply the current session draft or change its branch. `/delegate reset` writes `off` for the branch and returns other fields to global inheritance. In the panel, **Reset draft to off** is only a draft until Apply.
 
-Global defaults may contain intensity, model preference, exact Small/Medium/Large references, and an
-optional UI Design reference. If global intensity is absent, the built-in default is `off`. A global
-value is inherited by a session branch until that branch records an override.
+Schema 2 defaults and session entries remain supported as input and are migrated in memory to schema 3 without a write. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
 
-Selecting **Save effective configuration as defaults** in the panel copies the complete effective
-configuration, including intensity, to the global file. It does not apply the current session draft.
-
-## Session inheritance
-
-`/delegate` stores applied changes in the current session branch. They survive reload, resume, and
-tree navigation. Each setting can return to **Use global default** to remove its branch override. A
-fork restores the latest valid delegation entry in its active history.
-
-`/delegate reset` is an explicit safety action: it writes `off` for the branch and returns every
-other field to its global default. In the editor, **Reset draft to off** makes that same shape only a
-local draft until **Apply changes**.
+Each session Apply, quick intensity command, and reset first append a schema 2 `off` guard and then the schema 3 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard. Before downgrading after either action, run `/delegate off` in every active branch and manually replace every global ordinary `null` with an exact schema 2 reference before installing `0.5.0` or earlier.
 
 ## Intensity
 
-- `off` injects nothing into the next agent run and reports `D:OFF`. Pi rebuilds the system prompt for each run, so a policy from an earlier run is absent; an agent already running keeps its starting prompt.
-- `normal` delegates substantial, separable work only when the expected benefit clearly outweighs briefing, supervision, review, and integration. Borderline work stays with the main agent.
-- `aggressive` delegates substantial, separable, independently checkable work by default when its objective and acceptance criteria are clear. A plausible benefit can be enough, but tightly coupled work or clearly prohibitive overhead stays with the main agent.
+- `off` injects nothing into the next agent run and reports `D:OFF`. An already running agent keeps its starting prompt.
+- `normal` delegates substantial, separable work only when expected benefit clearly outweighs briefing, supervision, review, and integration. Borderline work stays with the main agent.
+- `aggressive` delegates suitable substantial, separable, independently checkable work by default when its objective and acceptance criteria are clear. Tightly coupled work or clearly prohibitive overhead stays with the main agent.
 
-In every mode, the main agent retains global strategy, coordination, integration, final review, and
-work whose essential context is too costly or risky to transfer.
+In every mode, the main agent retains global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer.
 
 ## Preference and role selection
 
-The policy evaluates task fit before preference. It considers the task's:
-
-- demand: execute, search, plan, decide, coordinate, or unblock;
-- difficulty: clarity, ambiguity, dependencies, and competing hypotheses;
-- quantity: files, modules, systems, sources, and context volume;
-- risk: the consequences of a wrong result;
-- error and review cost: what can go wrong, how costly it is to detect, and what evidence review requires.
-
-No single factor decides the role. Select the smallest role that can satisfy the acceptance criteria
-and evidence requirements.
+The policy considers demand, difficulty, quantity, risk, acceptance criteria, evidence, and review cost. It first removes disabled roles, then chooses the least costly enabled role that can satisfy the work. A more capable enabled role may cover work normally suited to a disabled role only when it can meet the same acceptance and evidence. If no enabled role is sufficient, the main agent keeps the work.
 
 - **Small** handles bounded, planned, and verifiable execution. Difficult but well-defined work can remain Small with higher thinking.
-- **Medium** handles task fits that materially require planning, ambiguity reduction, broad synthesis, tracing several modules, comparison, context coordination, or difficult decisions. Small does not need to fail first.
-- **Large** is exceptional and unblocks genuinely stuck work, such as persistent failures, severe framework conflicts, contradictory hypotheses, or reliable prior evidence that ordinary roles have not produced a trustworthy answer.
+- **Medium** handles planning, ambiguity reduction, broad synthesis, several modules, comparison, context coordination, or difficult decisions. Small does not need to fail first.
+- **Large** is exceptional when Small and Medium are enabled alternatives and unblocks genuinely stuck work. In a partial configuration, it may cover other delegable work only when it is the least costly enabled role that can satisfy the same acceptance and evidence.
 
-Large quantities of repetitive, independent work favor multiple Small delegations. Volume alone does
-not justify Medium or Large, and agent type does not determine the model role.
+Large quantities of repetitive independent work favor multiple Small delegations. Volume alone does not justify Medium or Large, and agent type does not determine the role.
 
-Preference is a tie-break between comparably credible Small and Medium fits:
+`efficient` breaks a credible Small/Medium tie toward Small. `intensive` breaks the same tie toward Medium. `standard` adds no bias. If Small or Medium is disabled, all three preferences are inert: they do not redirect work to Large or another role.
 
-- `efficient` breaks that tie toward Small. It does not override a materially better Medium fit.
-- `standard` adds no Small or Medium bias; follow task fit.
-- `intensive` breaks that tie toward Medium. It does not override a clearly better Small fit.
+## Thinking and Visual Design
 
-All three ordinary roles remain available in every preference. Active role references must be available,
-in scope, and authenticated.
+The main agent chooses thinking for every delegated task from demand, difficulty, quantity, risk, error and review cost, and the selected model's capabilities. Thinking is dynamic and advisory; this extension does not configure, validate, or persist it. With `pi-subagents`, the selected base and level are sent as `model: "provider/model:LEVEL"`; another launcher may expose a separate per-run field.
 
-## Thinking
+Visual Design is an optional specialist, not a fourth execution tier. Use it only when the primary acceptance criterion is visual or user experience, behavior and data contracts remain unchanged, the patch is bounded, and it needs no logic, data flow, APIs, routes, architecture, tooling, or cross-system coordination. It may design, create, implement, and review scoped presentation code and assets, including visual accessibility, and run its relevant checks. It does not replace ordinary roles or own interaction behavior, state, validation, semantic accessibility, persistence, test infrastructure, integration, or final acceptance. When disabled, an enabled ordinary role handles eligible visual work by task fit.
 
-The main agent chooses thinking for each delegated task from task demand, difficulty, quantity, risk,
-error and review cost, and the selected model's capabilities. Thinking is dynamic and advisory; this
-extension does not configure or persist it.
-
-## UI Design
-
-UI Design is optional. When configured, it is limited to visual design direction, exploration, and
-review. It must not implement an interface, write code, or run tests. When it is disabled, ordinary
-roles handle design-related work.
-
-## Legacy defaults
-
-Schema version 1 is inactive and is not migrated automatically. Open `/delegate`, configure schema
-version 2, and save the effective configuration as defaults before using an active intensity.
-
-For the complete product boundary, fail-closed behavior, privacy, and reporting guidance, read
-[limits and privacy](/pi-delegation-policy/limits-and-privacy/).
+For fail-closed behavior, privacy, and reporting guidance, read [limits and privacy](/pi-delegation-policy/limits-and-privacy/).

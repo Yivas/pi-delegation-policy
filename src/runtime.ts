@@ -3,9 +3,8 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   getGlobalConfigPath,
   readConfig,
-  SESSION_ENTRY_TYPE,
   resolveDelegateState,
-  restoreSessionState,
+  restoreSessionStateWithDiagnostics,
   type ConfigDiagnostic,
 } from "./config.ts";
 import {
@@ -17,6 +16,7 @@ import {
   type ModelRef,
   type ModelRole,
   type ModelStatus,
+  type OrdinaryRoleSetting,
   type SessionDelegateState,
 } from "./types.ts";
 
@@ -28,6 +28,18 @@ export type RuntimeState = {
   modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
 };
+
+export function isRoleEnabled(setting: OrdinaryRoleSetting | undefined): setting is ModelRef {
+  return setting !== undefined && setting !== null;
+}
+
+export function isRoleDisabled(setting: OrdinaryRoleSetting | undefined): setting is null {
+  return setting === null;
+}
+
+export function enabledOrdinaryRoles(effective: EffectiveDelegateState): ModelRole[] {
+  return MODEL_ROLES.filter((role) => isRoleEnabled(effective[role]));
+}
 
 function matchesReference(model: Model<Api>, reference: ModelRef): boolean {
   return model.provider === reference.provider && model.id === reference.model;
@@ -88,17 +100,12 @@ function statusDetail(status: ModelStatus): string {
   }
 }
 
-function referenceFor(state: RuntimeState, role: ModelRole): ModelRef | undefined {
-  return state.effective[role];
-}
-
-function validateRole(ctx: ExtensionContext, state: RuntimeState, role: ModelConfigKey): void {
-  const reference = role === "uiDesign" ? state.effective.uiDesign : referenceFor(state, role);
-  if (!reference) {
-    state.runtimeErrors.push(`${ROLE_LABELS[role]} model is not configured.`);
-    return;
-  }
-
+function validateEnabledRole(
+  ctx: ExtensionContext,
+  state: RuntimeState,
+  role: ModelConfigKey,
+  reference: ModelRef,
+): void {
   const status = validateModelReference(ctx, reference);
   state.modelStatuses.set(role, status);
   if (status.kind !== "available") {
@@ -108,12 +115,12 @@ function validateRole(ctx: ExtensionContext, state: RuntimeState, role: ModelCon
 
 export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> {
   const loaded = await readConfig(getGlobalConfigPath());
-  const session = restoreSessionState(ctx.sessionManager.getBranch());
+  const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
-    effective: resolveDelegateState(loaded.defaults, session),
+    effective: resolveDelegateState(loaded.defaults, restored.session),
     global: loaded.defaults,
-    session,
-    diagnostics: loaded.diagnostics,
+    session: restored.session,
+    diagnostics: [...loaded.diagnostics, ...restored.diagnostics],
     modelStatuses: new Map(),
     runtimeErrors: [],
   };
@@ -129,8 +136,21 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
   if (state.effective.intensity === "off") return;
 
   for (const diagnostic of state.diagnostics) state.runtimeErrors.push(diagnostic.message);
-  for (const role of MODEL_ROLES) validateRole(ctx, state, role);
-  if (state.effective.uiDesign) validateRole(ctx, state, "uiDesign");
+  for (const role of MODEL_ROLES) {
+    const setting = state.effective[role];
+    if (setting === undefined) {
+      state.runtimeErrors.push(
+        `${ROLE_LABELS[role]} model is not configured; configure it or explicitly disable it.`,
+      );
+    } else if (isRoleEnabled(setting)) {
+      validateEnabledRole(ctx, state, role, setting);
+    }
+  }
+  if (enabledOrdinaryRoles(state.effective).length === 0) {
+    state.runtimeErrors.push("At least one ordinary role must be enabled.");
+  }
+  if (state.effective.uiDesign)
+    validateEnabledRole(ctx, state, "uiDesign", state.effective.uiDesign);
 }
 
 export function hasRuntimeError(state: RuntimeState): boolean {
@@ -143,13 +163,7 @@ export function statusLabel(state: RuntimeState): string {
   return state.effective.intensity === "normal" ? "D:NORM" : "D:AGG";
 }
 
-export function formatModelRef(reference: ModelRef | undefined): string {
+export function formatModelRef(reference: ModelRef | null | undefined): string {
+  if (reference === null) return "disabled";
   return reference ? `${reference.provider}/${reference.model}` : "not configured";
-}
-
-export function sessionEntry(
-  pi: { appendEntry: (type: string, data?: unknown) => void },
-  state: RuntimeState,
-): void {
-  pi.appendEntry(SESSION_ENTRY_TYPE, state.session);
 }

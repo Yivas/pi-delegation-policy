@@ -7,83 +7,57 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 - Pi `>=0.84.3` satisfies the package peer requirement.
 - Pi `0.84.3` is the explicitly checked baseline; newer Pi versions are not claimed as tested.
-- Access to npm to install the latest published package, currently `0.3.2`.
-- Authenticated providers exposing the exact Small, Medium, and Large model references you intend to use in Pi's current scope. UI Design is optional.
+- Access to npm to install the latest published package, currently `0.6.0`.
+- An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design is optional.
 
 ## Safe first-use path
 
 ### 1. Install and reload
 
-Install the published package in Pi's user settings:
-
 ```bash
 pi install npm:pi-delegation-policy
 ```
 
-Restart Pi or run `/reload`. The extension is inactive by default: a new session with no configured
-intensity starts at `off`.
+Restart Pi or run `/reload`. A new session with no configured intensity starts at `off`.
 
-### 2. Configure exact role references
+### 2. Configure or disable ordinary roles
 
-Open `/delegate` in Pi's TUI (or press `Alt+G` when that shortcut is available). In the editor:
+Open `/delegate` in Pi's TUI, or press `Alt+G`. For **Small**, **Medium**, and **Large**, choose an exact provider/model shown by Pi or choose **Disable for this session**. A disabled role is an explicit decision, not a missing model. Keep at least one ordinary role enabled. **Visual Design** is optional and does not count toward that minimum.
 
-1. Set **Small** to an exact provider and model ID exposed by Pi and authenticated for that provider.
-2. Set **Medium** to its own exact provider and model ID.
-3. Set **Large** to its own exact provider and model ID.
-4. Optionally set **UI Design** to an exact reference, or leave it disabled.
-5. Keep the values as a draft while editing. Choose **Apply changes** only after all required roles are ready.
+Each selector pins **Use global default** and **Disable for this session**, then searches provider, model ID, and display name. The model ID appears first and `[provider]` last. When Pi supplies public model metadata, the selected row can show its name, API, reasoning support, context window, and maximum output. That metadata is transient and is not stored. The panel uses text to distinguish `disabled`, `not configured`, and an exact `provider/model` reference. Changes remain a draft until **Apply changes**; closing a modified draft requires explicit discard.
 
-The panel displays model ID first and `[provider]` last, and searches provider, model ID, and display
-name. It also shows a compact effective-policy preview and short explanations for each field. When Pi
-supplies public model metadata, the model selector can show its name, API, reasoning support, context
-window, and maximum output. This metadata is transient and is not stored in policy settings.
-
-Each configured role stores separate provider and model values, but every delegated launch must send
-the selected role's exact combined reference:
+Every delegated launch uses the selected exact model plus thinking chosen for that task. With `pi-subagents`, the launcher form is:
 
 ```text
-model: "provider/model"
+model: "provider/model:LEVEL"
 ```
 
-The policy does not substitute a different model or rely on an ambient launcher default.
+`LEVEL` is selected per run from task demand and the selected model's supported capabilities. The policy does not persist thinking, substitute a model, or rely on an ambient model or thinking default.
 
-### 3. Select an active intensity and apply
+Visual Design may own a bounded presentation patch when visual or user-experience quality is the primary acceptance criterion and behavior, data contracts, component scope, and platform remain unchanged. It can create and integrate scoped visual assets or presentation code, then run relevant existing checks. Use an enabled ordinary role for logic, data, APIs, routes, interaction behavior, application architecture, tooling, cross-system integration, and behavior tests. The main agent retains final integration and acceptance.
 
-Choose `normal` for a benefit threshold that clearly outweighs briefing, supervision, review, and
-integration overhead. Choose `aggressive` for suitable substantial, separable, independently
-checkable work when the objective and acceptance criteria are clear. Tightly coupled work or clearly
-prohibitive overhead remains with the main agent in either mode.
+### 3. Activate and inspect
 
-Select **Apply changes** (or press `A`). Saving effective configuration as defaults is a separate
-action: it updates the global file without applying the current session draft.
+Choose `normal` when expected delegation benefit clearly outweighs briefing, supervision, review, and integration overhead. Choose `aggressive` for suitable substantial, separable, independently checkable work with clear objective and acceptance criteria. Tightly coupled work or clearly prohibitive overhead remains with the main agent in either mode.
 
-### 4. Inspect status before relying on it
+Apply the draft, then run `/delegate status`. `D:NORM` and `D:AGG` mean every ordinary role is either enabled with a valid exact reference or explicitly disabled, and at least one is enabled. `D:ERR` means a role is not configured, an enabled reference is unavailable, out of scope, or unauthenticated, or no ordinary role is enabled. No policy is injected for `D:ERR`. `D:OFF` injects nothing.
 
-Run:
+### 4. Know the persisted format
 
-```text
-/delegate status
-```
+Global defaults and new session entries use schema version 3. Schema 2 values remain readable and are normalized in memory without rewriting the source. Schema 3 uses `null` to disable an ordinary role. Session changes write a schema 2 `off` guard before the schema 3 state so an older package restores off rather than older active state.
 
-The status output shows each effective role's exact `provider/model` reference and its provenance:
-`default`, `global`, or `session`. Confirm the footer shows `D:NORM` or `D:AGG`. These labels mean the
-selected active intensity has a valid required configuration. `D:ERR` means an active required role is
-missing, unavailable, out-of-scope, or unauthenticated; no policy is injected. Correct the role and
-apply again. `D:OFF` means injection is disabled.
+Saving effective defaults changes only the global file and does not apply the current session draft or create that guard. Before downgrading after saving defaults or manually editing schema 3, run `/delegate off` in each active branch, convert global ordinary roles back to exact schema 2 references, and then install the older package.
 
 ### 5. Start the next agent run
 
-The applied configuration is read when Pi prepares the next agent run. It does not rewrite an agent
-that is already running. Turning the policy off removes it from subsequent runs; Pi rebuilds the
-system prompt for each run.
+The applied configuration is read when Pi prepares the next agent run. It does not rewrite an agent that is already running. Turning the policy off removes it from subsequent runs; Pi rebuilds the system prompt for each run.
 
 ## Local checkout (secondary)
 
-For development, from the checkout's parent directory, install the package folder instead:
+For development, from the checkout's parent directory:
 
 ```bash
 pi install ./pi-delegation-policy
 ```
 
-See [configuration](/pi-delegation-policy/configuration/) for defaults and session inheritance, or
-[commands and status](/pi-delegation-policy/commands-and-status/) for the complete operating guide.
+See [configuration](/pi-delegation-policy/configuration/) for inheritance and selection, or [commands and status](/pi-delegation-policy/commands-and-status/) for keyboard operation.
