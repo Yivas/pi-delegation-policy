@@ -2,7 +2,7 @@
 
 A local Pi extension that helps the main agent decide **when delegation is worth it** and which exact models to use for Small, Medium, Large, and optional Visual Design. It provides guidance; it is not a subagent runner.
 
-> **Status:** Version **0.5.0** is the latest published package. This checkout includes unreleased changes. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline.
+> **Status:** Version **0.6.0** is the latest published package. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline.
 >
 > **Docs:** [Read the documentation site](https://yivas.github.io/pi-delegation-policy/).
 

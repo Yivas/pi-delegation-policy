@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-08-29
+
 ### Added
 
 - Allow Small, Medium, and Large to be explicitly disabled independently while requiring one enabled ordinary role for an active policy.
