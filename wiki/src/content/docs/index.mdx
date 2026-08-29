@@ -2,7 +2,7 @@
 title: pi-delegation-policy
 description: Configure delegation intensity and exact role model references for Pi.
 hero:
-  tagline: Choose when to delegate and which exact models guide the work.
+  tagline: Choose when to delegate and which exact enabled models guide the work.
   actions:
     - text: Install the extension
       link: /pi-delegation-policy/getting-started/
@@ -15,13 +15,12 @@ hero:
 
 import { LinkCard, Steps } from "@astrojs/starlight/components";
 
-`pi-delegation-policy` is a local Pi extension for configuring delegation intensity and exact
-references for Small, Medium, Large, and an optional Visual Design role. It guides the main agent; it
-never runs, routes, or enforces delegated work.
+`pi-delegation-policy` is a local Pi extension for delegation intensity and exact references for
+Small, Medium, Large, and optional Visual Design. It guides the main agent; it never runs, routes, or
+enforces delegated work.
 
 :::caution
-The extension cannot guarantee that another system follows a configured role or thinking choice. It
-only adds guidance when the active configuration is valid.
+The extension adds guidance only when an active configuration is valid. It cannot guarantee that another system follows a configured role or thinking choice.
 :::
 
 ## Start here
@@ -29,17 +28,16 @@ only adds guidance when the active configuration is valid.
 <Steps>
 
 1. Install `pi-delegation-policy` and reload Pi.
-2. Open `/delegate`, set exact authenticated Small, Medium, and Large references, and optionally configure Visual Design.
-3. Select `normal` or `aggressive`, choose **Apply changes**, then confirm `/delegate status` and the footer show `D:NORM` or `D:AGG`.
+2. Open `/delegate`, configure or explicitly disable each of Small, Medium, and Large, and leave at least one enabled. Visual Design is optional.
+3. Select `normal` or `aggressive`, choose **Apply changes**, then confirm `/delegate status` and `D:NORM` or `D:AGG`.
 
 </Steps>
 
-The applied state is used on the next agent run. An invalid active role shows `D:ERR` and injects no
-policy. Pi `0.84.3` is the explicitly checked baseline; the package peer range is `>=0.84.3`.
+`disabled` is distinct from `not configured`. The latter, an invalid enabled reference, or zero enabled ordinary roles produces `D:ERR` and injects no policy. Pi `0.84.3` is the explicitly checked baseline; the package peer range is `>=0.84.3`.
 
 <LinkCard
   title="Install and configure"
-  description="Follow one safe path from installation to a valid active status."
+  description="Follow a safe path from installation to a valid active status."
   href="/pi-delegation-policy/getting-started/"
 />
 <LinkCard
@@ -49,11 +47,11 @@ policy. Pi `0.84.3` is the explicitly checked baseline; the package peer range i
 />
 <LinkCard
   title="Set policy values"
-  description="Understand global defaults, session inheritance, roles, and intensity."
+  description="Understand schema 3, tri-state roles, and inheritance."
   href="/pi-delegation-policy/configuration/"
 />
 <LinkCard
   title="Review limits and privacy"
-  description="Check fail-closed behavior, privacy boundaries, and reporting."
+  description="Check fail-closed behavior and privacy boundaries."
   href="/pi-delegation-policy/limits-and-privacy/"
 />

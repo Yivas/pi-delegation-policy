@@ -16,6 +16,7 @@ import { buildPolicyPreview } from "./prompt.ts";
 import {
   INTENSITIES,
   PREFERENCES,
+  CURRENT_SCHEMA_VERSION,
   type GlobalDefaults,
   type Intensity,
   type ModelConfigKey,
@@ -260,7 +261,7 @@ export class DelegatePanel implements Component, Focusable {
     const safeWidth = Math.max(1, width);
     this.renderWidth = safeWidth;
     const rows = Math.max(1, this.tui.terminal.rows);
-    if (safeWidth < 24 || rows < 9) return this.renderCompact(safeWidth, rows);
+    if (safeWidth < 26 || rows < 9) return this.renderCompact(safeWidth, rows);
 
     const title = this.renderTitle(safeWidth);
     const footer = this.renderFooter(safeWidth);
@@ -281,7 +282,7 @@ export class DelegatePanel implements Component, Focusable {
   }
 
   private isCompact(): boolean {
-    return this.renderWidth < 24 || this.tui.terminal.rows < 9;
+    return this.renderWidth < 26 || this.tui.terminal.rows < 9;
   }
 
   private handleCompactInput(data: string): void {
@@ -400,7 +401,7 @@ export class DelegatePanel implements Component, Focusable {
               ? effective.uiDesign
                 ? modelText(effective.uiDesign)
                 : "disabled"
-              : modelText(effective[field]);
+              : rawModelText(effective[field], "not configured");
         const details = this.sourceDetails(field);
         if (width < 48) {
           return [
@@ -473,7 +474,7 @@ export class DelegatePanel implements Component, Focusable {
       ];
     }
     return [
-      "built-in —",
+      "built-in not configured",
       `global ${rawModelText(this.global[field], "—")}`,
       `session ${rawModelText(this.draft[field], "inherit")}`,
     ];
@@ -522,7 +523,7 @@ export class DelegatePanel implements Component, Focusable {
     const [input = ""] = this.searchInput.render(inputWidth);
     const inputText = input.startsWith("> ") ? input.slice(2) : input;
     const choices = this.modelChoices(mode.field, mode.query);
-    const pinnedCount = mode.field === "uiDesign" ? 2 : 1;
+    const pinnedCount = 2;
     const pinned = choices.slice(0, pinnedCount);
     const models = choices.slice(pinnedCount);
     const pinnedLines = pinned.map((choice, index) =>
@@ -544,8 +545,9 @@ export class DelegatePanel implements Component, Focusable {
             ),
           )
         : [];
-    const fixedRows = 2 + pinnedLines.length + dividerRows;
-    const availableDetailRows = Math.max(0, budget - fixedRows - 1);
+    const fixedRows = 1 + pinnedLines.length + dividerRows;
+    const reservedModelRows = models.length > 0 && budget > fixedRows ? 1 : 0;
+    const availableDetailRows = Math.max(0, budget - fixedRows - reservedModelRows - 1);
     const details = metadata.slice(0, availableDetailRows);
     const detailRows = details.length > 0 ? details.length + 1 : 0;
     const availableListRows = Math.max(0, budget - fixedRows - detailRows);
@@ -577,7 +579,6 @@ export class DelegatePanel implements Component, Focusable {
     }
     return [
       truncateToWidth(`Search: ${inputText}`, width, ""),
-      "",
       ...pinnedLines,
       ...(dividerRows ? [this.theme.fg("borderMuted", "─".repeat(width))] : []),
       ...modelLines,
@@ -656,7 +657,8 @@ export class DelegatePanel implements Component, Focusable {
     }
     if (item === "apply") void this.applyDraft();
     else if (item === "save-defaults") void this.saveDefaults();
-    else if (item === "reset") this.draft = { schemaVersion: 2, intensity: "off" };
+    else if (item === "reset")
+      this.draft = { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" };
     else this.requestClose();
   }
 
@@ -730,24 +732,28 @@ export class DelegatePanel implements Component, Focusable {
     if (!choice || this.mode.kind !== "model") return;
     const field = this.mode.field;
     if (choice.kind === "global") delete this.draft[field];
-    else if (choice.kind === "disabled" && field === "uiDesign") this.draft.uiDesign = null;
+    else if (choice.kind === "disabled") this.draft[field] = null;
     else if (choice.kind === "model") this.draft[field] = { ...choice.reference };
     this.mode = { kind: "settings" };
   }
 
   private modelChoices(field: ModelConfigKey, query: string): ModelChoice[] {
     const global = this.global[field];
+    const globalDescription =
+      field === "uiDesign"
+        ? global
+          ? modelText(global)
+          : "disabled"
+        : rawModelText(global, "not configured");
     const pinned: ModelChoice[] = [
       {
         kind: "global",
         key: "global",
         label: USE_GLOBAL_DEFAULT,
-        ...(global ? { description: modelText(global) } : {}),
+        description: globalDescription,
       },
+      { kind: "disabled", key: "disabled", label: DISABLE_FOR_SESSION },
     ];
-    if (field === "uiDesign") {
-      pinned.push({ kind: "disabled", key: "disabled", label: DISABLE_FOR_SESSION });
-    }
     const filtered = query
       ? fuzzyFilter(this.candidates, query, (model) =>
           `${model.provider} ${model.provider}/${model.id} ${model.provider} ${model.id} ${model.name ?? ""}`.trim(),

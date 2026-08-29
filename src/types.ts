@@ -1,5 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 
+export const CURRENT_SCHEMA_VERSION = 3 as const;
+
 export const INTENSITIES = ["off", "normal", "aggressive"] as const;
 export type Intensity = (typeof INTENSITIES)[number];
 
@@ -22,23 +24,26 @@ export type ModelRef = {
   model: string;
 };
 
+// Absent session properties inherit. Null explicitly disables an ordinary role.
+export type OrdinaryRoleSetting = ModelRef | null;
+
 export type GlobalDefaults = {
-  schemaVersion: 2;
+  schemaVersion: typeof CURRENT_SCHEMA_VERSION;
   intensity?: Intensity;
   preference?: Preference;
-  small?: ModelRef;
-  medium?: ModelRef;
-  large?: ModelRef;
+  small?: OrdinaryRoleSetting;
+  medium?: OrdinaryRoleSetting;
+  large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
 };
 
 export type SessionDelegateState = {
-  schemaVersion: 2;
+  schemaVersion: typeof CURRENT_SCHEMA_VERSION;
   intensity?: Intensity;
   preference?: Preference;
-  small?: ModelRef;
-  medium?: ModelRef;
-  large?: ModelRef;
+  small?: OrdinaryRoleSetting;
+  medium?: OrdinaryRoleSetting;
+  large?: OrdinaryRoleSetting;
   // Null explicitly disables a global Visual Design role for this session branch.
   uiDesign?: ModelRef | null;
 };
@@ -48,9 +53,9 @@ export type ValueSource = "default" | "global" | "session";
 export type EffectiveDelegateState = {
   intensity: Intensity;
   preference: Preference;
-  small?: ModelRef;
-  medium?: ModelRef;
-  large?: ModelRef;
+  small?: OrdinaryRoleSetting;
+  medium?: OrdinaryRoleSetting;
+  large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
   source: {
     intensity: ValueSource;
@@ -70,9 +75,9 @@ export type ModelStatus =
   | { kind: "no-credentials" };
 
 export function emptyGlobalDefaults(): GlobalDefaults {
-  return { schemaVersion: 2 };
+  return { schemaVersion: CURRENT_SCHEMA_VERSION };
 }
 
 export function emptySessionState(): SessionDelegateState {
-  return { schemaVersion: 2 };
+  return { schemaVersion: CURRENT_SCHEMA_VERSION };
 }

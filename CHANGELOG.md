@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Allow Small, Medium, and Large to be explicitly disabled independently while requiring one enabled ordinary role for an active policy.
+- Add schema 3 defaults and session state, with in-memory schema 2 migration and guarded session writes for safer downgrade behavior. Downgrading after saving schema 3 defaults or manually editing them requires `/delegate off` in each active branch and manual conversion of ordinary `null` values.
+
+### Changed
+
+- Select only enabled ordinary roles that can satisfy the task, leaving work with the main agent when none can; Small/Medium preferences are inactive when either role is disabled.
+
 ## 0.5.0 - 2026-08-28
 
 ### Added

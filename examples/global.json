@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "intensity": "normal",
   "preference": "standard",
   "small": {
@@ -10,10 +10,7 @@
     "provider": "example-provider",
     "model": "example-medium"
   },
-  "large": {
-    "provider": "example-provider",
-    "model": "example-large"
-  },
+  "large": null,
   "uiDesign": {
     "provider": "example-provider",
     "model": "example-ui-design"

@@ -1,12 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  appendGuardedSessionState,
   defaultsFromEffectiveState,
   getGlobalConfigPath,
   resolveDelegateState,
   writeConfig,
 } from "./config.ts";
 import { DelegatePanel, type DelegatePanelResult } from "./delegate-panel.ts";
-import { hasRuntimeError, loadRuntime, modelCandidates, sessionEntry } from "./runtime.ts";
+import { hasRuntimeError, loadRuntime, modelCandidates } from "./runtime.ts";
 
 export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
   if (!ctx.hasUI) return;
@@ -29,13 +30,23 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
         global: state.global,
         session: state.session,
         candidates,
-        diagnostics: state.runtimeErrors,
+        diagnostics:
+          state.effective.intensity === "off"
+            ? state.diagnostics
+                .filter(({ reportWhenOff }) => reportWhenOff)
+                .map(({ message }) => message)
+            : [...state.runtimeErrors],
         hasRuntimeError: hasRuntimeError(state),
         onApply: async (draft) => {
-          const session = structuredClone(draft);
-          sessionEntry(pi, { ...state, session });
-          state.session = session;
-          return true;
+          const result = appendGuardedSessionState(pi, structuredClone(draft));
+          const refreshed = await loadRuntime(ctx);
+          state.global = refreshed.global;
+          state.session = refreshed.session;
+          state.diagnostics = refreshed.diagnostics;
+          state.effective = refreshed.effective;
+          state.modelStatuses = refreshed.modelStatuses;
+          state.runtimeErrors = refreshed.runtimeErrors;
+          return result === "success";
         },
         onSaveDefaults: async (draft) => {
           try {
