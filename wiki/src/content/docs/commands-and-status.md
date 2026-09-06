@@ -5,7 +5,7 @@ description: Operate the /delegate panel and interpret its status in Pi.
 
 ## 1. Choose how to operate
 
-Use `/delegate` in Pi's TUI to open the keyboard-first editor. `Alt+G` opens the same editor when available. The editor requires TUI mode; these command arguments remain available in other modes. `orchestrator` is available only in this unreleased development branch; published 0.6.0 supports `off`, `normal`, and `aggressive` only:
+Use `/delegate` in Pi's TUI to open the keyboard-first editor. `Alt+G` opens the same editor when available. The editor requires TUI mode; these command arguments remain available in other modes. The published `0.7.0` package supports `off`, `normal`, `aggressive`, and `orchestrator`:
 
 | Command                  | Effect                                                   |
 | ------------------------ | -------------------------------------------------------- |
@@ -63,7 +63,7 @@ An invalid enabled reference produces `D:ERR` and no policy, so it is never rero
 | `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive. | Choose an active intensity only when roles are ready.                     |
 | `D:NORM` | A valid `normal` configuration is active.                    | Delegate only with clear expected benefit.                                |
 | `D:AGG`  | A valid `aggressive` configuration is active.                | Delegate suitable substantial work unless coupling or overhead dominates. |
-| `D:ORCH` | A valid unreleased `orchestrator` configuration is active.   | Batch transferable detail; retain objectives and acceptance.              |
+| `D:ORCH` | A valid `orchestrator` configuration is active.              | Batch transferable detail; retain objectives and acceptance.              |
 | `D:ERR`  | An active configuration is invalid. No policy is injected.   | Inspect `/delegate status` and correct the role.                          |
 
 `/delegate status` keeps stable tokens and reports exact effective references and sources, for example:

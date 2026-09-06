@@ -33,11 +33,11 @@ Schema 2 defaults and session entries remain supported as input and are migrated
 
 Each session Apply, quick intensity command, and reset first append a schema 2 `off` guard and then the schema 3 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
 
-This development branch adds `orchestrator`; it is not in the published `0.6.0` package. Before downgrading:
+Published `0.7.0` includes `orchestrator`. Before downgrading:
 
 1. Set the global `intensity` to `off`, `normal`, or `aggressive`, preferably `off`.
 2. Run `/delegate off` in every active branch before installing the older package.
-3. For `0.6.0`, keep schema 3 and the existing role settings. For `0.5.0` or earlier, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references.
+3. For `0.6.0`, keep schema 3 and the existing role settings. For `<=0.5.0`, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references.
 
 Schema 2 never accepts `orchestrator`. Saving defaults alone does not update branch overrides; changing a branch alone does not repair unsupported global defaults.
 

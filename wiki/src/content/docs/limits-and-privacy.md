@@ -19,7 +19,7 @@ Visual Design is an optional specialist for a bounded presentation patch only wh
 
 The panel shows a compact preview and field explanations. Model selection presents model ID first and `[provider]` last, fuzzy-searches provider, model ID, and display name, and can show transient public metadata: name, API, reasoning support, context window, and maximum output. The extension does not persist that metadata.
 
-`/delegate status` shows exact effective references and provenance (`default`, `global`, or `session`), plus sanitized diagnostics. `D:NORM` and `D:AGG` mean local validation passed; they do not prove a delegated launch occurred or another system followed guidance. `D:ORCH` has the same meaning for the unreleased `orchestrator` intensity in this development branch; published 0.6.0 supports only `off`, `normal`, and `aggressive`.
+`/delegate status` shows exact effective references and provenance (`default`, `global`, or `session`), plus sanitized diagnostics. `D:NORM`, `D:AGG`, and `D:ORCH` mean local validation passed; they do not prove a delegated launch occurred or another system followed guidance. The published `0.7.0` package supports all four intensities.
 
 ## Fail-closed behavior
 

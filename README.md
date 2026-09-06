@@ -2,7 +2,7 @@
 
 A local Pi extension that helps the main agent decide **when delegation is worth it** and which exact models to use for Small, Medium, Large, and optional Visual Design. It provides guidance; it is not a subagent runner.
 
-> **Status:** Version **0.6.0** is the published package. This development branch adds `orchestrator` but has not released it; published 0.6.0 supports only `off`, `normal`, and `aggressive`. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline.
+> **Status:** Version **0.7.0** is the latest published package and supports `off`, `normal`, `aggressive`, and `orchestrator`. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline.
 >
 > **Docs:** [Read the documentation site](https://yivas.github.io/pi-delegation-policy/).
 
@@ -30,13 +30,13 @@ pi install npm:pi-delegation-policy
 
 1. Open `/delegate` (or press `Alt+G` in Pi's TUI).
 2. For Small, Medium, and Large, select an exact authenticated provider/model or **Disable for this session**. Keep at least one enabled.
-3. Select `normal` or `aggressive`, then choose **Apply changes**. `orchestrator` is available only in this unreleased development branch.
+3. Select `normal`, `aggressive`, or `orchestrator`, then choose **Apply changes**.
 4. Run `/delegate status`. `disabled`, `not configured`, and exact references remain distinct. `D:ERR` means no policy is injected.
 5. The applied state affects the **next** agent run.
 
 Global defaults are stored at `~/.pi/agent/delegation-policy.json` and use schema version 3. Schema 2 defaults and session entries are read and normalized in memory without rewriting them. Schema 3 stores `null` for an explicitly disabled ordinary role. Session changes write a schema 2 `off` guard before the schema 3 state; saving defaults changes only the global file.
 
-Before downgrading to `0.6.0`, change the global intensity to `off`, `normal`, or `aggressive` and run `/delegate off` in every active branch. For `0.5.0` or earlier, also convert global defaults to schema 2 and replace ordinary `null` values with exact model references. Schema 2 never accepts `orchestrator`. See the configuration reference for details.
+Before downgrading to `0.6.0`, change the global intensity to `off`, `normal`, or `aggressive` and run `/delegate off` in every active branch. For `<=0.5.0`, also convert global defaults to schema 2 and replace ordinary `null` values with exact model references. Schema 2 never accepts `orchestrator`. See the configuration reference for details.
 
 See the [getting-started guide](https://yivas.github.io/pi-delegation-policy/getting-started/) and [configuration reference](https://yivas.github.io/pi-delegation-policy/configuration/).
 

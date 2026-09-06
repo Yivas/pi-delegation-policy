@@ -7,7 +7,7 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 - Pi `>=0.84.3` satisfies the package peer requirement.
 - Pi `0.84.3` is the explicitly checked baseline; newer Pi versions are not claimed as tested.
-- Access to npm to install the published package, currently `0.6.0`.
+- Access to npm to install the latest published package, `0.7.0`.
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design is optional.
 
 ## Safe first-use path
@@ -38,15 +38,15 @@ Visual Design may own a bounded presentation patch when visual or user-experienc
 
 ### 3. Activate and inspect
 
-Choose `normal` when expected delegation benefit clearly outweighs briefing, supervision, review, and integration overhead. Choose `aggressive` for suitable substantial, separable, independently checkable work with clear objective and acceptance criteria. `orchestrator` is available only in this unreleased development branch; it retains ownership while delegating transferable research, detailed planning, implementation, testing, writing, review, and integration mechanics. It batches small work when that reduces launches and duplicated context and does direct work of any size when transfer is not worthwhile. Tightly coupled, non-transferable, or uneconomical work remains with the main agent.
+Choose `normal` when expected delegation benefit clearly outweighs briefing, supervision, review, and integration overhead. Choose `aggressive` for suitable substantial, separable, independently checkable work with clear objective and acceptance criteria. Choose `orchestrator` to minimize main-agent execution and narration while retaining ownership and delegating transferable research, detailed planning, implementation, testing, writing, review, and integration mechanics. It batches small work when that reduces launches and duplicated context and does direct work of any size when transfer is not worthwhile. Tightly coupled, non-transferable, or uneconomical work remains with the main agent.
 
-Apply the draft, then run `/delegate status`. `D:NORM` and `D:AGG` mean every ordinary role is either enabled with a valid exact reference or explicitly disabled, and at least one is enabled. This branch also exposes `D:ORCH` for the unreleased `orchestrator` intensity. `D:ERR` means a role is not configured, an enabled reference is unavailable, out of scope, or unauthenticated, or no ordinary role is enabled. No policy is injected for `D:ERR`. `D:OFF` injects nothing.
+Apply the draft, then run `/delegate status`. `D:NORM`, `D:AGG`, and `D:ORCH` mean every ordinary role is either enabled with a valid exact reference or explicitly disabled, and at least one is enabled. `D:ERR` means a role is not configured, an enabled reference is unavailable, out of scope, or unauthenticated, or no ordinary role is enabled. No policy is injected for `D:ERR`. `D:OFF` injects nothing.
 
 ### 4. Know the persisted format
 
 Global defaults and new session entries use schema version 3. Schema 2 values remain readable and are normalized in memory without rewriting the source. Schema 3 uses `null` to disable an ordinary role. Session changes write a schema 2 `off` guard before the schema 3 state so an older package restores off rather than older active state.
 
-Saving effective defaults changes only the global file and does not apply the current session draft or create that guard. Before downgrading to `0.6.0`, change the global intensity to `off`, `normal`, or `aggressive` and run `/delegate off` in every active branch. Keep schema 3 for `0.6.0`; for `0.5.0` or earlier, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references. Complete these steps before installing the older package; see [configuration](/pi-delegation-policy/configuration/#global-defaults-and-session-inheritance).
+Saving effective defaults changes only the global file and does not apply the current session draft or create that guard. Before downgrading to `0.6.0`, change the global intensity to `off`, `normal`, or `aggressive` and run `/delegate off` in every active branch. Keep schema 3 for `0.6.0`; for `<=0.5.0`, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references. Complete these steps before installing the older package; see [configuration](/pi-delegation-policy/configuration/#global-defaults-and-session-inheritance).
 
 ### 5. Start the next agent run
 
