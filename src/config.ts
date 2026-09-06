@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   CURRENT_SCHEMA_VERSION,
+  INTENSITIES,
   emptyGlobalDefaults,
   emptySessionState,
   type EffectiveDelegateState,
@@ -56,7 +57,7 @@ export type GuardedAppendResult = "success" | "guard-failed" | "state-failed";
 
 type Schema2GlobalDefaults = {
   schemaVersion: 2;
-  intensity?: Intensity;
+  intensity?: LegacyIntensity;
   preference?: Preference;
   small?: ModelRef;
   medium?: ModelRef;
@@ -75,7 +76,14 @@ function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly strin
 }
 
 function isIntensity(value: unknown): value is Intensity {
-  return value === "off" || value === "normal" || value === "aggressive";
+  return INTENSITIES.some((intensity) => intensity === value);
+}
+
+const LEGACY_INTENSITIES = ["off", "normal", "aggressive"] as const;
+type LegacyIntensity = (typeof LEGACY_INTENSITIES)[number];
+
+function isLegacyIntensity(value: unknown): value is LegacyIntensity {
+  return LEGACY_INTENSITIES.some((intensity) => intensity === value);
 }
 
 function isPreference(value: unknown): value is Preference {
@@ -99,12 +107,16 @@ function copyRoleSetting(value: OrdinaryRoleSetting | undefined): OrdinaryRoleSe
   return value === null ? null : value ? { ...value } : undefined;
 }
 
-function hasValidEnvelope(value: unknown, schemaVersion: 2 | 3): value is Record<string, unknown> {
+function hasValidEnvelope(
+  value: unknown,
+  schemaVersion: 2 | 3,
+  intensityValidator: (value: unknown) => boolean = isIntensity,
+): value is Record<string, unknown> {
   return (
     isRecord(value) &&
     hasOnlyKeys(value, CONFIG_KEYS) &&
     value.schemaVersion === schemaVersion &&
-    (value.intensity === undefined || isIntensity(value.intensity)) &&
+    (value.intensity === undefined || intensityValidator(value.intensity)) &&
     (value.preference === undefined || isPreference(value.preference))
   );
 }
@@ -132,12 +144,14 @@ function parseSchema2Roles(
 }
 
 export function parseSchema2Config(value: unknown): Schema2GlobalDefaults | undefined {
-  if (!hasValidEnvelope(value, 2)) return undefined;
+  if (!hasValidEnvelope(value, 2, isLegacyIntensity)) return undefined;
+  const intensity = value.intensity;
+  if (intensity !== undefined && !isLegacyIntensity(intensity)) return undefined;
   const roles = parseSchema2Roles(value);
   if (!roles) return undefined;
   return {
     schemaVersion: 2,
-    ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
+    ...(intensity ? { intensity } : {}),
     ...(value.preference ? { preference: value.preference as Preference } : {}),
     ...roles,
   };
@@ -145,6 +159,8 @@ export function parseSchema2Config(value: unknown): Schema2GlobalDefaults | unde
 
 export function parseSchema3Config(value: unknown): GlobalDefaults | undefined {
   if (!hasValidEnvelope(value, CURRENT_SCHEMA_VERSION)) return undefined;
+  const intensity = value.intensity;
+  if (intensity !== undefined && !isIntensity(intensity)) return undefined;
   const parseOrdinary = (setting: unknown): OrdinaryRoleSetting | undefined =>
     setting === null ? null : parseModelRef(setting);
   const small = value.small === undefined ? undefined : parseOrdinary(value.small);
@@ -160,7 +176,7 @@ export function parseSchema3Config(value: unknown): GlobalDefaults | undefined {
     return undefined;
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
-    ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
+    ...(intensity ? { intensity } : {}),
     ...(value.preference ? { preference: value.preference as Preference } : {}),
     ...(small !== undefined ? { small } : {}),
     ...(medium !== undefined ? { medium } : {}),
@@ -172,7 +188,7 @@ export function parseSchema3Config(value: unknown): GlobalDefaults | undefined {
 function migrateSchema2Config(value: Schema2GlobalDefaults): GlobalDefaults {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
-    ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
+    ...(value.intensity ? { intensity: value.intensity } : {}),
     ...(value.preference ? { preference: value.preference as Preference } : {}),
     ...(value.small ? { small: { ...value.small } } : {}),
     ...(value.medium ? { medium: { ...value.medium } } : {}),
@@ -192,7 +208,9 @@ export function parseConfig(value: unknown): GlobalDefaults | undefined {
 }
 
 function parseSchema2SessionState(value: unknown): Schema2SessionState | undefined {
-  if (!hasValidEnvelope(value, 2)) return undefined;
+  if (!hasValidEnvelope(value, 2, isLegacyIntensity)) return undefined;
+  const intensity = value.intensity;
+  if (intensity !== undefined && !isLegacyIntensity(intensity)) return undefined;
   const uiDesign =
     value.uiDesign === undefined || value.uiDesign === null
       ? value.uiDesign
@@ -202,7 +220,7 @@ function parseSchema2SessionState(value: unknown): Schema2SessionState | undefin
     return undefined;
   return {
     schemaVersion: 2,
-    ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
+    ...(intensity ? { intensity } : {}),
     ...(value.preference ? { preference: value.preference as Preference } : {}),
     ...roles,
     ...(uiDesign === null ? { uiDesign: null } : uiDesign ? { uiDesign } : {}),
@@ -211,6 +229,8 @@ function parseSchema2SessionState(value: unknown): Schema2SessionState | undefin
 
 function parseSchema3SessionState(value: unknown): SessionDelegateState | undefined {
   if (!hasValidEnvelope(value, CURRENT_SCHEMA_VERSION)) return undefined;
+  const intensity = value.intensity;
+  if (intensity !== undefined && !isIntensity(intensity)) return undefined;
   const parseOrdinary = (setting: unknown): OrdinaryRoleSetting | undefined =>
     setting === null ? null : parseModelRef(setting);
   const small = value.small === undefined ? undefined : parseOrdinary(value.small);
@@ -229,7 +249,7 @@ function parseSchema3SessionState(value: unknown): SessionDelegateState | undefi
     return undefined;
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
-    ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
+    ...(intensity ? { intensity } : {}),
     ...(value.preference ? { preference: value.preference as Preference } : {}),
     ...(small !== undefined ? { small } : {}),
     ...(medium !== undefined ? { medium } : {}),
@@ -241,7 +261,7 @@ function parseSchema3SessionState(value: unknown): SessionDelegateState | undefi
 function migrateSchema2SessionState(value: Schema2SessionState): SessionDelegateState {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
-    ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
+    ...(value.intensity ? { intensity: value.intensity } : {}),
     ...(value.preference ? { preference: value.preference as Preference } : {}),
     ...(value.small ? { small: { ...value.small } } : {}),
     ...(value.medium ? { medium: { ...value.medium } } : {}),

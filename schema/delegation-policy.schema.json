@@ -6,7 +6,7 @@
   "required": ["schemaVersion"],
   "properties": {
     "schemaVersion": { "const": 3 },
-    "intensity": { "enum": ["off", "normal", "aggressive"] },
+    "intensity": { "enum": ["off", "normal", "aggressive", "orchestrator"] },
     "preference": { "enum": ["efficient", "standard", "intensive"] },
     "small": { "$ref": "#/$defs/ordinaryRole" },
     "medium": { "$ref": "#/$defs/ordinaryRole" },

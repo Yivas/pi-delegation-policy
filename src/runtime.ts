@@ -160,7 +160,12 @@ export function hasRuntimeError(state: RuntimeState): boolean {
 export function statusLabel(state: RuntimeState): string {
   if (state.effective.intensity === "off") return "D:OFF";
   if (hasRuntimeError(state)) return "D:ERR";
-  return state.effective.intensity === "normal" ? "D:NORM" : "D:AGG";
+  const labels = {
+    normal: "D:NORM",
+    aggressive: "D:AGG",
+    orchestrator: "D:ORCH",
+  } as const;
+  return labels[state.effective.intensity];
 }
 
 export function formatModelRef(reference: ModelRef | null | undefined): string {

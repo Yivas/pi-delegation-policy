@@ -5,16 +5,17 @@ description: Operate the /delegate panel and interpret its status in Pi.
 
 ## 1. Choose how to operate
 
-Use `/delegate` in Pi's TUI to open the keyboard-first editor. `Alt+G` opens the same editor when available. The editor requires TUI mode; these command arguments remain available in other modes:
+Use `/delegate` in Pi's TUI to open the keyboard-first editor. `Alt+G` opens the same editor when available. The editor requires TUI mode; these command arguments remain available in other modes. `orchestrator` is available only in this unreleased development branch; published 0.6.0 supports `off`, `normal`, and `aggressive` only:
 
-| Command                | Effect                                                   |
-| ---------------------- | -------------------------------------------------------- |
-| `/delegate`            | Open the keyboard-first selector.                        |
-| `/delegate off`        | Disable policy injection for the current session branch. |
-| `/delegate normal`     | Enable balanced delegation guidance.                     |
-| `/delegate aggressive` | Enable delegation-first guidance.                        |
-| `/delegate status`     | Show the effective session state.                        |
-| `/delegate reset`      | Reset the current session branch to `off`.               |
+| Command                  | Effect                                                   |
+| ------------------------ | -------------------------------------------------------- |
+| `/delegate`              | Open the keyboard-first selector.                        |
+| `/delegate off`          | Disable policy injection for the current session branch. |
+| `/delegate normal`       | Enable balanced delegation guidance.                     |
+| `/delegate aggressive`   | Enable delegation-first guidance.                        |
+| `/delegate orchestrator` | Minimize main-agent execution while retaining ownership. |
+| `/delegate status`       | Show the effective session state.                        |
+| `/delegate reset`        | Reset the current session branch to `off`.               |
 
 There is no separate off shortcut: run `/delegate off` or choose `off` in the editor. Quick commands write the session branch directly. **Reset draft to off** only changes the draft until Apply.
 
@@ -62,6 +63,7 @@ An invalid enabled reference produces `D:ERR` and no policy, so it is never rero
 | `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive. | Choose an active intensity only when roles are ready.                     |
 | `D:NORM` | A valid `normal` configuration is active.                    | Delegate only with clear expected benefit.                                |
 | `D:AGG`  | A valid `aggressive` configuration is active.                | Delegate suitable substantial work unless coupling or overhead dominates. |
+| `D:ORCH` | A valid unreleased `orchestrator` configuration is active.   | Batch transferable detail; retain objectives and acceptance.              |
 | `D:ERR`  | An active configuration is invalid. No policy is injected.   | Inspect `/delegate status` and correct the role.                          |
 
 `/delegate status` keeps stable tokens and reports exact effective references and sources, for example:

@@ -445,7 +445,8 @@ export class DelegatePanel implements Component, Focusable {
       effective.intensity !== "off" && this.hasRuntimeError
         ? ["D:ERR · policy unavailable; fix the reported role diagnostics"]
         : buildPolicyPreview(effective);
-    const maximum = width >= 60 && budget >= 8 ? 4 : 2;
+    const maximum =
+      width >= 60 && budget >= 8 ? (effective.intensity === "orchestrator" ? 5 : 4) : 2;
     return ["Effective policy preview", ...lines]
       .slice(0, maximum)
       .map((line) => truncateToWidth(this.theme.fg("dim", line), width, ""));
@@ -492,6 +493,7 @@ export class DelegatePanel implements Component, Focusable {
             off: "No policy is injected.",
             normal: "Delegate when the expected benefit clearly outweighs overhead.",
             aggressive: "Delegate suitable substantial work by default.",
+            orchestrator: "Delegate transferable detail and keep ownership with the main agent.",
           }
         : {
             efficient: "Tie-break comparable fits toward Small.",

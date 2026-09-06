@@ -31,15 +31,24 @@ Global defaults may contain intensity, preference, tri-state ordinary roles, and
 
 Schema 2 defaults and session entries remain supported as input and are migrated in memory to schema 3 without a write. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
 
-Each session Apply, quick intensity command, and reset first append a schema 2 `off` guard and then the schema 3 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard. Before downgrading after either action, run `/delegate off` in every active branch and manually replace every global ordinary `null` with an exact schema 2 reference before installing `0.5.0` or earlier.
+Each session Apply, quick intensity command, and reset first append a schema 2 `off` guard and then the schema 3 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
+
+This development branch adds `orchestrator`; it is not in the published `0.6.0` package. Before downgrading:
+
+1. Set the global `intensity` to `off`, `normal`, or `aggressive`, preferably `off`.
+2. Run `/delegate off` in every active branch before installing the older package.
+3. For `0.6.0`, keep schema 3 and the existing role settings. For `0.5.0` or earlier, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references.
+
+Schema 2 never accepts `orchestrator`. Saving defaults alone does not update branch overrides; changing a branch alone does not repair unsupported global defaults.
 
 ## Intensity
 
 - `off` injects nothing into the next agent run and reports `D:OFF`. An already running agent keeps its starting prompt.
 - `normal` delegates substantial, separable work only when expected benefit clearly outweighs briefing, supervision, review, and integration. Borderline work stays with the main agent.
 - `aggressive` delegates suitable substantial, separable, independently checkable work by default when its objective and acceptance criteria are clear. Tightly coupled work or clearly prohibitive overhead stays with the main agent.
+- `orchestrator` minimizes main-agent execution and narration by delegating transferable research, detailed planning, implementation, testing, writing, review, and integration mechanics. It batches small work when that reduces launches and duplicated context, avoids duplicate inspection without a concrete gap, risk, or contradiction, and does direct work of any size when it is non-transferable, no enabled role can satisfy it, or transfer costs more. The main agent retains objectives, critical decisions, coordination, integration responsibility, requested detail, safety, evidence, and final acceptance; detailed review and integration mechanics may be delegated, but requested detail and safety are never omitted. It does not force recursive fanout or promise savings.
 
-In every mode, the main agent retains global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer.
+In `normal` and `aggressive`, the main agent retains global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer. In `orchestrator`, it retains final responsibility and acceptance without having to execute every delegated detail.
 
 ## Preference and role selection
 

@@ -29,11 +29,11 @@ The extension adds guidance only when an active configuration is valid. It canno
 
 1. Install `pi-delegation-policy` and reload Pi.
 2. Open `/delegate`, configure or explicitly disable each of Small, Medium, and Large, and leave at least one enabled. Visual Design is optional.
-3. Select `normal` or `aggressive`, choose **Apply changes**, then confirm `/delegate status` and `D:NORM` or `D:AGG`.
+3. Select `normal` or `aggressive`, choose **Apply changes**, then confirm `/delegate status` and `D:NORM` or `D:AGG`. `orchestrator` and `D:ORCH` are available only in this unreleased development branch.
 
 </Steps>
 
-`disabled` is distinct from `not configured`. The latter, an invalid enabled reference, or zero enabled ordinary roles produces `D:ERR` and injects no policy. Pi `0.84.3` is the explicitly checked baseline; the package peer range is `>=0.84.3`.
+`orchestrator` minimizes main-agent execution and narration while retaining objectives, critical decisions, coordination, integration responsibility, evidence, and final acceptance. It batches transferable work without forcing recursive fanout. Published 0.6.0 supports only `off`, `normal`, and `aggressive`; downgrade global defaults and each active branch to one of those values before using that package. `disabled` is distinct from `not configured`. The latter, an invalid enabled reference, or zero enabled ordinary roles produces `D:ERR` and injects no policy. Pi `0.84.3` is the explicitly checked baseline; the package peer range is `>=0.84.3`.
 
 <LinkCard
   title="Install and configure"

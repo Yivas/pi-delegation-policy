@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -422,7 +423,7 @@ test("off remains empty even with invalid defaults, while active invalid states 
 });
 
 test("all active intensities and preferences produce one deterministic policy block", () => {
-  for (const intensity of ["normal", "aggressive"] as const) {
+  for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
     for (const preference of ["efficient", "standard", "intensive"] as const) {
       const current = runtime(
         { schemaVersion: 3, intensity },
@@ -430,7 +431,10 @@ test("all active intensities and preferences produce one deterministic policy bl
       );
       validateRuntime(context(), current);
       const policy = buildDelegationPolicy(current);
-      assert.equal(statusLabel(current), intensity === "normal" ? "D:NORM" : "D:AGG");
+      assert.equal(
+        statusLabel(current),
+        { normal: "D:NORM", aggressive: "D:AGG", orchestrator: "D:ORCH" }[intensity],
+      );
       assert.equal((policy?.match(/<delegation_policy>/g) ?? []).length, 1);
       assert.equal(policy, buildDelegationPolicy(current));
       assert.match(policy ?? "", new RegExp(`Model preference: ${preference}`));
@@ -499,6 +503,11 @@ test("policy previews and launch instructions preserve exact models with per-run
     'Small "example/small" · Medium "example/medium" · Large "example/large" · exact model plus per-task thinking required; neither uses an ambient default.',
   );
   assert.match(buildPolicyPreview(active)[2] ?? "", /neither uses an ambient default/);
+  const orchestratorPreview = buildPolicyPreview(
+    resolveDelegateState(defaults, { schemaVersion: 3, intensity: "orchestrator" }),
+  );
+  assert.match(orchestratorPreview[0] ?? "", /^orchestrator · task fit first/);
+  assert.match(orchestratorPreview[3] ?? "", /main agent keeps ownership and final acceptance/);
 
   const policy = buildDelegationPolicy(runtime({ schemaVersion: 3, intensity: "normal" })) ?? "";
   assert.match(policy, /Choose thinking dynamically for that run/);
@@ -619,12 +628,17 @@ test("commands expose only the supported quick actions and completions", () => {
   assert.deepEqual(parseCommand(""), { kind: "open" });
   assert.deepEqual(parseCommand("normal"), { kind: "intensity", intensity: "normal" });
   assert.deepEqual(parseCommand("off"), { kind: "intensity", intensity: "off" });
+  assert.deepEqual(parseCommand("orchestrator"), { kind: "intensity", intensity: "orchestrator" });
   assert.deepEqual(parseCommand("status"), { kind: "status" });
   assert.deepEqual(parseCommand("reset"), { kind: "reset" });
   assert.deepEqual(parseCommand("normal extra"), { kind: "invalid" });
   assert.deepEqual(
     getArgumentCompletions("ag")?.map((item) => item.value),
     ["aggressive"],
+  );
+  assert.deepEqual(
+    getArgumentCompletions("orc")?.map((item) => item.value),
+    ["orchestrator"],
   );
 });
 
@@ -700,6 +714,20 @@ test("the extension uses only the approved lifecycle events and never accumulate
       assert.equal(statuses.at(-1), "D:NORM");
     }
 
+    await commands.get("delegate")?.handler("orchestrator", current);
+    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 3, intensity: "orchestrator" });
+    for (const reason of ["reload", "resume", "fork"]) {
+      await handlers.get("session_start")?.({ type: "session_start", reason }, current);
+      assert.equal(statuses.at(-1), "D:ORCH");
+    }
+    await handlers.get("session_tree")?.({ type: "session_tree" }, current);
+    assert.equal(statuses.at(-1), "D:ORCH");
+    const orchestratorRun = (await handlers.get("before_agent_start")?.(event, current)) as {
+      systemPrompt?: string;
+    };
+    assert.match(orchestratorRun.systemPrompt ?? "", /Intensity: orchestrator/);
+    assert.match(orchestratorRun.systemPrompt ?? "", /final acceptance/);
+
     const first = (await handlers.get("before_agent_start")?.(event, current)) as {
       systemPrompt?: string;
     };
@@ -729,7 +757,7 @@ test("quick commands fail safely when either guarded append throws", async () =>
   await withAgentDirectory(async (directory) => {
     await writeConfig(getGlobalConfigPath(directory), defaults);
 
-    for (const args of ["normal", "reset"]) {
+    for (const args of ["normal", "orchestrator", "reset"]) {
       for (const failAt of [1, 2]) {
         const branch: Array<Record<string, unknown>> = [];
         const commands = new Map<
@@ -965,6 +993,43 @@ test("the delegate panel is responsive and exposes values with all sources", () 
   }
   const narrowModel = longQuery.panel.render(24);
   assert.ok(narrowModel.every((line) => visibleWidth(line) <= 24));
+});
+
+test("the panel selects orchestrator through the fourth intensity and applies it", async () => {
+  let applied: SessionDelegateState | undefined;
+  const harness = createPanelHarness({
+    onApply: async (draft) => {
+      applied = draft;
+      return true;
+    },
+  });
+
+  sendKeys(harness.panel, KEY_ENTER, KEY_END);
+  for (const width of [100, 60, 40, 26]) {
+    const lines = harness.panel.render(width);
+    assert.ok(lines.length <= harness.terminal.rows);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    assert.match(lines.join("\n"), /orchestrator/);
+  }
+  sendKeys(harness.panel, KEY_ENTER);
+  assert.equal(harness.panel.getDraft().intensity, "orchestrator");
+  for (const width of [100, 60, 40]) {
+    const lines = harness.panel.render(width);
+    assert.ok(lines.length <= harness.terminal.rows);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    assert.match(lines.join("\n"), /orchestrator/);
+  }
+  assert.match(harness.panel.render(60).join("\n"), /Batch transferable detail/);
+  sendKeys(harness.panel, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(applied, { schemaVersion: 3, intensity: "orchestrator" });
+  assert.deepEqual(harness.done, ["applied"]);
+
+  harness.terminal.rows = 8;
+  const compact = harness.panel.render(40);
+  assert.ok(compact.length <= 8);
+  assert.ok(compact.every((line) => visibleWidth(line) <= 40));
+  assert.match(compact.join("\n"), /Terminal too small/);
 });
 
 test("the delegate panel explains fields, enum choices, previews, and selected model metadata", () => {
@@ -1477,6 +1542,95 @@ test("reading schema 2 migrates in memory without rewriting the file", async () 
   });
 });
 
+test("orchestrator round-trips through global defaults and session overrides", async () => {
+  await withAgentDirectory(async (directory) => {
+    const global = { ...defaults, intensity: "orchestrator" as const };
+    await writeConfig(getGlobalConfigPath(directory), global);
+    assert.deepEqual((await readConfig(getGlobalConfigPath(directory))).defaults, global);
+
+    const restored = parseSessionState({
+      schemaVersion: 3,
+      intensity: "orchestrator",
+      preference: "intensive",
+      small: null,
+      medium,
+      large,
+    });
+    assert.deepEqual(restored, {
+      schemaVersion: 3,
+      intensity: "orchestrator",
+      preference: "intensive",
+      small: null,
+      medium,
+      large,
+    });
+    assert.equal(resolveDelegateState(global, { schemaVersion: 3 }).intensity, "orchestrator");
+    assert.equal(
+      resolveDelegateState(global, { schemaVersion: 3, intensity: "normal" }).intensity,
+      "normal",
+    );
+    assert.equal(
+      defaultsFromEffectiveState(resolveDelegateState(global, { schemaVersion: 3 })).intensity,
+      "orchestrator",
+    );
+  });
+});
+
+test("the orchestrator guard keeps older restoration fail-closed without historical reactivation", () => {
+  const entries: unknown[] = [];
+  const next: SessionDelegateState = {
+    schemaVersion: 3,
+    intensity: "orchestrator",
+    small,
+    medium,
+    large,
+  };
+  assert.equal(
+    appendGuardedSessionState({ appendEntry: (_type, data) => entries.push(data) }, next),
+    "success",
+  );
+  assert.deepEqual(entries[0], { schemaVersion: 2, intensity: "off" });
+  assert.equal(parseConfig({ schemaVersion: 2, intensity: "orchestrator" }), undefined);
+  assert.equal(parseSessionState({ schemaVersion: 2, intensity: "orchestrator" }), undefined);
+  const restored = restoreSessionStateWithDiagnostics([
+    {
+      type: "custom",
+      customType: SESSION_ENTRY_TYPE,
+      data: { schemaVersion: 3, intensity: "normal" },
+    },
+    { type: "custom", customType: SESSION_ENTRY_TYPE, data: entries[0] },
+    { type: "custom", customType: SESSION_ENTRY_TYPE, data: next },
+  ]);
+  assert.deepEqual(restored.session, {
+    schemaVersion: 3,
+    intensity: "orchestrator",
+    small,
+    medium,
+    large,
+  });
+  // 0.5 scans past unsupported entries; 0.6 stops at the latest invalid entry.
+  const legacyRestore = (states: unknown[], version: "0.5" | "0.6") => {
+    for (const state of [...states].reverse()) {
+      const data = state as { schemaVersion?: unknown; intensity?: unknown };
+      const supportedSchema =
+        data.schemaVersion === 2 || (version === "0.6" && data.schemaVersion === 3);
+      const supportedIntensity =
+        data.intensity === undefined ||
+        ["off", "normal", "aggressive"].includes(data.intensity as string);
+      const parsed = supportedSchema && supportedIntensity ? parseSessionState(data) : undefined;
+      if (parsed) return parsed.intensity ?? "off";
+      if (version === "0.6") return "off";
+    }
+    return "off";
+  };
+  const historical = { schemaVersion: 2, intensity: "normal", small, medium, large };
+  for (const version of ["0.5", "0.6"] as const) {
+    assert.equal(legacyRestore([historical], version), "normal");
+    assert.equal(legacyRestore([historical, ...entries], version), "off");
+    assert.equal(legacyRestore([historical, next], version), version === "0.5" ? "normal" : "off");
+  }
+});
+
 test("the latest invalid session entry is a fail-closed restoration barrier", () => {
   const active = {
     type: "custom",
@@ -1539,32 +1693,34 @@ test("guarded session writes preserve an off downgrade guard and fail safely", (
 
 test("every ordinary-role subset validates only enabled roles and generates partial policy", () => {
   const roles = ["small", "medium", "large"] as const;
-  for (let mask = 0; mask < 8; mask += 1) {
-    const settings = Object.fromEntries(
-      roles.map((role, index) => [
-        role,
-        mask & (1 << index) ? { small, medium, large }[role] : null,
-      ]),
-    );
-    const current = runtime(
-      { schemaVersion: 3, intensity: "normal" },
-      { schemaVersion: 3, ...settings },
-    );
-    validateRuntime(context(), current);
-    const enabled = enabledOrdinaryRoles(current.effective);
-    if (enabled.length === 0) {
-      assert.equal(statusLabel(current), "D:ERR");
-      assert.equal(buildDelegationPolicy(current), undefined);
-    } else {
-      assert.equal(statusLabel(current), "D:NORM");
-      const policy = buildDelegationPolicy(current) ?? "";
-      for (const role of roles) {
-        const name = role[0]!.toUpperCase() + role.slice(1);
-        if (enabled.includes(role)) assert.match(policy, new RegExp(`- ${name}:`));
-        else assert.doesNotMatch(policy, new RegExp(`- ${name}:`));
-      }
-      if (!enabled.includes("small") || !enabled.includes("medium")) {
-        assert.match(policy, /inactive because Small or Medium is disabled/);
+  for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
+    for (let mask = 0; mask < 8; mask += 1) {
+      const settings = Object.fromEntries(
+        roles.map((role, index) => [
+          role,
+          mask & (1 << index) ? { small, medium, large }[role] : null,
+        ]),
+      );
+      const current = runtime({ schemaVersion: 3, intensity }, { schemaVersion: 3, ...settings });
+      validateRuntime(context(), current);
+      const enabled = enabledOrdinaryRoles(current.effective);
+      if (enabled.length === 0) {
+        assert.equal(statusLabel(current), "D:ERR");
+        assert.equal(buildDelegationPolicy(current), undefined);
+      } else {
+        assert.equal(
+          statusLabel(current),
+          { normal: "D:NORM", aggressive: "D:AGG", orchestrator: "D:ORCH" }[intensity],
+        );
+        const policy = buildDelegationPolicy(current) ?? "";
+        for (const role of roles) {
+          const name = role[0]!.toUpperCase() + role.slice(1);
+          if (enabled.includes(role)) assert.match(policy, new RegExp(`- ${name}:`));
+          else assert.doesNotMatch(policy, new RegExp(`- ${name}:`));
+        }
+        if (!enabled.includes("small") || !enabled.includes("medium")) {
+          assert.match(policy, /inactive because Small or Medium is disabled/);
+        }
       }
     }
   }
@@ -1598,26 +1754,28 @@ test("ordinary model selectors expose both pinned actions and write disabled sta
 
 test("disabled invalid roles skip validation while enabled invalid roles fail closed", () => {
   const missing = { provider: "example", model: "missing" };
-  const disabled = runtime(
-    { schemaVersion: 3, intensity: "normal" },
-    { schemaVersion: 3, small: null, medium, large },
-  );
-  validateRuntime(context({ availableModels: [model(medium), model(large)] }), disabled);
-  assert.equal(statusLabel(disabled), "D:NORM");
-  assert.equal(disabled.modelStatuses.has("small"), false);
-  assert.equal(
-    disabled.runtimeErrors.some((message) => message.includes("Small")),
-    false,
-  );
+  for (const intensity of ["normal", "orchestrator"] as const) {
+    const disabled = runtime(
+      { schemaVersion: 3, intensity },
+      { schemaVersion: 3, small: null, medium, large },
+    );
+    validateRuntime(context({ availableModels: [model(medium), model(large)] }), disabled);
+    assert.equal(statusLabel(disabled), intensity === "normal" ? "D:NORM" : "D:ORCH");
+    assert.equal(disabled.modelStatuses.has("small"), false);
+    assert.equal(
+      disabled.runtimeErrors.some((message) => message.includes("Small")),
+      false,
+    );
 
-  const invalid = runtime(
-    { schemaVersion: 3, intensity: "normal" },
-    { schemaVersion: 3, small: missing, medium: null, large },
-  );
-  validateRuntime(context({ availableModels: [model(large)] }), invalid);
-  assert.equal(statusLabel(invalid), "D:ERR");
-  assert.equal(buildDelegationPolicy(invalid), undefined);
-  assert.equal(invalid.modelStatuses.get("small")?.kind, "missing-model");
+    const invalid = runtime(
+      { schemaVersion: 3, intensity },
+      { schemaVersion: 3, small: missing, medium: null, large },
+    );
+    validateRuntime(context({ availableModels: [model(large)] }), invalid);
+    assert.equal(statusLabel(invalid), "D:ERR");
+    assert.equal(buildDelegationPolicy(invalid), undefined);
+    assert.equal(invalid.modelStatuses.get("small")?.kind, "missing-model");
+  }
 });
 
 test("guarded session writes use the extension type and leave only the guard after state failure", () => {
@@ -1729,4 +1887,57 @@ test("model selectors retain pinned ordering and page navigation", () => {
   const inherited = createPanelHarness({ session: { schemaVersion: 3, small: null } });
   sendKeys(inherited.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_HOME, KEY_ENTER);
   assert.equal("small" in inherited.panel.getDraft(), false);
+});
+
+test("orchestrator is a schema 3 intensity and schema 2 rejects it", async () => {
+  const schema = JSON.parse(
+    await readFile(join(process.cwd(), "schema/delegation-policy.schema.json"), "utf8"),
+  );
+  const validate = new Ajv2020({ allErrors: true }).compile(schema);
+  const orchestrator = { schemaVersion: 3, intensity: "orchestrator" };
+  assert.ok(validate(orchestrator), JSON.stringify(validate.errors));
+  assert.equal(parseConfig(orchestrator)?.intensity, "orchestrator");
+  assert.equal(parseConfig({ schemaVersion: 2, intensity: "orchestrator" }), undefined);
+  assert.equal(parseSessionState({ schemaVersion: 2, intensity: "orchestrator" }), undefined);
+});
+
+test("orchestrator reports D:ORCH and has distinct ownership guidance", () => {
+  const current = runtime({ schemaVersion: 3, intensity: "orchestrator" });
+  validateRuntime(context(), current);
+  assert.equal(statusLabel(current), "D:ORCH");
+  const policy = buildDelegationPolicy(current) ?? "";
+  for (const expected of [
+    "Minimize the main agent's execution",
+    "Delegate research, detailed planning, implementation, testing",
+    "Batch small independent work",
+    "minimal briefs and results with file references and evidence",
+    "do not duplicate inspection unless there is a concrete gap",
+    "Keep objectives, critical decisions, coordination, integration responsibility",
+    "final acceptance with the main agent",
+    "Do not promise savings or force recursive fanout",
+  ])
+    assert.ok(policy.includes(expected), `Missing orchestrator guarantee: ${expected}`);
+  assert.equal((policy.match(/<delegation_policy>/g) ?? []).length, 1);
+});
+
+test("normal and aggressive policy blocks match the ff15c0d baseline fixture", () => {
+  // Fixed synthetic roles and standard preference; hashes were generated from HEAD ff15c0d.
+  const fixture: GlobalDefaults = {
+    schemaVersion: 3,
+    preference: "standard",
+    small,
+    medium,
+    large,
+  };
+  const expectedHashes = {
+    normal: "aed3699591202e7a20984cd47bae921d0c4fd23bb8c9bc1871d7e61cfd5346fb",
+    aggressive: "8703ea45ab6177f9dfdcf6232df0faaa0626e90b92f42855b7b9594caa6ab9e5",
+  } as const;
+  for (const intensity of ["normal", "aggressive"] as const) {
+    const current = runtime({ schemaVersion: 3, intensity }, fixture);
+    validateRuntime(context(), current);
+    const policy = buildDelegationPolicy(current);
+    assert.ok(policy);
+    assert.equal(createHash("sha256").update(policy).digest("hex"), expectedHashes[intensity]);
+  }
 });

@@ -7,7 +7,7 @@ description: Understand the product boundary, fail-closed behavior, local data, 
 
 `pi-delegation-policy` guides the main agent by adding one policy block through Pi's public `before_agent_start` event when an active configuration is valid. It does not create, launch, route, supervise, or block subagents. It does not change Pi's main model or thinking level.
 
-The policy evaluates task fit before preference from demand, difficulty, quantity, risk, and error and review cost. It considers only enabled ordinary roles, chooses the least costly enabled role that can satisfy task acceptance and evidence, and keeps work with the main agent when none can. `efficient` and `intensive` break credible Small/Medium ties only while both are enabled; `standard` adds no extra bias. Thinking remains dynamic and advisory: the main agent chooses it for each task instead of inheriting an ambient subagent default.
+The policy evaluates task fit before preference from demand, difficulty, quantity, risk, and error and review cost. In `orchestrator`, it also minimizes main-agent execution and narration by batching and delegating transferable detail while retaining objectives, critical decisions, coordination, integration responsibility, evidence, and final acceptance. It considers only enabled ordinary roles, chooses the least costly enabled role that can satisfy task acceptance and evidence, and keeps work with the main agent when none can. `efficient` and `intensive` break credible Small/Medium ties only while both are enabled; `standard` adds no extra bias. Thinking remains dynamic and advisory: the main agent chooses it for each task instead of inheriting an ambient subagent default.
 
 For every delegated launch, the policy names the selected exact `provider/model` base and requires the per-task thinking choice through the launcher. `pi-subagents` uses `model: "provider/model:LEVEL"`; another launcher may expose a separate field. The extension never supplies a model fallback or enforces that another system follows the guidance.
 
@@ -19,11 +19,11 @@ Visual Design is an optional specialist for a bounded presentation patch only wh
 
 The panel shows a compact preview and field explanations. Model selection presents model ID first and `[provider]` last, fuzzy-searches provider, model ID, and display name, and can show transient public metadata: name, API, reasoning support, context window, and maximum output. The extension does not persist that metadata.
 
-`/delegate status` shows exact effective references and provenance (`default`, `global`, or `session`), plus sanitized diagnostics. `D:NORM` and `D:AGG` mean local validation passed; they do not prove a delegated launch occurred or another system followed guidance.
+`/delegate status` shows exact effective references and provenance (`default`, `global`, or `session`), plus sanitized diagnostics. `D:NORM` and `D:AGG` mean local validation passed; they do not prove a delegated launch occurred or another system followed guidance. `D:ORCH` has the same meaning for the unreleased `orchestrator` intensity in this development branch; published 0.6.0 supports only `off`, `normal`, and `aggressive`.
 
 ## Fail-closed behavior
 
-In `normal` or `aggressive`, Small, Medium, and Large must each be an explicit model reference or `disabled`, and at least one must be enabled. An absent ordinary role is **not configured** and produces `D:ERR`. Any enabled reference that is missing, unavailable, out of scope, or unauthenticated also produces `D:ERR`. A configured Visual Design reference must be valid. `D:ERR` injects no policy, so an invalid enabled role is not rerouted.
+In `normal`, `aggressive`, or `orchestrator`, Small, Medium, and Large must each be an explicit model reference or `disabled`, and at least one must be enabled. An absent ordinary role is **not configured** and produces `D:ERR`. Any enabled reference that is missing, unavailable, out of scope, or unauthenticated also produces `D:ERR`. A configured Visual Design reference must be valid. `D:ERR` injects no policy, so an invalid enabled role is not rerouted.
 
 With a valid partial configuration, a different configured enabled ordinary role may cover work only when it can satisfy the same acceptance and evidence. The extension never uses a disabled, unconfigured, or invented role or model. Visual Design does not satisfy the ordinary-role minimum.
 

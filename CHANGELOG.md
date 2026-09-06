@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Add the `orchestrator` intensity with `/delegate orchestrator` and `D:ORCH`. It delegates transferable research, detailed planning, implementation, testing, writing, review, and integration mechanics while keeping objectives, critical decisions, coordination, evidence, and final acceptance with the main agent.
+- Add orchestrator guidance for batching small work, concise briefs and results with file references, and avoiding duplicate inspection without a concrete gap or risk.
+
 ## 0.6.0 - 2026-08-29
 
 ### Added

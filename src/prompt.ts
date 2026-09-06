@@ -10,6 +10,8 @@ const NORMAL_POLICY =
   "Delegate substantial, separable work only when the expected benefit clearly outweighs briefing, supervision, review, and integration cost. Count parallelism as a benefit only when valuable work can advance now or elapsed time matters. A merely possible fresh perspective is not enough by itself. Keep borderline work with the main agent.";
 const AGGRESSIVE_POLICY =
   "Default to delegating substantial, separable, independently checkable work with a clear objective and acceptance criteria. Delegate when the benefit is plausible even if not proven, including a useful independent perspective. Keep work with the main agent when it is poorly bounded, tightly coupled, dominated by integration or final accountability, or has clearly prohibitive delegation overhead.";
+const ORCHESTRATOR_POLICY =
+  "Minimize the main agent's execution and generated narration without surrendering ownership. Delegate research, detailed planning, implementation, testing, detailed writing, review, and integration mechanics when the work is transferable and a capable enabled role can satisfy the objective, acceptance, and evidence. Batch small independent work when doing so reduces launches and duplicated context, request minimal briefs and results with file references and evidence, and do not duplicate inspection unless there is a concrete gap, risk, or contradiction. Keep objectives, critical decisions, coordination, integration responsibility, requested detail, safety, and final acceptance with the main agent. Delegate detailed review and integration mechanics when transferable; final acceptance does not require the main agent to execute every detail. Keep narration and final text concise, but never omit risks, evidence, safety, or requested detail. Do not promise savings or force recursive fanout. Do work directly, regardless of size, when it is not transferable, no enabled role can satisfy it, or transfer and context costs exceed doing it here.";
 
 const ROLE_SELECTION_POLICY = `Choose the role by task fit before considering model preference:
 - demand: execute, search, plan, decide, coordinate, or unblock;
@@ -24,9 +26,12 @@ Use Medium directly when the combined task fit materially requires planning, red
 
 When Small and Medium are enabled alternatives, use Large only to unblock genuinely stuck work: persistent failures, severe framework conflicts, contradictory hypotheses, or reliable prior evidence that ordinary roles have not produced a trustworthy answer. Do not require ceremonial failed attempts. Large remains exceptional in a complete ordinary-role configuration.
 
-A more capable enabled role may cover work normally suited to a disabled role only when it can satisfy the same acceptance and evidence. Never choose a less capable role merely because it is the only enabled role. Large quantities of repetitive, independent work favor multiple Small delegations; volume alone does not justify Medium or Large. Agent type does not determine the model role. Apply preference only when Small and Medium are comparably credible fits. That tie-break applies only when both are enabled.
+A more capable enabled role may cover work normally suited to a disabled role only when it can satisfy the same acceptance and evidence. Never choose a less capable role merely because it is the only enabled role. Large quantities of repetitive, independent work favor multiple Small delegations; volume alone does not justify Medium or Large. Agent type does not determine the model role. Apply preference only when Small and Medium are comparably credible fits. That tie-break applies only when both are enabled.`;
 
-In every intensity, keep global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer with the main agent.`;
+const LEGACY_OWNERSHIP_POLICY =
+  "In every intensity, keep global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer with the main agent.";
+const ORCHESTRATOR_OWNERSHIP_POLICY =
+  "In orchestrator, keep global strategy, objectives, critical decisions, coordination, integration responsibility, requested evidence, safety, and final acceptance with the main agent. Detailed review and integration mechanics may be delegated when transferable; retaining final responsibility does not require executing every detail.";
 
 const VISUAL_DESIGN_POLICY = `Visual Design is an optional specialist role. Use it only when all four conditions hold:
 1. the primary acceptance criterion is a visual or user-experience result;
@@ -118,6 +123,9 @@ export function buildPolicyPreview(effective: EffectiveDelegateState): string[] 
     `${effective.intensity} · task fit first · ${preferencePreview(effective.preference, enabled)}`,
     `Enabled: ${enabled.map(roleName).join(", ")}${disabled.length ? ` · Disabled: ${disabled.map(roleName).join(", ")}` : ""}`,
     `${references} · exact model plus per-task thinking required; neither uses an ambient default.`,
+    ...(effective.intensity === "orchestrator"
+      ? ["Batch transferable detail; main agent keeps ownership and final acceptance."]
+      : []),
   ];
 }
 
@@ -128,7 +136,16 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
   const { enabled, disabled } = rolesByState(effective);
   if (enabled.length === 0) return undefined;
 
-  const intensityPolicy = effective.intensity === "normal" ? NORMAL_POLICY : AGGRESSIVE_POLICY;
+  const intensityPolicy =
+    effective.intensity === "normal"
+      ? NORMAL_POLICY
+      : effective.intensity === "aggressive"
+        ? AGGRESSIVE_POLICY
+        : ORCHESTRATOR_POLICY;
+  const ownershipPolicy =
+    effective.intensity === "orchestrator"
+      ? ORCHESTRATOR_OWNERSHIP_POLICY
+      : LEGACY_OWNERSHIP_POLICY;
   const uiDesign = effective.uiDesign
     ? `\n- Visual Design: ${formatReference(effective.uiDesign)}; exact model base: ${formatLaunchModel(effective.uiDesign)}; pi-subagents form: ${formatThinkingLaunchModel(effective.uiDesign)}`
     : "";
@@ -144,6 +161,8 @@ Intensity: ${effective.intensity}.
 ${intensityPolicy}
 
 ${ROLE_SELECTION_POLICY}
+
+${ownershipPolicy}
 
 Enabled ordinary roles: ${enabled.map(roleName).join(", ")}.${disabled.length ? `\nDisabled ordinary roles: ${disabled.map(roleName).join(", ")}.` : ""}
 

@@ -13,7 +13,7 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
   if (!ctx.hasUI) return;
   if (ctx.mode !== "tui") {
     ctx.ui.notify(
-      "The delegation editor requires TUI mode. Use /delegate off, normal, aggressive, status, or reset here.",
+      "The delegation editor requires TUI mode. Use /delegate off, normal, aggressive, orchestrator, status, or reset here.",
       "warning",
     );
     return;

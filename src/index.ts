@@ -136,7 +136,10 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
         await setSessionIntensity(pi, ctx, action.intensity);
         return;
       }
-      ctx.ui.notify("Usage: /delegate, /delegate off|normal|aggressive|status|reset", "error");
+      ctx.ui.notify(
+        "Usage: /delegate, /delegate off|normal|aggressive|orchestrator|status|reset",
+        "error",
+      );
     },
   });
 

@@ -2,7 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 
 export const CURRENT_SCHEMA_VERSION = 3 as const;
 
-export const INTENSITIES = ["off", "normal", "aggressive"] as const;
+export const INTENSITIES = ["off", "normal", "aggressive", "orchestrator"] as const;
 export type Intensity = (typeof INTENSITIES)[number];
 
 export const PREFERENCES = ["efficient", "standard", "intensive"] as const;
