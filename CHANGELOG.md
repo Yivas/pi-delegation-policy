@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-09-07
+
 ### Changed
 
-- Tighten `orchestrator` guidance to require delegation before all transferable execution, including detailed review and integration mechanics; require waiting for and consuming pending results, concrete gap-only reinspection, and a brief exception before minimum direct work. Size, triviality, convenience, economics, transfer cost, and final-review or integration labels are not bypasses. The published `0.7.0` policy remains unchanged until a future release.
+- Tighten `orchestrator` guidance to require delegation before all transferable execution, including detailed review and integration mechanics; require waiting for and consuming pending results, concrete gap-only reinspection, and a brief exception before minimum direct work. Size, triviality, convenience, economics, transfer cost, and final-review or integration labels are not bypasses. The published `0.7.0` policy remains unchanged.
 
 ## 0.7.0 - 2026-09-06
 
