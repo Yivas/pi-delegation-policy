@@ -25,6 +25,10 @@ Artifacts have opaque random IDs and live in a private process temporary directo
 
 An oversized recognized call can be narrowed or granted once only through an explicit user command tied to the matching input, requested range, and a one-minute expiry. Content from a model cannot create an exception. The package has no automatic hook-to-reader bridge. It ships a profile limited to `read`, `grep`, `find`, and `ls`, but only an executor that can load the package asset by path can enforce that profile. This package does not copy it into user directories, disable extensions, or claim isolation it cannot verify.
 
+## Inspiration and scope
+
+ContextShunt takes its large-read routing pattern from the approach described in [Spotify Engineering's article on Portal and `shunt`](https://engineering.atspotify.com/2026/9/portal-by-spotify-cut-my-claude-code-token-usage-by-90/) and the [Spotify `shunt` plugin](https://github.com/spotify/portal-ai-plugins/tree/main/plugins/shunt). This is an independent adaptation for Pi: it does not integrate Portal or AiKA, launch a worker automatically, or claim affiliation or endorsement. The package preserves Pi's own `off|observe|enforce` modes, bounded recovery, and guided read-only profile.
+
 ## Panel and status limits
 
 The panel shows a compact preview and field explanations. Model selection presents model ID first and `[provider]` last, fuzzy-searches provider, model ID, and display name, and can show transient public metadata: name, API, reasoning support, context window, and maximum output. The extension does not persist that metadata.
