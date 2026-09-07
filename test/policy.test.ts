@@ -59,7 +59,7 @@ const large: ModelRef = { provider: "example", model: "large" };
 const uiDesign: ModelRef = { provider: "example", model: "ui-design" };
 
 const defaults: GlobalDefaults = {
-  schemaVersion: 3,
+  schemaVersion: CURRENT_SCHEMA_VERSION,
   preference: "standard",
   small,
   medium,
@@ -175,7 +175,7 @@ function context(
 }
 
 function runtime(
-  session: SessionDelegateState = { schemaVersion: 3, intensity: "normal" },
+  session: SessionDelegateState = { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
   global: GlobalDefaults = defaults,
 ): RuntimeState {
   return {
@@ -201,7 +201,7 @@ async function withAgentDirectory<T>(callback: (directory: string) => Promise<T>
   }
 }
 
-test("schema 3 parser and JSON Schema accept the current global defaults", async () => {
+test("schema 4 parser and JSON Schema accept the current global defaults", async () => {
   const schema = JSON.parse(
     await readFile(join(process.cwd(), "schema/delegation-policy.schema.json"), "utf8"),
   );
@@ -215,23 +215,41 @@ test("schema 3 parser and JSON Schema accept the current global defaults", async
 
   const invalidDocuments = [
     { schemaVersion: 1, presets: {} },
-    { schemaVersion: 3, intensity: "unsupported" },
-    { schemaVersion: 3, preference: "standard", thinking: "high" },
-    { schemaVersion: 3, small: { provider: "example", model: "small", label: "Small" } },
-    { schemaVersion: 3, strategy: "tiered" },
-    { schemaVersion: 3, visualDesign: { provider: "example", model: "visual" } },
-    { schemaVersion: 3, uiDesign: "invalid" },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "unsupported" },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, preference: "standard", thinking: "high" },
+    {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      small: { provider: "example", model: "small", label: "Small" },
+    },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, strategy: "tiered" },
+    {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      visualDesign: { provider: "example", model: "visual" },
+    },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, uiDesign: "invalid" },
   ];
   for (const invalid of invalidDocuments) {
     assert.equal(validate(invalid), false, JSON.stringify(invalid));
     assert.equal(parseConfig(invalid), undefined, JSON.stringify(invalid));
   }
 
-  assert.ok(parseSessionState({ schemaVersion: 3, intensity: "off" }));
-  assert.ok(parseSessionState({ schemaVersion: 3, intensity: "normal", uiDesign: null }));
-  assert.deepEqual(parseSessionState({ schemaVersion: 3 }), { schemaVersion: 3 });
+  assert.ok(parseSessionState({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" }));
+  assert.ok(
+    parseSessionState({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "normal",
+      uiDesign: null,
+    }),
+  );
+  assert.deepEqual(parseSessionState({ schemaVersion: CURRENT_SCHEMA_VERSION }), {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+  });
   assert.equal(
-    parseSessionState({ schemaVersion: 3, intensity: "normal", thinking: "high" }),
+    parseSessionState({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "normal",
+      thinking: "high",
+    }),
     undefined,
   );
 });
@@ -244,7 +262,7 @@ test("legacy and malformed defaults are inactive and diagnostics are sanitized",
 
     await writeFile(path, '{"schemaVersion":1,"secret":"PRIVATE_FRAGMENT"}', "utf8");
     const legacy = await readConfig(path);
-    assert.deepEqual(legacy.defaults, { schemaVersion: 3 });
+    assert.deepEqual(legacy.defaults, { schemaVersion: CURRENT_SCHEMA_VERSION });
     assert.match(legacy.diagnostics[0]?.message ?? "", /schema version 1/i);
     assert.doesNotMatch(
       legacy.diagnostics[0]?.message ?? "",
@@ -266,7 +284,10 @@ test("writing refuses invalid global defaults before touching disk", async () =>
   try {
     const path = join(directory, "delegation-policy.json");
     await assert.rejects(
-      writeConfig(path, { schemaVersion: 3, preference: "unsupported" } as never),
+      writeConfig(path, {
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        preference: "unsupported",
+      } as never),
       /invalid delegation policy defaults/i,
     );
     await assert.rejects(readFile(path, "utf8"));
@@ -278,7 +299,7 @@ test("writing refuses invalid global defaults before touching disk", async () =>
 test("global defaults combine with field-level session overrides including intensity", () => {
   const global = { ...defaults, intensity: "normal" as const };
   const session: SessionDelegateState = {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "aggressive",
     preference: "efficient",
     small: { provider: "session", model: "small" },
@@ -296,11 +317,11 @@ test("global defaults combine with field-level session overrides including inten
   assert.equal(effective.source.medium, "global");
   assert.equal(effective.source.uiDesign, "session");
 
-  const inherited = resolveDelegateState(global, { schemaVersion: 3 });
+  const inherited = resolveDelegateState(global, { schemaVersion: CURRENT_SCHEMA_VERSION });
   assert.equal(inherited.intensity, "normal");
   assert.equal(inherited.source.intensity, "global");
 
-  const fallback = resolveDelegateState(defaults, { schemaVersion: 3 });
+  const fallback = resolveDelegateState(defaults, { schemaVersion: CURRENT_SCHEMA_VERSION });
   assert.equal(fallback.intensity, "off");
   assert.equal(fallback.source.intensity, "default");
 
@@ -311,14 +332,14 @@ test("global defaults combine with field-level session overrides including inten
 });
 
 test("a session without policy state starts off and restores a valid latest entry", () => {
-  const normal = { schemaVersion: 3, intensity: "normal" };
-  const aggressive = { schemaVersion: 3, intensity: "aggressive" };
+  const normal = { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" };
+  const aggressive = { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "aggressive" };
   const entries = [
     { type: "custom", customType: SESSION_ENTRY_TYPE, data: normal },
     {
       type: "custom",
       customType: SESSION_ENTRY_TYPE,
-      data: { schemaVersion: 3, intensity: "bad" },
+      data: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "bad" },
     },
     { type: "custom", customType: SESSION_ENTRY_TYPE, data: aggressive },
   ];
@@ -335,20 +356,24 @@ test("runtime restores global intensity and active branch overrides without leak
       {
         type: "custom",
         customType: SESSION_ENTRY_TYPE,
-        data: { schemaVersion: 3, intensity: "normal" },
+        data: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
       },
     ];
     const inheritedBranch = [...normalBranch, { type: "message", role: "user", content: "work" }];
     const useGlobalBranch = [
       ...normalBranch,
-      { type: "custom", customType: SESSION_ENTRY_TYPE, data: { schemaVersion: 3 } },
+      {
+        type: "custom",
+        customType: SESSION_ENTRY_TYPE,
+        data: { schemaVersion: CURRENT_SCHEMA_VERSION },
+      },
     ];
     const resetBranch = [
       ...useGlobalBranch,
       {
         type: "custom",
         customType: SESSION_ENTRY_TYPE,
-        data: { schemaVersion: 3, intensity: "off" },
+        data: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" },
       },
     ];
     const emptyBranch: unknown[] = [];
@@ -407,7 +432,7 @@ test("exact model validation distinguishes missing, scope, availability, and aut
 });
 
 test("off remains empty even with invalid defaults, while active invalid states fail closed", () => {
-  const current = runtime({ schemaVersion: 3, intensity: "off" });
+  const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
   current.diagnostics.push({ message: "Global defaults are invalid." });
   validateRuntime(context(), current);
   assert.equal(statusLabel(current), "D:OFF");
@@ -415,7 +440,10 @@ test("off remains empty even with invalid defaults, while active invalid states 
   assert.equal(buildDelegationPolicy(current), undefined);
   assert.doesNotMatch(statusText(current), /Global defaults are invalid/);
 
-  const active = runtime({ schemaVersion: 3, intensity: "normal" }, { schemaVersion: 3 });
+  const active = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { schemaVersion: CURRENT_SCHEMA_VERSION },
+  );
   validateRuntime(context(), active);
   assert.equal(statusLabel(active), "D:ERR");
   assert.equal(hasRuntimeError(active), true);
@@ -426,7 +454,7 @@ test("all active intensities and preferences produce one deterministic policy bl
   for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
     for (const preference of ["efficient", "standard", "intensive"] as const) {
       const current = runtime(
-        { schemaVersion: 3, intensity },
+        { schemaVersion: CURRENT_SCHEMA_VERSION, intensity },
         { ...defaults, preference, uiDesign: undefined },
       );
       validateRuntime(context(), current);
@@ -446,7 +474,10 @@ test("all active intensities and preferences produce one deterministic policy bl
 test("generated guidance preserves canonical roles and operational mode boundaries", () => {
   const policy = (intensity: "normal" | "aggressive", preference: GlobalDefaults["preference"]) =>
     buildDelegationPolicy(
-      runtime({ schemaVersion: 3, intensity }, { ...defaults, preference, uiDesign: undefined }),
+      runtime(
+        { schemaVersion: CURRENT_SCHEMA_VERSION, intensity },
+        { ...defaults, preference, uiDesign: undefined },
+      ),
     ) ?? "";
 
   const standard = policy("normal", "standard");
@@ -486,13 +517,20 @@ test("generated guidance preserves canonical roles and operational mode boundari
 });
 
 test("policy previews and launch instructions preserve exact models with per-run thinking", () => {
-  const active = resolveDelegateState(defaults, { schemaVersion: 3, intensity: "normal" });
-  assert.deepEqual(buildPolicyPreview(resolveDelegateState(defaults, { schemaVersion: 3 })), [
-    "off · no policy injected",
-  ]);
+  const active = resolveDelegateState(defaults, {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    intensity: "normal",
+  });
+  assert.deepEqual(
+    buildPolicyPreview(resolveDelegateState(defaults, { schemaVersion: CURRENT_SCHEMA_VERSION })),
+    ["off · no policy injected"],
+  );
   assert.deepEqual(
     buildPolicyPreview(
-      resolveDelegateState({ schemaVersion: 3 }, { schemaVersion: 3, intensity: "normal" }),
+      resolveDelegateState(
+        { schemaVersion: CURRENT_SCHEMA_VERSION },
+        { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+      ),
     ),
     ["active · Small not configured · no policy can be injected"],
   );
@@ -504,7 +542,10 @@ test("policy previews and launch instructions preserve exact models with per-run
   );
   assert.match(buildPolicyPreview(active)[2] ?? "", /neither uses an ambient default/);
   const orchestratorPreview = buildPolicyPreview(
-    resolveDelegateState(defaults, { schemaVersion: 3, intensity: "orchestrator" }),
+    resolveDelegateState(defaults, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "orchestrator",
+    }),
   );
   assert.match(orchestratorPreview[0] ?? "", /^orchestrator · task fit first/);
   assert.match(
@@ -512,7 +553,10 @@ test("policy previews and launch instructions preserve exact models with per-run
     /Delegate all transferable work; main agent keeps final acceptance/,
   );
 
-  const policy = buildDelegationPolicy(runtime({ schemaVersion: 3, intensity: "normal" })) ?? "";
+  const policy =
+    buildDelegationPolicy(
+      runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" }),
+    ) ?? "";
   assert.match(policy, /Choose thinking dynamically for that run/);
   assert.match(policy, /selected model's capabilities/);
   assert.doesNotMatch(policy, /defaultThinking|thinking: low|thinking: medium|thinking: high/);
@@ -536,8 +580,14 @@ test("policy previews and launch instructions preserve exact models with per-run
 
   const escapedReference = { provider: 'provider/"quoted"', model: "model/with&<>" };
   const escaped = runtime(
-    { schemaVersion: 3, intensity: "normal" },
-    { schemaVersion: 3, preference: "standard", small: escapedReference, medium, large },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      preference: "standard",
+      small: escapedReference,
+      medium,
+      large,
+    },
   );
   validateRuntime(
     context({ availableModels: [model(escapedReference), model(medium), model(large)] }),
@@ -555,7 +605,7 @@ test("policy previews and launch instructions preserve exact models with per-run
 
 test("Visual Design keeps the uiDesign key and participates only when configured", () => {
   const disabled = runtime(
-    { schemaVersion: 3, intensity: "normal", uiDesign: null },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal", uiDesign: null },
     { ...defaults, uiDesign: { provider: "example", model: "missing-ui" } },
   );
   validateRuntime(context(), disabled);
@@ -563,14 +613,14 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   assert.doesNotMatch(buildDelegationPolicy(disabled) ?? "", /Visual Design:/);
 
   const enabled = runtime(
-    { schemaVersion: 3, intensity: "normal" },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
     { ...defaults, uiDesign: { provider: "example", model: "missing-ui" } },
   );
   validateRuntime(context(), enabled);
   assert.equal(statusLabel(enabled), "D:ERR");
   assert.equal(buildDelegationPolicy(enabled), undefined);
 
-  const configured = runtime({ schemaVersion: 3, intensity: "normal" });
+  const configured = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
   validateRuntime(context(), configured);
   const visualPolicy = buildDelegationPolicy(configured) ?? "";
   for (const expected of [
@@ -590,14 +640,17 @@ test("Visual Design keeps the uiDesign key and participates only when configured
 
   const escapedReference = { provider: "example</delegation_policy>", model: "model&name" };
   const escapedDefaults = {
-    schemaVersion: 3 as const,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard" as const,
     small: escapedReference,
     medium,
     large,
   };
   const escapedModels = [model(escapedReference), model(medium), model(large)];
-  const escaped = runtime({ schemaVersion: 3, intensity: "normal" }, escapedDefaults);
+  const escaped = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    escapedDefaults,
+  );
   validateRuntime(context({ availableModels: escapedModels }), escaped);
   const policy = buildDelegationPolicy(escaped) ?? "";
   assert.equal((policy.match(/<delegation_policy>/g) ?? []).length, 1);
@@ -608,7 +661,7 @@ test("Visual Design keeps the uiDesign key and participates only when configured
 
 test("orchestrator routes Visual Design boundaries without a main-agent integration escape", () => {
   const policyFor = (intensity: "normal" | "aggressive" | "orchestrator") => {
-    const current = runtime({ schemaVersion: 3, intensity });
+    const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity });
     validateRuntime(context(), current);
     return buildDelegationPolicy(current) ?? "";
   };
@@ -638,28 +691,34 @@ test("orchestrator routes Visual Design boundaries without a main-agent integrat
     /main agent retains cross-domain integration and final acceptance/,
   );
 
-  const off = runtime({ schemaVersion: 3, intensity: "off" });
+  const off = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
   validateRuntime(context(), off);
   assert.equal(statusLabel(off), "D:OFF");
   assert.equal(buildDelegationPolicy(off), undefined);
 
-  const invalid = runtime({ schemaVersion: 3, intensity: "orchestrator" }, { schemaVersion: 3 });
+  const invalid = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "orchestrator" },
+    { schemaVersion: CURRENT_SCHEMA_VERSION },
+  );
   validateRuntime(context(), invalid);
   assert.equal(statusLabel(invalid), "D:ERR");
   assert.equal(buildDelegationPolicy(invalid), undefined);
 });
 
 test("status reports built-in, global, and session intensity sources", () => {
-  const builtIn = runtime({ schemaVersion: 3 }, defaults);
+  const builtIn = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION }, defaults);
   validateRuntime(context(), builtIn);
   assert.match(statusText(builtIn), /^D:OFF intensity=off \(default\)/);
 
-  const global = runtime({ schemaVersion: 3 }, { ...defaults, intensity: "normal" });
+  const global = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION },
+    { ...defaults, intensity: "normal" },
+  );
   validateRuntime(context(), global);
   assert.match(statusText(global), /^D:NORM intensity=normal \(global\)/);
 
   const session = runtime(
-    { schemaVersion: 3, intensity: "aggressive" },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "aggressive" },
     { ...defaults, intensity: "normal" },
   );
   validateRuntime(context(), session);
@@ -707,6 +766,8 @@ test("the extension uses only the approved lifecycle events and never accumulate
         name: string,
         handler: (event: Record<string, unknown>, ctx: ExtensionContext) => unknown,
       ) => handlers.set(name, handler),
+      registerTool: () => undefined,
+      getAllTools: () => [],
       registerCommand: (
         name: string,
         options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
@@ -728,6 +789,8 @@ test("the extension uses only the approved lifecycle events and never accumulate
       "session_shutdown",
       "session_start",
       "session_tree",
+      "tool_call",
+      "tool_result",
     ]);
     assert.ok(commands.has("delegate"));
     assert.deepEqual([...shortcuts.keys()], ["alt+g"]);
@@ -749,19 +812,28 @@ test("the extension uses only the approved lifecycle events and never accumulate
       component.handleInput?.("a");
     };
     await shortcuts.get("alt+g")?.handler(current);
-    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 3, intensity: "aggressive" });
+    assert.deepEqual(branch.at(-1)?.data, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "aggressive",
+    });
     assert.equal(statuses.at(-1), "D:AGG");
     runEditor = undefined;
 
     await commands.get("delegate")?.handler("normal", current);
-    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 3, intensity: "normal" });
+    assert.deepEqual(branch.at(-1)?.data, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "normal",
+    });
     for (const reason of ["reload", "resume", "fork"]) {
       await handlers.get("session_start")?.({ type: "session_start", reason }, current);
       assert.equal(statuses.at(-1), "D:NORM");
     }
 
     await commands.get("delegate")?.handler("orchestrator", current);
-    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 3, intensity: "orchestrator" });
+    assert.deepEqual(branch.at(-1)?.data, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "orchestrator",
+    });
     for (const reason of ["reload", "resume", "fork"]) {
       await handlers.get("session_start")?.({ type: "session_start", reason }, current);
       assert.equal(statuses.at(-1), "D:ORCH");
@@ -784,12 +856,18 @@ test("the extension uses only the approved lifecycle events and never accumulate
     assert.equal((first.systemPrompt?.match(/<delegation_policy>/g) ?? []).length, 1);
 
     await commands.get("delegate")?.handler("off", current);
-    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 3, intensity: "off" });
+    assert.deepEqual(branch.at(-1)?.data, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "off",
+    });
     assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
 
     await commands.get("delegate")?.handler("normal", current);
     await commands.get("delegate")?.handler("reset", current);
-    assert.deepEqual(branch.at(-1)?.data, { schemaVersion: 3, intensity: "off" });
+    assert.deepEqual(branch.at(-1)?.data, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "off",
+    });
     assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
     await handlers.get("session_tree")?.({ type: "session_tree" }, current);
     assert.equal(statuses.at(-1), "D:OFF");
@@ -815,6 +893,8 @@ test("quick commands fail safely when either guarded append throws", async () =>
         let appendCalls = 0;
         const pi = {
           on: () => undefined,
+          registerTool: () => undefined,
+          getAllTools: () => [],
           registerCommand: (
             name: string,
             options: {
@@ -885,7 +965,7 @@ function createPanelHarness(
     tui: { terminal, requestRender: () => undefined } as never,
     theme: theme as never,
     global: options.global ?? defaults,
-    session: options.session ?? { schemaVersion: 3 },
+    session: options.session ?? { schemaVersion: CURRENT_SCHEMA_VERSION },
     candidates: (options.candidates ?? [
       model(small, "Tiny Worker"),
       model(medium, "Planning Sonnet"),
@@ -905,17 +985,32 @@ function createPanelHarness(
 test("session draft equality distinguishes inheritance, disable, and model identity", () => {
   assert.equal(
     sameSessionState(
-      { schemaVersion: 3, small: { ...small }, uiDesign: null },
-      { schemaVersion: 3, small: { ...small }, uiDesign: null },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, small: { ...small }, uiDesign: null },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, small: { ...small }, uiDesign: null },
     ),
     true,
   );
-  assert.equal(sameSessionState({ schemaVersion: 3, uiDesign: null }, { schemaVersion: 3 }), false);
-  assert.equal(sameSessionState({ schemaVersion: 3, small: null }, { schemaVersion: 3 }), false);
   assert.equal(
     sameSessionState(
-      { schemaVersion: 3, small },
-      { schemaVersion: 3, small: { provider: small.provider, model: "different" } },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, uiDesign: null },
+      { schemaVersion: CURRENT_SCHEMA_VERSION },
+    ),
+    false,
+  );
+  assert.equal(
+    sameSessionState(
+      { schemaVersion: CURRENT_SCHEMA_VERSION, small: null },
+      { schemaVersion: CURRENT_SCHEMA_VERSION },
+    ),
+    false,
+  );
+  assert.equal(
+    sameSessionState(
+      { schemaVersion: CURRENT_SCHEMA_VERSION, small },
+      {
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        small: { provider: small.provider, model: "different" },
+      },
     ),
     false,
   );
@@ -923,7 +1018,7 @@ test("session draft equality distinguishes inheritance, disable, and model ident
 
 test("the delegate panel is responsive and exposes values with all sources", () => {
   const { panel, terminal } = createPanelHarness({
-    session: { schemaVersion: 3, intensity: "aggressive", uiDesign: null },
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "aggressive", uiDesign: null },
   });
 
   for (const width of [100, 60, 40]) {
@@ -994,7 +1089,10 @@ test("the delegate panel is responsive and exposes values with all sources", () 
   assert.match(uiModelLines.join("\n"), /Disable for this session/);
   assert.ok(uiModelLines.length <= 9);
 
-  const compactDiscard = createPanelHarness({ rows: 30, session: { schemaVersion: 3 } });
+  const compactDiscard = createPanelHarness({
+    rows: 30,
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION },
+  });
   sendKeys(compactDiscard.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   const dirtyBeforeCompact = compactDiscard.panel.getDraft();
   compactDiscard.terminal.rows = 7;
@@ -1030,7 +1128,7 @@ test("the delegate panel is responsive and exposes values with all sources", () 
   const narrowEdit = createPanelHarness({ rows: 20 });
   narrowEdit.panel.render(23);
   sendKeys(narrowEdit.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
-  assert.deepEqual(narrowEdit.panel.getDraft(), { schemaVersion: 3 });
+  assert.deepEqual(narrowEdit.panel.getDraft(), { schemaVersion: CURRENT_SCHEMA_VERSION });
 
   const longQuery = createPanelHarness({ rows: 10, candidates: [] });
   sendKeys(longQuery.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
@@ -1066,9 +1164,9 @@ test("the panel selects orchestrator through the fourth intensity and applies it
     assert.match(lines.join("\n"), /orchestrator/);
   }
   assert.match(harness.panel.render(60).join("\n"), /Delegate all transferable work/);
-  sendKeys(harness.panel, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  sendKeys(harness.panel, "a");
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(applied, { schemaVersion: 3, intensity: "orchestrator" });
+  assert.deepEqual(applied, { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "orchestrator" });
   assert.deepEqual(harness.done, ["applied"]);
 
   harness.terminal.rows = 8;
@@ -1131,7 +1229,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
   assert.doesNotMatch(absentView, /API:|Reasoning:|Context:|Max output:/);
 
   const runtimeError = createPanelHarness({
-    session: { schemaVersion: 3, intensity: "normal" },
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
     diagnostics: ["Small model is outside the current model scope."],
     hasRuntimeError: true,
   });
@@ -1140,7 +1238,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
   assert.match(errorView, /Small model is outside the current model scope/);
 
   const offDraft = createPanelHarness({
-    session: { schemaVersion: 3, intensity: "off" },
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" },
     hasRuntimeError: true,
   });
   const offView = offDraft.panel.render(100).join("\n");
@@ -1150,7 +1248,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
 
 test("the delegate panel searches models, keeps pinned actions, and stages safe edits", () => {
   const { panel, done } = createPanelHarness({
-    session: { schemaVersion: 3, intensity: "normal" },
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
   });
 
   sendKeys(panel, KEY_ENTER, KEY_HOME, KEY_ENTER);
@@ -1213,10 +1311,13 @@ test("the delegate panel searches models, keeps pinned actions, and stages safe 
   assert.equal(uiRole.panel.getDraft().uiDesign, null);
 
   const reset = createPanelHarness({
-    session: { schemaVersion: 3, intensity: "aggressive", small },
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "aggressive", small },
   });
   sendKeys(reset.panel, KEY_END, KEY_UP, KEY_ENTER);
-  assert.deepEqual(reset.panel.getDraft(), { schemaVersion: 3, intensity: "off" });
+  assert.deepEqual(reset.panel.getDraft(), {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    intensity: "off",
+  });
 });
 
 test("the delegate panel preserves dirty drafts when apply or default saving fails", async () => {
@@ -1296,14 +1397,17 @@ test("the custom editor applies, discards, inherits, and saves defaults", async 
       appendEntry: (customType: string, data?: unknown) =>
         applied.push({ type: "custom", customType, data }),
     } as never);
-    assert.deepEqual(applied.at(-1)?.data, { schemaVersion: 3, intensity: "normal" });
+    assert.deepEqual(applied.at(-1)?.data, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "normal",
+    });
 
     await writeConfig(getGlobalConfigPath(directory), { ...defaults, intensity: "aggressive" });
     const inherited: Array<Record<string, unknown>> = [
       {
         type: "custom",
         customType: SESSION_ENTRY_TYPE,
-        data: { schemaVersion: 3, intensity: "normal" },
+        data: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
       },
     ];
     const inheritContext = context({
@@ -1314,7 +1418,7 @@ test("the custom editor applies, discards, inherits, and saves defaults", async 
       appendEntry: (customType: string, data?: unknown) =>
         inherited.push({ type: "custom", customType, data }),
     } as never);
-    assert.deepEqual(inherited.at(-1)?.data, { schemaVersion: 3 });
+    assert.deepEqual(inherited.at(-1)?.data, { schemaVersion: CURRENT_SCHEMA_VERSION });
     assert.equal((await loadRuntime(inheritContext)).effective.intensity, "aggressive");
 
     const discarded: Array<Record<string, unknown>> = [];
@@ -1355,7 +1459,7 @@ test("the custom editor applies, discards, inherits, and saves defaults", async 
     await openDelegateEditor(saveContext, { appendEntry: () => undefined } as never);
     const saved = JSON.parse(await readFile(getGlobalConfigPath(directory), "utf8"));
     assert.equal(saved.intensity, "off");
-    assert.equal(saved.schemaVersion, 3);
+    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
     assert.deepEqual(saved.small, small);
   });
 });
@@ -1422,11 +1526,13 @@ test("saving disabled ordinary defaults is global-only and does not apply the dr
     } as never);
 
     const saved = JSON.parse(await readFile(getGlobalConfigPath(directory), "utf8"));
-    assert.equal(saved.schemaVersion, 3);
+    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
     assert.equal(saved.medium, null);
     assert.equal("uiDesign" in saved, true);
     assert.deepEqual(branch, []);
-    assert.deepEqual((await loadRuntime(saveContext)).session, { schemaVersion: 3 });
+    assert.deepEqual((await loadRuntime(saveContext)).session, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+    });
   });
 });
 
@@ -1447,9 +1553,11 @@ test("the interactive editor reports its TUI requirement in RPC mode", async () 
   assert.equal(notification?.type, "warning");
 });
 
-test("source code has no runner, tool interception, model control, or network client", async () => {
+test("source code keeps ContextShunt bounded to public hooks without a runner, model control, or network client", async () => {
   const sourceFiles = [
     "config.ts",
+    "context-shunt.ts",
+    "context-shunt-adapter.ts",
     "delegate-panel.ts",
     "runtime.ts",
     "prompt.ts",
@@ -1461,8 +1569,10 @@ test("source code has no runner, tool interception, model control, or network cl
   );
   const joined = source.join("\n");
 
-  assert.doesNotMatch(joined, /registerTool\s*\(/);
-  assert.doesNotMatch(joined, /tool_call|tool_result|session_compact/);
+  assert.match(joined, /registerTool\s*\([\s\S]*context_shunt_recover/);
+  assert.match(joined, /pi\.on\("tool_call"/);
+  assert.match(joined, /pi\.on\("tool_result"/);
+  assert.doesNotMatch(joined, /node:child_process|child_process/);
   assert.doesNotMatch(joined, /setModel|setThinkingLevel/);
   assert.doesNotMatch(joined, /\bfetch\s*\(|https?:\/\//);
 });
@@ -1493,6 +1603,7 @@ test("public package contents exclude private planning, tests, archives, and old
   assert.equal(packageJson.version, "0.8.0");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
+  assert.deepEqual(packageJson.pi.subagents.agents, ["./agents"]);
 
   const npmCli = process.env.npm_execpath;
   assert.ok(npmCli, "npm_execpath is required for the package-content check");
@@ -1512,10 +1623,13 @@ test("public package contents exclude private planning, tests, archives, and old
     "LICENSE",
     "README.md",
     "SECURITY.md",
+    "agents/pi-delegation-policy.bulk-reader.md",
     "examples/global.json",
     "package.json",
     "schema/delegation-policy.schema.json",
     "src/config.ts",
+    "src/context-shunt-adapter.ts",
+    "src/context-shunt.ts",
     "src/delegate-panel.ts",
     "src/index.ts",
     "src/prompt.ts",
@@ -1526,7 +1640,7 @@ test("public package contents exclude private planning, tests, archives, and old
   assert.deepEqual(files, expected);
 });
 
-test("schema 2 migrates in memory and schema 3 preserves ordinary tri-state", () => {
+test("schema 2 and schema 3 migrate in memory while schema 4 preserves ordinary tri-state", () => {
   const schema2 = {
     schemaVersion: 2,
     intensity: "normal",
@@ -1542,7 +1656,7 @@ test("schema 2 migrates in memory and schema 3 preserves ordinary tri-state", ()
     schemaVersion: CURRENT_SCHEMA_VERSION,
   });
   assert.deepEqual(parseConfig({ schemaVersion: 3, small: null, medium, large: null }), {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     small: null,
     medium,
     large: null,
@@ -1550,9 +1664,14 @@ test("schema 2 migrates in memory and schema 3 preserves ordinary tri-state", ()
   assert.equal(parseConfig({ schemaVersion: 3, uiDesign: null }), undefined);
   assert.equal(parseSessionState({ schemaVersion: 2, small: null }), undefined);
 
-  const global: GlobalDefaults = { schemaVersion: 3, small, medium: null, large };
+  const global: GlobalDefaults = {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    small,
+    medium: null,
+    large,
+  };
   const effective = resolveDelegateState(global, {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     small: null,
     medium,
     large: null,
@@ -1564,7 +1683,7 @@ test("schema 2 migrates in memory and schema 3 preserves ordinary tri-state", ()
   assert.equal(effective.source.medium, "session");
   assert.equal(effective.source.large, "session");
   assert.deepEqual(defaultsFromEffectiveState(effective), {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "off",
     preference: "standard",
     small: null,
@@ -1581,7 +1700,7 @@ test("reading schema 2 migrates in memory without rewriting the file", async () 
 
     const loaded = await readConfig(path);
 
-    assert.equal(loaded.defaults.schemaVersion, 3);
+    assert.equal(loaded.defaults.schemaVersion, CURRENT_SCHEMA_VERSION);
     assert.deepEqual(loaded.defaults.small, small);
     assert.equal("medium" in loaded.defaults, false);
     assert.equal(await readFile(path, "utf8"), `${schema2}\n`);
@@ -1595,7 +1714,7 @@ test("orchestrator round-trips through global defaults and session overrides", a
     assert.deepEqual((await readConfig(getGlobalConfigPath(directory))).defaults, global);
 
     const restored = parseSessionState({
-      schemaVersion: 3,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "orchestrator",
       preference: "intensive",
       small: null,
@@ -1603,20 +1722,26 @@ test("orchestrator round-trips through global defaults and session overrides", a
       large,
     });
     assert.deepEqual(restored, {
-      schemaVersion: 3,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "orchestrator",
       preference: "intensive",
       small: null,
       medium,
       large,
     });
-    assert.equal(resolveDelegateState(global, { schemaVersion: 3 }).intensity, "orchestrator");
     assert.equal(
-      resolveDelegateState(global, { schemaVersion: 3, intensity: "normal" }).intensity,
+      resolveDelegateState(global, { schemaVersion: CURRENT_SCHEMA_VERSION }).intensity,
+      "orchestrator",
+    );
+    assert.equal(
+      resolveDelegateState(global, { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" })
+        .intensity,
       "normal",
     );
     assert.equal(
-      defaultsFromEffectiveState(resolveDelegateState(global, { schemaVersion: 3 })).intensity,
+      defaultsFromEffectiveState(
+        resolveDelegateState(global, { schemaVersion: CURRENT_SCHEMA_VERSION }),
+      ).intensity,
       "orchestrator",
     );
   });
@@ -1625,7 +1750,7 @@ test("orchestrator round-trips through global defaults and session overrides", a
 test("the orchestrator guard keeps older restoration fail-closed without historical reactivation", () => {
   const entries: unknown[] = [];
   const next: SessionDelegateState = {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "orchestrator",
     small,
     medium,
@@ -1642,13 +1767,13 @@ test("the orchestrator guard keeps older restoration fail-closed without histori
     {
       type: "custom",
       customType: SESSION_ENTRY_TYPE,
-      data: { schemaVersion: 3, intensity: "normal" },
+      data: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
     },
     { type: "custom", customType: SESSION_ENTRY_TYPE, data: entries[0] },
     { type: "custom", customType: SESSION_ENTRY_TYPE, data: next },
   ]);
   assert.deepEqual(restored.session, {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "orchestrator",
     small,
     medium,
@@ -1681,29 +1806,29 @@ test("the latest invalid session entry is a fail-closed restoration barrier", ()
   const active = {
     type: "custom",
     customType: SESSION_ENTRY_TYPE,
-    data: { schemaVersion: 3, intensity: "normal", small, medium, large },
+    data: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal", small, medium, large },
   };
   for (const data of [
-    { schemaVersion: 4, intensity: "normal" },
-    { schemaVersion: 3, small: { provider: "example" } },
-    { schemaVersion: 3, uiDesign: "invalid" },
+    { schemaVersion: 5, intensity: "normal" },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, small: { provider: "example" } },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, uiDesign: "invalid" },
   ]) {
     const restored = restoreSessionStateWithDiagnostics([
       active,
       { type: "custom", customType: SESSION_ENTRY_TYPE, data },
     ]);
-    assert.deepEqual(restored.session, { schemaVersion: 3, intensity: "off" });
+    assert.deepEqual(restored.session, { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
     assert.equal(restored.diagnostics.length, 1);
     assert.doesNotMatch(restored.diagnostics[0]?.message ?? "", /example|provider|schemaVersion/i);
   }
-  assert.equal(restoreSessionState([active]).schemaVersion, 3);
+  assert.equal(restoreSessionState([active]).schemaVersion, CURRENT_SCHEMA_VERSION);
 });
 
 test("guarded session writes preserve an off downgrade guard and fail safely", () => {
   const entries: unknown[] = [];
   const writer = { appendEntry: (_type: string, data?: unknown) => entries.push(data) };
   const next: SessionDelegateState = {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "normal",
     small: null,
     medium,
@@ -1747,7 +1872,10 @@ test("every ordinary-role subset validates only enabled roles and generates part
           mask & (1 << index) ? { small, medium, large }[role] : null,
         ]),
       );
-      const current = runtime({ schemaVersion: 3, intensity }, { schemaVersion: 3, ...settings });
+      const current = runtime(
+        { schemaVersion: CURRENT_SCHEMA_VERSION, intensity },
+        { schemaVersion: CURRENT_SCHEMA_VERSION, ...settings },
+      );
       validateRuntime(context(), current);
       const enabled = enabledOrdinaryRoles(current.effective);
       if (enabled.length === 0) {
@@ -1772,8 +1900,8 @@ test("every ordinary-role subset validates only enabled roles and generates part
   }
 
   const incomplete = runtime(
-    { schemaVersion: 3, intensity: "normal" },
-    { schemaVersion: 3, small, medium: null, large: null },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, small, medium: null, large: null },
   );
   delete incomplete.global.small;
   validateRuntime(context(), incomplete);
@@ -1783,7 +1911,7 @@ test("every ordinary-role subset validates only enabled roles and generates part
 
 test("ordinary model selectors expose both pinned actions and write disabled state", () => {
   for (const index of [2, 3, 4]) {
-    const { panel } = createPanelHarness({ session: { schemaVersion: 3 } });
+    const { panel } = createPanelHarness({ session: { schemaVersion: CURRENT_SCHEMA_VERSION } });
     sendKeys(
       panel,
       ...Array.from({ length: index }, () => KEY_DOWN),
@@ -1802,8 +1930,8 @@ test("disabled invalid roles skip validation while enabled invalid roles fail cl
   const missing = { provider: "example", model: "missing" };
   for (const intensity of ["normal", "orchestrator"] as const) {
     const disabled = runtime(
-      { schemaVersion: 3, intensity },
-      { schemaVersion: 3, small: null, medium, large },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, intensity },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, small: null, medium, large },
     );
     validateRuntime(context({ availableModels: [model(medium), model(large)] }), disabled);
     assert.equal(statusLabel(disabled), intensity === "normal" ? "D:NORM" : "D:ORCH");
@@ -1814,8 +1942,8 @@ test("disabled invalid roles skip validation while enabled invalid roles fail cl
     );
 
     const invalid = runtime(
-      { schemaVersion: 3, intensity },
-      { schemaVersion: 3, small: missing, medium: null, large },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, intensity },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, small: missing, medium: null, large },
     );
     validateRuntime(context({ availableModels: [model(large)] }), invalid);
     assert.equal(statusLabel(invalid), "D:ERR");
@@ -1827,7 +1955,7 @@ test("disabled invalid roles skip validation while enabled invalid roles fail cl
 test("guarded session writes use the extension type and leave only the guard after state failure", () => {
   const calls: Array<{ type: string; data: unknown }> = [];
   const next: SessionDelegateState = {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "normal",
     small,
     medium: null,
@@ -1862,8 +1990,14 @@ test("guarded session writes use the extension type and leave only the guard aft
 
 test("partial role preferences and Visual Design preserve the ordinary-role boundary", () => {
   const oneEnabled = runtime(
-    { schemaVersion: 3, intensity: "normal", uiDesign },
-    { schemaVersion: 3, preference: "intensive", small: null, medium: null, large },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal", uiDesign },
+    {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      preference: "intensive",
+      small: null,
+      medium: null,
+      large,
+    },
   );
   validateRuntime(context(), oneEnabled);
   const policy = buildDelegationPolicy(oneEnabled) ?? "";
@@ -1873,16 +2007,20 @@ test("partial role preferences and Visual Design preserve the ordinary-role boun
   assert.match(policy, /Visual Design:/);
 
   const visualOnly = runtime(
-    { schemaVersion: 3, intensity: "normal", uiDesign },
-    { schemaVersion: 3, small: null, medium: null, large: null },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal", uiDesign },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, small: null, medium: null, large: null },
   );
   validateRuntime(context(), visualOnly);
   assert.equal(statusLabel(visualOnly), "D:ERR");
   assert.equal(buildDelegationPolicy(visualOnly), undefined);
 
   const invalidVisual = runtime(
-    { schemaVersion: 3, intensity: "normal", uiDesign: { provider: "example", model: "missing" } },
-    { schemaVersion: 3, small, medium: null, large: null },
+    {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "normal",
+      uiDesign: { provider: "example", model: "missing" },
+    },
+    { schemaVersion: CURRENT_SCHEMA_VERSION, small, medium: null, large: null },
   );
   validateRuntime(context({ availableModels: [model(small)] }), invalidVisual);
   assert.equal(statusLabel(invalidVisual), "D:ERR");
@@ -1891,8 +2029,8 @@ test("partial role preferences and Visual Design preserve the ordinary-role boun
 test("saving effective defaults preserves ordinary nulls without session writes", async () => {
   await withAgentDirectory(async (directory) => {
     const effective = resolveDelegateState(
-      { schemaVersion: 3, small, medium, large },
-      { schemaVersion: 3, intensity: "normal", medium: null, large: null },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, small, medium, large },
+      { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal", medium: null, large: null },
     );
     const saved = defaultsFromEffectiveState(effective);
     await writeConfig(getGlobalConfigPath(directory), saved);
@@ -1900,20 +2038,23 @@ test("saving effective defaults preserves ordinary nulls without session writes"
     assert.equal((await readConfig(getGlobalConfigPath(directory))).defaults.medium, null);
     assert.equal("uiDesign" in saved, false);
     const incomplete = defaultsFromEffectiveState(
-      resolveDelegateState({ schemaVersion: 3, small, medium: null }, { schemaVersion: 3 }),
+      resolveDelegateState(
+        { schemaVersion: CURRENT_SCHEMA_VERSION, small, medium: null },
+        { schemaVersion: CURRENT_SCHEMA_VERSION },
+      ),
     );
     assert.equal("large" in incomplete, false);
   });
 });
 
 test("status keeps restoration diagnostics once in active and off states", () => {
-  const off = runtime({ schemaVersion: 3, intensity: "off" });
+  const off = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
   off.diagnostics = [{ message: "Sanitized restoration warning.", reportWhenOff: true }];
   validateRuntime(context(), off);
   assert.equal((statusText(off).match(/details=/g) ?? []).length, 1);
   assert.match(statusText(off), /Sanitized restoration warning/);
 
-  const active = runtime({ schemaVersion: 3, intensity: "normal" });
+  const active = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
   active.diagnostics = [{ message: "Sanitized restoration warning." }];
   validateRuntime(context(), active);
   assert.equal((statusText(active).match(/Sanitized restoration warning/g) ?? []).length, 1);
@@ -1930,17 +2071,19 @@ test("model selectors retain pinned ordering and page navigation", () => {
   sendKeys(panel, "\x1b[6~", KEY_ENTER);
   assert.deepEqual(panel.getDraft().small, { provider: "provider", model: "model-17" });
 
-  const inherited = createPanelHarness({ session: { schemaVersion: 3, small: null } });
+  const inherited = createPanelHarness({
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION, small: null },
+  });
   sendKeys(inherited.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_HOME, KEY_ENTER);
   assert.equal("small" in inherited.panel.getDraft(), false);
 });
 
-test("orchestrator is a schema 3 intensity and schema 2 rejects it", async () => {
+test("orchestrator is a schema 4 intensity and schema 2 rejects it", async () => {
   const schema = JSON.parse(
     await readFile(join(process.cwd(), "schema/delegation-policy.schema.json"), "utf8"),
   );
   const validate = new Ajv2020({ allErrors: true }).compile(schema);
-  const orchestrator = { schemaVersion: 3, intensity: "orchestrator" };
+  const orchestrator = { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "orchestrator" };
   assert.ok(validate(orchestrator), JSON.stringify(validate.errors));
   assert.equal(parseConfig(orchestrator)?.intensity, "orchestrator");
   assert.equal(parseConfig({ schemaVersion: 2, intensity: "orchestrator" }), undefined);
@@ -1948,7 +2091,7 @@ test("orchestrator is a schema 3 intensity and schema 2 rejects it", async () =>
 });
 
 test("orchestrator reports D:ORCH and has distinct ownership guidance", () => {
-  const current = runtime({ schemaVersion: 3, intensity: "orchestrator" });
+  const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "orchestrator" });
   validateRuntime(context(), current);
   assert.equal(statusLabel(current), "D:ORCH");
   const policy = buildDelegationPolicy(current) ?? "";
@@ -1998,7 +2141,7 @@ test("orchestrator reports D:ORCH and has distinct ownership guidance", () => {
 test("normal and aggressive policy blocks match the ff15c0d baseline fixture", () => {
   // Fixed synthetic roles and standard preference; hashes were generated from HEAD ff15c0d.
   const fixture: GlobalDefaults = {
-    schemaVersion: 3,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
     small,
     medium,
@@ -2009,7 +2152,7 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     aggressive: "8703ea45ab6177f9dfdcf6232df0faaa0626e90b92f42855b7b9594caa6ab9e5",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
-    const current = runtime({ schemaVersion: 3, intensity }, fixture);
+    const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
     validateRuntime(context(), current);
     const policy = buildDelegationPolicy(current);
     assert.ok(policy);

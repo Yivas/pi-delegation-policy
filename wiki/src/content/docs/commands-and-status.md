@@ -7,17 +7,21 @@ description: Operate the /delegate panel and interpret its status in Pi.
 
 Use `/delegate` in Pi's TUI to open the keyboard-first editor. `Alt+G` opens the same editor when available. The editor requires TUI mode; these command arguments remain available in other modes. The published `0.8.0` package supports `off`, `normal`, `aggressive`, and `orchestrator` with the stricter `D:ORCH` guidance. Published `0.7.0` retains its permissive historical policy:
 
-| Command                  | Effect                                                   |
-| ------------------------ | -------------------------------------------------------- |
-| `/delegate`              | Open the keyboard-first selector.                        |
-| `/delegate off`          | Disable policy injection for the current session branch. |
-| `/delegate normal`       | Enable balanced delegation guidance.                     |
-| `/delegate aggressive`   | Enable delegation-first guidance.                        |
-| `/delegate orchestrator` | Minimize main-agent execution while retaining ownership. |
-| `/delegate status`       | Show the effective session state.                        |
-| `/delegate reset`        | Reset the current session branch to `off`.               |
+| Command                     | Effect                                                   |
+| --------------------------- | -------------------------------------------------------- |
+| `/delegate`                 | Open the keyboard-first selector.                        |
+| `/delegate off`             | Disable policy injection for the current session branch. |
+| `/delegate normal`          | Enable balanced delegation guidance.                     |
+| `/delegate aggressive`      | Enable delegation-first guidance.                        |
+| `/delegate orchestrator`    | Minimize main-agent execution while retaining ownership. |
+| `/delegate status`          | Show the effective session state.                        |
+| `/delegate reset`           | Reset the current session branch to `off`.               |
+| `/delegate context off`     | Stop ContextShunt work for this branch.                  |
+| `/delegate context observe` | Record what enforce would block without changing calls.  |
+| `/delegate context enforce` | Enforce recognized budgets and bounded recovery.         |
+| `/delegate context status`  | Show the effective ContextShunt state.                   |
 
-There is no separate off shortcut: run `/delegate off` or choose `off` in the editor. Quick commands write the session branch directly. **Reset draft to off** only changes the draft until Apply.
+There is no separate off shortcut: run `/delegate off` or choose `off` in the editor. Quick commands write the session branch directly. Context mode commands do not open a TUI dialog, so they work in non-interactive modes. **Reset draft to off** only changes the draft until Apply.
 
 ## 2. Edit the panel
 
@@ -74,7 +78,15 @@ small=disabled (session) | medium=provider/example-medium (global) | large=not c
 
 The source is `default`, `global`, or `session`. The stable Visual Design token remains `ui-design=`. A sanitized restoration warning can accompany `D:OFF` when the latest stored state is invalid or from a future schema; it neither enables injection nor reveals session content.
 
-## 6. Diagnose `D:ERR`
+## 6. Use ContextShunt safely
+
+Choose **Context protection** in the panel or use `/delegate context observe` before `/delegate context enforce`. `off` performs no ContextShunt work. `observe` changes neither the tool call nor its result. `enforce` blocks only a recognized declared excess; when a known successful text result is too large, it first preserves the original in a private temporary artifact and then returns a short recovery instruction. If preservation fails, the original result remains unchanged.
+
+`/delegate context status` reports the requested reader role and `model=unknown`: this package has no automatic hook-to-worker bridge. The packaged `agents/pi-delegation-policy.bulk-reader.md` profile allows only `read`, `grep`, `find`, and `ls` when a compatible executor loads it from the package path. It is not installed into user agent directories or automatically run. If an executor cannot load a path-based profile, use the guided redirection and exact bounded reads instead.
+
+A blocked call can be narrowed, or a real user can approve its matching next call once through the token shown in the block message. The exception is tied to that operation, requested range, and one-minute expiry; model text cannot grant it.
+
+## 7. Diagnose `D:ERR`
 
 1. Run `/delegate status` and read the reported role and detail.
 2. Check that every ordinary role has an exact current-scope model or is explicitly disabled. Check Visual Design if configured.

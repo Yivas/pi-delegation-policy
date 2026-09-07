@@ -42,13 +42,19 @@ Choose `normal` when expected delegation benefit clearly outweighs briefing, sup
 
 Apply the draft, then run `/delegate status`. `D:NORM`, `D:AGG`, and `D:ORCH` mean every ordinary role is either enabled with a valid exact reference or explicitly disabled, and at least one is enabled. `D:ERR` means a role is not configured, an enabled reference is unavailable, out of scope, or unauthenticated, or no ordinary role is enabled. No policy is injected for `D:ERR`. `D:OFF` injects nothing.
 
-### 4. Know the persisted format
+### 4. Configure ContextShunt only when needed
 
-Global defaults and new session entries use schema version 3. Schema 2 values remain readable and are normalized in memory without rewriting the source. Schema 3 uses `null` to disable an ordinary role. Session changes write a schema 2 `off` guard before the schema 3 state so an older package restores off rather than older active state.
+Choose **Context protection** in `/delegate`: start with `observe`, then explicitly choose `enforce` only if the reported decisions help. `off` is the default and performs no classification, metrics, archive I/O, or interception. `observe` does not change calls or results. `enforce` covers recognized native reads, conservative bounded PowerShell reads, and known successful text results; it never launches a worker, re-runs a command, or bypasses tool permissions.
 
-Saving effective defaults changes only the global file and does not apply the current session draft or create that guard. Before downgrading to `0.6.0`, change the global intensity to `off`, `normal`, or `aggressive` and run `/delegate off` in every active branch. Keep schema 3 for `0.6.0`; for `<=0.5.0`, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references. Complete these steps before installing the older package; see [configuration](/pi-delegation-policy/configuration/#global-defaults-and-session-inheritance).
+When enforcement preserves a large known text result, use `context_shunt_recover` with one bounded line or byte range. Errors, valid JSON of every root type, images, binaries, mixed content, and unknown contracts remain unchanged. The profile packaged at `agents/pi-delegation-policy.bulk-reader.md` is declared for discovery by a compatible executor as a guided read-only contract. It is not copied into user directories, launched automatically, or an isolation boundary; use it only with an executor that supports path-based profile discovery.
 
-### 5. Start the next agent run
+### 5. Know the persisted format
+
+Global defaults and new session entries use schema version 4. Schema 2 and 3 values remain readable and are normalized in memory without rewriting the source. Schema 3 uses `null` to disable an ordinary role. Session changes write a schema 2 `off` guard before the schema 4 state so an older package restores off rather than older active state.
+
+Saving effective defaults changes only the global file and does not apply the current session draft or create that guard. Before downgrading to a package that cannot read schema 4, set global and branch ContextShunt to `off`. Before downgrading to `0.6.0`, also change intensity to `off`, `normal`, or `aggressive` and run `/delegate off` in every active branch. For `<=0.5.0`, change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references. Complete these steps before installing the older package; see [configuration](/pi-delegation-policy/configuration/#global-defaults-and-session-inheritance).
+
+### 6. Start the next agent run
 
 The applied configuration is read when Pi prepares the next agent run. It does not rewrite an agent that is already running. Turning the policy off removes it from subsequent runs; Pi rebuilds the system prompt for each run.
 

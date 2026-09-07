@@ -16,11 +16,10 @@ hero:
 import { LinkCard, Steps } from "@astrojs/starlight/components";
 
 `pi-delegation-policy` is a local Pi extension for delegation intensity and exact references for
-Small, Medium, Large, and optional Visual Design. It guides the main agent; it never runs, routes, or
-enforces delegated work.
+Small, Medium, Large, and optional Visual Design. It guides the main agent; it never runs or routes delegated work. Its optional ContextShunt protects recognized oversized context without launching a worker.
 
 :::caution
-The extension adds guidance only when an active configuration is valid. It cannot guarantee that another system follows a configured role or thinking choice.
+The extension adds guidance only when an active configuration is valid. ContextShunt is off by default and is not a sandbox or an automatic worker bridge. Neither capability can guarantee that another system follows a configured role or thinking choice.
 :::
 
 ## Start here
@@ -47,11 +46,11 @@ The extension adds guidance only when an active configuration is valid. It canno
 />
 <LinkCard
   title="Set policy values"
-  description="Understand schema 3, tri-state roles, and inheritance."
+  description="Understand schema 4, tri-state roles, and inheritance."
   href="/pi-delegation-policy/configuration/"
 />
 <LinkCard
   title="Review limits and privacy"
-  description="Check fail-closed behavior and privacy boundaries."
+  description="Check fail-closed behavior, ContextShunt recovery, and privacy boundaries."
   href="/pi-delegation-policy/limits-and-privacy/"
 />

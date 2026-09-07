@@ -17,6 +17,7 @@
   ],
   "files": [
     "src",
+    "agents",
     "schema",
     "examples",
     "README.md",
@@ -55,6 +56,11 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "subagents": {
+      "agents": [
+        "./agents"
+      ]
+    }
   }
 }

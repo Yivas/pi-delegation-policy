@@ -7,17 +7,18 @@ description: Set valid global defaults and session-branch overrides without pers
 
 The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply the draft. In an active policy, every ordinary role needs an explicit decision: an exact, authenticated reference or `disabled`; at least one ordinary role must be enabled. Visual Design is optional and does not satisfy that minimum.
 
-Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 3:
+Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 4:
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "intensity": "normal",
   "preference": "standard",
   "small": { "provider": "example-provider", "model": "example-small" },
   "medium": { "provider": "example-provider", "model": "example-medium" },
   "large": null,
-  "uiDesign": { "provider": "example-provider", "model": "example-ui-design" }
+  "uiDesign": { "provider": "example-provider", "model": "example-ui-design" },
+  "contextShunt": { "mode": "off" }
 }
 ```
 
@@ -27,11 +28,11 @@ The references are fictional. An absent setting inherits in a session or is **no
 
 Global defaults may contain intensity, preference, tri-state ordinary roles, and the compatible `uiDesign` key. If global intensity is absent, the built-in default is `off`. A branch inherits a global value until it records an override. **Use global default** removes that branch override. A session `null` wins over a global model; a session model wins over a global `null`. Sources are `default`, `global`, or `session`.
 
-**Save effective configuration as defaults** copies the effective configuration to the global file, including ordinary `null` values, but does not apply the current session draft or change its branch. `/delegate reset` writes `off` for the branch and returns other fields to global inheritance. In the panel, **Reset draft to off** is only a draft until Apply.
+**Save effective configuration as defaults** copies the effective configuration to the global file, including ordinary `null` values and the configured ContextShunt mode even when delegation currently suspends it, but does not apply the current session draft or change its branch. `/delegate reset` writes `off` for the branch and returns other fields to global inheritance. In the panel, **Reset draft to off** is only a draft until Apply.
 
-Schema 2 defaults and session entries remain supported as input and are migrated in memory to schema 3 without a write. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
+Schema 2 and 3 defaults and session entries remain supported as input and are migrated in memory to schema 4 without a write. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
 
-Each session Apply, quick intensity command, and reset first append a schema 2 `off` guard and then the schema 3 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
+Each session Apply, quick intensity command, ContextShunt mode command, and reset first append a schema 2 `off` guard and then the schema 4 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
 
 Published `0.8.0` includes `orchestrator`. Before downgrading:
 
@@ -40,6 +41,14 @@ Published `0.8.0` includes `orchestrator`. Before downgrading:
 3. For `0.6.0`, keep schema 3 and the existing role settings. For `<=0.5.0`, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references.
 
 Schema 2 never accepts `orchestrator`. Saving defaults alone does not update branch overrides; changing a branch alone does not repair unsupported global defaults.
+
+## ContextShunt
+
+`contextShunt.mode` is independent from delegation intensity: `off` is the default and does no classification, metrics, archive I/O, or interception; `observe` records decisions without changing calls or results; `enforce` covers only recognized native reads, conservative bounded PowerShell reads, and known successful textual results. Delegation `off` suspends the effective mode without deleting the saved preference.
+
+Optional `readerRole`, limits, and patterns inherit per field between global defaults and the session branch. `exceptionPatterns` exempt matching paths only from this optimization; they never grant filesystem access. `delegationHintPatterns` label an already blocked declared excess as a delegation hint; they do not expand coverage or force a bounded read to block. `readerRole` is a requested ordinary role, not an added model configuration; the effective worker model is reported as unknown because this package does not launch or inspect a runner. **Context advanced** in the panel edits the reader role, each limit, and comma-separated patterns. Each value can return to global inheritance by clearing it, and **Reset ContextShunt draft** clears all branch ContextShunt values. The panel calls out a disabled or unconfigured requested role and that the bridge is unavailable. Enforcement provides guided redirection rather than an automatic bridge.
+
+Schema 4 writes a guarded schema 2 `off` entry before session state. Before installing a package that cannot read schema 4, set the global and branch ContextShunt mode to `off`; no schema rewrite happens automatically.
 
 ## Intensity
 

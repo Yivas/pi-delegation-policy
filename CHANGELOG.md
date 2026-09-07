@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Add opt-in ContextShunt schema 4 settings, keyboard-first mode selection, recognized read and conservative PowerShell range enforcement, and bounded recovery of preserved known textual results.
+- Include the guided `pi-delegation-policy.bulk-reader` read-only profile with `read`, `grep`, `find`, and `ls`; compatible executors can discover it from the package, but it is not copied or launched automatically.
+
+### Security
+
+- Keep ContextShunt off by default and preserve original results when a temporary artifact cannot be created. Temporary artifacts use opaque IDs, quotas, cancellation checks, an absolute 30-minute TTL from creation, scheduled cleanup while the process is active, and cleanup at session shutdown. Recovery does not renew the TTL; crashes and OS suspension can delay deletion.
+
 ## 0.8.0 - 2026-09-07
 
 ### Changed

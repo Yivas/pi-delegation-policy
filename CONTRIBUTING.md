@@ -18,11 +18,12 @@ Pull requests should:
 - keep the public package English-only;
 - use fictional examples and provider-agnostic documentation;
 - preserve exact role references and the absence of model fallbacks;
-- preserve the boundary: this package guides the main agent and does not create, launch, route, supervise, or block subagents;
+- preserve the boundary: this package does not create, launch, route, or supervise subagents; ContextShunt can only redirect the main agent and never starts a worker from a hook;
+- preserve ContextShunt defaults and controls: `off` performs no classification, metrics, I/O, or interception; preserve originals when an artifact, permission, or recognized contract is unavailable;
 - avoid project configuration, credential handling, telemetry, and network requests;
 - run `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`.
 
-Changes to schema 2, public commands, or the delegated-work policy need documentation and migration notes.
+Changes to persisted schemas, public commands, ContextShunt contracts, or the delegated-work policy need documentation and migration notes.
 
 ## Code of conduct
 

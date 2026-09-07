@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "intensity": "normal",
   "preference": "standard",
   "small": {
@@ -14,5 +14,20 @@
   "uiDesign": {
     "provider": "example-provider",
     "model": "example-ui-design"
+  },
+  "contextShunt": {
+    "mode": "off",
+    "readerRole": "small",
+    "limits": {
+      "fullReadLines": 350,
+      "fullReadBytes": 16384,
+      "targetedReadLines": 250,
+      "targetedReadBytes": 16384,
+      "readerOutputBytes": 8192
+    },
+    "shell": "conservative",
+    "metrics": "memory",
+    "exceptionPatterns": [],
+    "delegationHintPatterns": []
   }
 }

@@ -5,13 +5,14 @@
   "type": "object",
   "required": ["schemaVersion"],
   "properties": {
-    "schemaVersion": { "const": 3 },
+    "schemaVersion": { "const": 4 },
     "intensity": { "enum": ["off", "normal", "aggressive", "orchestrator"] },
     "preference": { "enum": ["efficient", "standard", "intensive"] },
     "small": { "$ref": "#/$defs/ordinaryRole" },
     "medium": { "$ref": "#/$defs/ordinaryRole" },
     "large": { "$ref": "#/$defs/ordinaryRole" },
-    "uiDesign": { "$ref": "#/$defs/modelRef" }
+    "uiDesign": { "$ref": "#/$defs/modelRef" },
+    "contextShunt": { "$ref": "#/$defs/contextShunt" }
   },
   "$defs": {
     "modelRef": {
@@ -23,8 +24,40 @@
       },
       "additionalProperties": false
     },
-    "ordinaryRole": {
-      "anyOf": [{ "$ref": "#/$defs/modelRef" }, { "type": "null" }]
+    "ordinaryRole": { "anyOf": [{ "$ref": "#/$defs/modelRef" }, { "type": "null" }] },
+    "positiveLimit": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+    "patterns": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^(?![\\s\\S]*\\u0000)(?![\\s\\S]*\\.\\.)(?![A-Za-z]:[\\\\/])(?!\\\\\\\\)[\\s\\S]+$"
+      }
+    },
+    "contextShunt": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["off", "observe", "enforce"] },
+        "readerRole": { "enum": ["small", "medium", "large"] },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "fullReadLines": { "$ref": "#/$defs/positiveLimit" },
+            "fullReadBytes": { "$ref": "#/$defs/positiveLimit" },
+            "targetedReadLines": { "$ref": "#/$defs/positiveLimit" },
+            "targetedReadBytes": { "$ref": "#/$defs/positiveLimit" },
+            "readerOutputBytes": { "$ref": "#/$defs/positiveLimit" }
+          },
+          "additionalProperties": false
+        },
+        "shell": { "const": "conservative" },
+        "metrics": { "const": "memory" },
+        "exceptionPatterns": { "$ref": "#/$defs/patterns" },
+        "delegationHintPatterns": { "$ref": "#/$defs/patterns" }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
