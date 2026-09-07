@@ -11,7 +11,7 @@ const NORMAL_POLICY =
 const AGGRESSIVE_POLICY =
   "Default to delegating substantial, separable, independently checkable work with a clear objective and acceptance criteria. Delegate when the benefit is plausible even if not proven, including a useful independent perspective. Keep work with the main agent when it is poorly bounded, tightly coupled, dominated by integration or final accountability, or has clearly prohibitive delegation overhead.";
 const ORCHESTRATOR_POLICY =
-  "Minimize the main agent's execution and generated narration without surrendering ownership. Delegate research, detailed planning, implementation, testing, detailed writing, review, and integration mechanics when the work is transferable and a capable enabled role can satisfy the objective, acceptance, and evidence. Batch small independent work when doing so reduces launches and duplicated context, request minimal briefs and results with file references and evidence, and do not duplicate inspection unless there is a concrete gap, risk, or contradiction. Keep objectives, critical decisions, coordination, integration responsibility, requested detail, safety, and final acceptance with the main agent. Delegate detailed review and integration mechanics when transferable; final acceptance does not require the main agent to execute every detail. Keep narration and final text concise, but never omit risks, evidence, safety, or requested detail. Do not promise savings or force recursive fanout. Do work directly, regardless of size, when it is not transferable, no enabled role can satisfy it, or transfer and context costs exceed doing it here.";
+  "Delegate all transferable execution before performing it whenever an enabled capable role and authorized launcher are available, regardless of size. This includes small lookups, code reading, detailed planning, implementation, tests, writing, detailed review, and integration mechanics. Perform only minimal bootstrap: mandatory instructions, tool discovery, and narrow assignment scope; do not pre-solve or broadly inspect the repository. Batch small tasks without forcing recursive fanout. After assigning a task, do not take it over or run an equivalent worker while it is pending; coordinate only disjoint work, use the host wait/completion mechanism, and consume its result before dependent work or finalizing. Retain strategy, objectives, critical user decisions, coordination, safety, evidence evaluation, final acceptance, and concise synthesis; final responsibility does not permit personally completing review or integration mechanics. Reinspect returned work only for a concrete gap, risk, or contradiction; delegate transferable fixes or rechecks. Direct execution is allowed only for genuinely non-transferable work, no enabled capable role, a confirmed unavailable authorized launcher, or an explicit user or higher-priority requirement. Before direct work, state the concrete exception briefly, do only the minimum, do not repeat it while unchanged, and resume delegation when it ends. Never use a final-review or integration label to do the whole task personally. Triviality, convenience, economics, transfer cost, size, or familiarity do not justify direct execution. Keep narration concise, but never omit requested detail, risks, evidence, or safety information. Do not promise savings.";
 
 const ROLE_SELECTION_POLICY = `Choose the role by task fit before considering model preference:
 - demand: execute, search, plan, decide, coordinate, or unblock;
@@ -31,7 +31,7 @@ A more capable enabled role may cover work normally suited to a disabled role on
 const LEGACY_OWNERSHIP_POLICY =
   "In every intensity, keep global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer with the main agent.";
 const ORCHESTRATOR_OWNERSHIP_POLICY =
-  "In orchestrator, keep global strategy, objectives, critical decisions, coordination, integration responsibility, requested evidence, safety, and final acceptance with the main agent. Detailed review and integration mechanics may be delegated when transferable; retaining final responsibility does not require executing every detail.";
+  "In orchestrator, keep global strategy, objectives, critical decisions, coordination, safety, evidence evaluation, final acceptance, and concise synthesis with the main agent. The main agent MUST delegate transferable detailed review and integration mechanics; final responsibility does not permit personal execution except under the named direct-work exceptions.";
 
 const VISUAL_DESIGN_POLICY = `Visual Design is an optional specialist role. Use it only when all four conditions hold:
 1. the primary acceptance criterion is a visual or user-experience result;
@@ -39,9 +39,11 @@ const VISUAL_DESIGN_POLICY = `Visual Design is an optional specialist role. Use 
 3. the patch is bounded to an identifiable surface, component, or set of assets;
 4. it requires no business logic, data flow, APIs, routes, application architecture, tooling, or cross-system coordination.
 
-When eligible, Visual Design may design, create, implement, and review scoped presentation code and visual assets, including layout, styles, responsive presentation, typography, images, icons, logos, SVGs, diagrams, and documentation visuals. It may address visual accessibility such as contrast and focus visibility. It must run and report the relevant existing checks for its patch.
-
-Route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits, or keep it with the main agent. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration and final acceptance.`;
+When eligible, Visual Design may design, create, implement, and review scoped presentation code and visual assets, including layout, styles, responsive presentation, typography, images, icons, logos, SVGs, diagrams, and documentation visuals. It may address visual accessibility such as contrast and focus visibility. It must run and report the relevant existing checks for its patch.`;
+const LEGACY_VISUAL_DESIGN_ROUTING_POLICY =
+  "Route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits, or keep it with the main agent. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration and final acceptance.";
+const ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY =
+  "In orchestrator, route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration responsibility, coordination, and final acceptance, but MUST delegate transferable integration mechanics and detailed review to a capable enabled ordinary role unless a named direct-work exception applies.";
 
 function hasSmallMedium(enabled: readonly ModelRole[]): boolean {
   return enabled.includes("small") && enabled.includes("medium");
@@ -124,7 +126,7 @@ export function buildPolicyPreview(effective: EffectiveDelegateState): string[] 
     `Enabled: ${enabled.map(roleName).join(", ")}${disabled.length ? ` · Disabled: ${disabled.map(roleName).join(", ")}` : ""}`,
     `${references} · exact model plus per-task thinking required; neither uses an ambient default.`,
     ...(effective.intensity === "orchestrator"
-      ? ["Batch transferable detail; main agent keeps ownership and final acceptance."]
+      ? ["Delegate all transferable work; main agent keeps final acceptance."]
       : []),
   ];
 }
@@ -149,6 +151,10 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
   const uiDesign = effective.uiDesign
     ? `\n- Visual Design: ${formatReference(effective.uiDesign)}; exact model base: ${formatLaunchModel(effective.uiDesign)}; pi-subagents form: ${formatThinkingLaunchModel(effective.uiDesign)}`
     : "";
+  const visualDesignPolicy =
+    effective.intensity === "orchestrator"
+      ? `${VISUAL_DESIGN_POLICY}\n\n${ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY}`
+      : `${VISUAL_DESIGN_POLICY}\n\n${LEGACY_VISUAL_DESIGN_ROUTING_POLICY}`;
   const roleLines = enabled
     .map((role) => {
       const reference = effective[role] as ModelRef;
@@ -172,7 +178,7 @@ Before every delegated launch, name the selected role and take its exact combine
 
 Roles:
 ${roleLines}${uiDesign}
-${effective.uiDesign ? `\n${VISUAL_DESIGN_POLICY}\n` : ""}
+${effective.uiDesign ? `\n${visualDesignPolicy}\n` : ""}
 This is guidance for the main agent. It does not create, execute, route, supervise, or enforce delegated work.
 </delegation_policy>`;
 }

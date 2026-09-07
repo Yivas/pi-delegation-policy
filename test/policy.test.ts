@@ -507,7 +507,10 @@ test("policy previews and launch instructions preserve exact models with per-run
     resolveDelegateState(defaults, { schemaVersion: 3, intensity: "orchestrator" }),
   );
   assert.match(orchestratorPreview[0] ?? "", /^orchestrator · task fit first/);
-  assert.match(orchestratorPreview[3] ?? "", /main agent keeps ownership and final acceptance/);
+  assert.match(
+    orchestratorPreview[3] ?? "",
+    /Delegate all transferable work; main agent keeps final acceptance/,
+  );
 
   const policy = buildDelegationPolicy(runtime({ schemaVersion: 3, intensity: "normal" })) ?? "";
   assert.match(policy, /Choose thinking dynamically for that run/);
@@ -601,6 +604,49 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   assert.equal((policy.match(/<\/delegation_policy>/g) ?? []).length, 1);
   assert.match(policy, /\\u003c\/delegation_policy\\u003e/);
   assert.match(policy, /\\u0026/);
+});
+
+test("orchestrator routes Visual Design boundaries without a main-agent integration escape", () => {
+  const policyFor = (intensity: "normal" | "aggressive" | "orchestrator") => {
+    const current = runtime({ schemaVersion: 3, intensity });
+    validateRuntime(context(), current);
+    return buildDelegationPolicy(current) ?? "";
+  };
+
+  for (const intensity of ["normal", "aggressive"] as const) {
+    const policy = policyFor(intensity);
+    assert.match(
+      policy,
+      /Route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits, or keep it with the main agent/,
+    );
+    assert.match(policy, /The main agent retains cross-domain integration and final acceptance/);
+    assert.doesNotMatch(policy, /In orchestrator, route interaction behavior/);
+  }
+
+  const orchestrator = policyFor("orchestrator");
+  assert.match(
+    orchestrator,
+    /In orchestrator, route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits/,
+  );
+  assert.match(
+    orchestrator,
+    /The main agent retains cross-domain integration responsibility, coordination, and final acceptance, but MUST delegate transferable integration mechanics and detailed review to a capable enabled ordinary role unless a named direct-work exception applies/,
+  );
+  assert.doesNotMatch(orchestrator, /or keep it with the main agent/);
+  assert.doesNotMatch(
+    orchestrator,
+    /main agent retains cross-domain integration and final acceptance/,
+  );
+
+  const off = runtime({ schemaVersion: 3, intensity: "off" });
+  validateRuntime(context(), off);
+  assert.equal(statusLabel(off), "D:OFF");
+  assert.equal(buildDelegationPolicy(off), undefined);
+
+  const invalid = runtime({ schemaVersion: 3, intensity: "orchestrator" }, { schemaVersion: 3 });
+  validateRuntime(context(), invalid);
+  assert.equal(statusLabel(invalid), "D:ERR");
+  assert.equal(buildDelegationPolicy(invalid), undefined);
 });
 
 test("status reports built-in, global, and session intensity sources", () => {
@@ -1019,7 +1065,7 @@ test("the panel selects orchestrator through the fourth intensity and applies it
     assert.ok(lines.every((line) => visibleWidth(line) <= width));
     assert.match(lines.join("\n"), /orchestrator/);
   }
-  assert.match(harness.panel.render(60).join("\n"), /Batch transferable detail/);
+  assert.match(harness.panel.render(60).join("\n"), /Delegate all transferable work/);
   sendKeys(harness.panel, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(applied, { schemaVersion: 3, intensity: "orchestrator" });
@@ -1907,16 +1953,45 @@ test("orchestrator reports D:ORCH and has distinct ownership guidance", () => {
   assert.equal(statusLabel(current), "D:ORCH");
   const policy = buildDelegationPolicy(current) ?? "";
   for (const expected of [
-    "Minimize the main agent's execution",
-    "Delegate research, detailed planning, implementation, testing",
-    "Batch small independent work",
-    "minimal briefs and results with file references and evidence",
-    "do not duplicate inspection unless there is a concrete gap",
-    "Keep objectives, critical decisions, coordination, integration responsibility",
-    "final acceptance with the main agent",
-    "Do not promise savings or force recursive fanout",
+    "all transferable execution before performing it",
+    "enabled capable role and authorized launcher",
+    "regardless of size",
+    "small lookups, code reading, detailed planning, implementation, tests, writing, detailed review, and integration mechanics",
+    "mandatory instructions, tool discovery, and narrow assignment scope",
+    "do not pre-solve or broadly inspect the repository",
+    "Batch small tasks without forcing recursive fanout",
+    "do not take it over or run an equivalent worker while it is pending",
+    "coordinate only disjoint work",
+    "host wait/completion mechanism",
+    "consume its result before dependent work or finalizing",
+    "evidence evaluation, final acceptance, and concise synthesis",
+    "final responsibility does not permit personally completing review or integration mechanics",
+    "only for a concrete gap, risk, or contradiction",
+    "delegate transferable fixes or rechecks",
+    "genuinely non-transferable work, no enabled capable role, a confirmed unavailable authorized launcher",
+    "explicit user or higher-priority requirement",
+    "state the concrete exception briefly, do only the minimum, do not repeat it while unchanged, and resume delegation when it ends",
+    "Never use a final-review or integration label to do the whole task personally",
+    "Triviality, convenience, economics, transfer cost, size, or familiarity do not justify direct execution",
+    "MUST delegate transferable detailed review and integration mechanics",
+    "except under the named direct-work exceptions",
+    "requested detail, risks, evidence, or safety information",
+    "Do not promise savings",
   ])
     assert.ok(policy.includes(expected), `Missing orchestrator guarantee: ${expected}`);
+  for (const forbidden of [
+    "substantive exploration, implementation, testing, and writing",
+    "Detailed review and integration mechanics may be delegated",
+    "final integration responsibility",
+    "retained decisions, coordination, safety",
+    "transfer and context costs",
+    "transfer is not worthwhile",
+    "uneconomical",
+    "only trivial",
+    "only small",
+  ]) {
+    assert.doesNotMatch(policy, new RegExp(forbidden));
+  }
   assert.equal((policy.match(/<delegation_policy>/g) ?? []).length, 1);
 });
 
