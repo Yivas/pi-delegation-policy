@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+No unreleased changes.
+
+## 0.9.0 - 2026-09-07
+
 ### Added
 
 - Add opt-in ContextShunt schema 4 settings, keyboard-first mode selection, recognized read and conservative PowerShell range enforcement, and bounded recovery of preserved known textual results.

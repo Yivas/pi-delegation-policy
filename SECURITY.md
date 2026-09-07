@@ -14,4 +14,4 @@ Include the affected version or commit, operating system, Pi version, reproducti
 
 ## Supported versions
 
-Only the latest published version is supported. Version 0.8.0 is the current supported release; ContextShunt remains an unreleased change.
+Only the latest published version is supported. Version 0.9.0 is the current supported release.
