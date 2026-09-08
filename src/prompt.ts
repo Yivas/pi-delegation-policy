@@ -33,11 +33,13 @@ const LEGACY_OWNERSHIP_POLICY =
 const ORCHESTRATOR_OWNERSHIP_POLICY =
   "In orchestrator, keep global strategy, objectives, critical decisions, coordination, safety, evidence evaluation, final acceptance, and concise synthesis with the main agent. The main agent MUST delegate transferable detailed review and integration mechanics; final responsibility does not permit personal execution except under the named direct-work exceptions.";
 
-const VISUAL_DESIGN_POLICY = `Visual Design is an optional specialist role. Use it only when all four conditions hold:
+const VISUAL_DESIGN_POLICY = `Visual Design is an optional specialist role. It is optional to configure. Before selecting an ordinary role for each task or phase, evaluate whether Visual Design is configured and all four conditions hold:
 1. the primary acceptance criterion is a visual or user-experience result;
 2. product behavior and data contracts are already defined and remain unchanged;
 3. the patch is bounded to an identifiable surface, component, or set of assets;
 4. it requires no business logic, data flow, APIs, routes, application architecture, tooling, or cross-system coordination.
+
+If Visual Design is configured, all four conditions hold, and the main agent has decided to delegate that visual portion or the intensity requires delegation, MUST select Visual Design rather than Small, Medium, or Large. Use the exact configured Visual Design provider/model shown below and the per-run thinking choice for that launch; do not substitute an ordinary role's model. Reevaluate Visual Design eligibility whenever the task or phase changes. Eligible visual work does not itself require delegation in normal or aggressive; use their existing intensity rules to decide whether to delegate it.
 
 When eligible, Visual Design may design, create, implement, and review scoped presentation code and visual assets, including layout, styles, responsive presentation, typography, images, icons, logos, SVGs, diagrams, and documentation visuals. It may address visual accessibility such as contrast and focus visibility. It must run and report the relevant existing checks for its patch.`;
 const LEGACY_VISUAL_DESIGN_ROUTING_POLICY =
@@ -164,7 +166,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
 
   return `<delegation_policy>
 Intensity: ${effective.intensity}.
-${intensityPolicy}
+${intensityPolicy}${effective.uiDesign ? `\n\n${visualDesignPolicy}` : ""}
 
 ${ROLE_SELECTION_POLICY}
 
@@ -178,7 +180,7 @@ Before every delegated launch, name the selected role and take its exact combine
 
 Roles:
 ${roleLines}${uiDesign}
-${effective.uiDesign ? `\n${visualDesignPolicy}\n` : ""}
+
 This is guidance for the main agent. It does not create, execute, route, supervise, or enforce delegated work.
 </delegation_policy>`;
 }

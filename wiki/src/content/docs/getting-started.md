@@ -7,7 +7,7 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 - Pi `>=0.84.3` satisfies the package peer requirement.
 - Pi `0.84.3` is the explicitly checked baseline; newer Pi versions are not claimed as tested.
-- Access to npm to install the latest published package, `0.9.0`.
+- Access to npm to install the latest published package, `0.9.1`.
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design is optional.
 
 ## Safe first-use path
@@ -34,7 +34,7 @@ model: "provider/model:LEVEL"
 
 `LEVEL` is selected per run from task demand and the selected model's supported capabilities. The policy does not persist thinking, substitute a model, or rely on an ambient model or thinking default.
 
-Visual Design may own a bounded presentation patch when visual or user-experience quality is the primary acceptance criterion and behavior, data contracts, component scope, and platform remain unchanged. It can create and integrate scoped visual assets or presentation code, then run relevant existing checks. In published `0.7.0` and `normal` or `aggressive`, use an enabled ordinary role for logic, data, APIs, routes, interaction behavior, application architecture, tooling, cross-system integration, and behavior tests; the main agent retains final integration and acceptance. In published `0.9.0` `orchestrator`, it retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies.
+Visual Design may own a bounded presentation patch when visual or user-experience quality is the primary acceptance criterion and behavior, data contracts, component scope, and platform remain unchanged. It can create and integrate scoped visual assets or presentation code, then run relevant existing checks. When configured, the main agent evaluates those four conditions before ordinary-role selection for every task or phase. If they all hold and that visual portion is already being delegated, or the active intensity requires delegation, it selects Visual Design instead of Small, Medium, or Large. It reevaluates when the task or phase changes. This priority does not make `normal` or `aggressive` delegate more work. In published `0.7.0` and `normal` or `aggressive`, use an enabled ordinary role for logic, data, APIs, routes, interaction behavior, application architecture, tooling, cross-system integration, and behavior tests; the main agent retains final integration and acceptance. In published `0.9.0` `orchestrator`, it retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies.
 
 ### 3. Activate and inspect
 

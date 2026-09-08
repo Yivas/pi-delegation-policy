@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- When optional Visual Design is configured and a delegated visual portion meets all four existing eligibility conditions, select it before Small, Medium, or Large with its exact configured model and per-run thinking. Reevaluate eligibility for every task or phase; this priority does not make `normal` or `aggressive` delegate more work.
+
 ## 0.9.1 - 2026-09-08
 
 ### Fixed

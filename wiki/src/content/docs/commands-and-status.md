@@ -58,7 +58,7 @@ Applied changes affect the **next agent run**. Pi rebuilds the system prompt for
 
 An active policy requires each ordinary role to be explicitly enabled with a valid exact reference or disabled, plus at least one enabled ordinary role. A configured Visual Design reference is also validated. Before every delegated launch, use the selected exact `provider/model` base and choose thinking for that task. With `pi-subagents`, append the selected level as `model: "provider/model:LEVEL"`; use a separate per-run thinking field when another launcher provides one.
 
-An invalid enabled reference produces `D:ERR` and no policy, so it is never rerouted. With a valid partial configuration, guidance may select another configured enabled role only when it can satisfy the task; it never invents a role, model, or thinking level.
+An invalid enabled reference produces `D:ERR` and no policy, so it is never rerouted. With a valid partial configuration, guidance may select another configured enabled role only when it can satisfy the task; it never invents a role, model, or thinking level. When Visual Design is configured, every task or phase evaluates its four eligibility conditions before ordinary-role selection. For an eligible visual portion that is already being delegated, or whose delegation the active intensity requires, it takes priority over Small, Medium, and Large; reevaluate when the task or phase changes. This does not make `normal` or `aggressive` delegate more work.
 
 ## 5. Read the footer and status output
 

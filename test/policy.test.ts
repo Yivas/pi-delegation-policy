@@ -659,6 +659,51 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   assert.match(policy, /\\u0026/);
 });
 
+test("Visual Design prioritizes eligible delegated work before ordinary roles without expanding normal or aggressive delegation", () => {
+  for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
+    const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity });
+    validateRuntime(context(), current);
+    const policy = buildDelegationPolicy(current) ?? "";
+    const visualGate = "Before selecting an ordinary role for each task or phase";
+    const ordinarySelection = "Choose the role by task fit before considering model preference";
+
+    const visualGateIndex = policy.indexOf(visualGate);
+    const ordinarySelectionIndex = policy.indexOf(ordinarySelection);
+    assert.notEqual(visualGateIndex, -1, `${intensity} must include the Visual Design gate`);
+    assert.notEqual(
+      ordinarySelectionIndex,
+      -1,
+      `${intensity} must include ordinary role selection`,
+    );
+    assert.ok(
+      visualGateIndex < ordinarySelectionIndex,
+      `${intensity} must evaluate Visual Design before ordinary role selection`,
+    );
+    assert.match(policy, /MUST select Visual Design rather than Small, Medium, or Large/);
+    assert.match(
+      policy,
+      /Use the exact configured Visual Design provider\/model shown below and the per-run thinking choice for that launch/,
+    );
+    assert.match(policy, /do not substitute an ordinary role's model/);
+    assert.match(policy, /Reevaluate Visual Design eligibility whenever the task or phase changes/);
+    assert.match(
+      policy,
+      /If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task/,
+    );
+    assert.match(policy, /exact model base: "example\/ui-design"/);
+    assert.match(policy, /pi-subagents form: "example\/ui-design:LEVEL"/);
+
+    if (intensity === "orchestrator") {
+      assert.match(policy, /Delegate all transferable execution before performing it/);
+    } else {
+      assert.match(
+        policy,
+        /Eligible visual work does not itself require delegation in normal or aggressive/,
+      );
+    }
+  }
+});
+
 test("orchestrator routes Visual Design boundaries without a main-agent integration escape", () => {
   const policyFor = (intensity: "normal" | "aggressive" | "orchestrator") => {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity });

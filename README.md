@@ -2,7 +2,7 @@
 
 A local Pi extension that helps the main agent decide **when delegation is worth it** and which exact models to use for Small, Medium, Large, and optional Visual Design. It provides guidance; it is not a subagent runner.
 
-> **Status:** Version **0.9.0** is the latest published package and supports `off`, `normal`, `aggressive`, and `orchestrator`. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline.
+> **Status:** Version **0.9.1** is the latest published package and supports `off`, `normal`, `aggressive`, and `orchestrator`. The package requires Pi `>=0.84.3`; Pi `0.84.3` is the explicitly checked baseline.
 >
 > **Docs:** [Read the documentation site](https://yivas.github.io/pi-delegation-policy/).
 
@@ -24,7 +24,7 @@ ContextShunt is inspired by the large-read routing pattern described in [Spotify
 
 The policy considers only enabled ordinary roles, chooses the least costly role that can satisfy the task's acceptance criteria and evidence, and keeps work with the main agent when none can. It never invents a model or role. `efficient` and `intensive` are tie-breaks only when both Small and Medium are enabled; otherwise their bias is inactive.
 
-Visual Design is an independent optional specialist for direction, assets, bounded presentation-layer implementation, and visual review. Use it only when behavior and data contracts are already defined and unchanged, the affected surface is bounded, and visual quality or user experience is the primary acceptance criterion. It does not count as an ordinary role or replace one. In published `0.7.0` and `normal` or `aggressive`, route business logic, data, APIs, routes, application architecture, tooling, interaction behavior, and cross-system integration to an enabled ordinary role by task fit; the main agent retains final integration and acceptance. In `0.9.0` `orchestrator`, the main agent instead retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies.
+Visual Design is an independent optional specialist for direction, assets, bounded presentation-layer implementation, and visual review. Use it only when behavior and data contracts are already defined and unchanged, the affected surface is bounded, and visual quality or user experience is the primary acceptance criterion. It does not count as an ordinary role or replace one. When configured, evaluate those four conditions before ordinary-role selection for every task or phase. If they hold and the main agent chooses to delegate that visual portion, or the active intensity requires delegation, it must select Visual Design instead of Small, Medium, or Large, using Visual Design's exact configured `provider/model` and a per-run thinking choice. Reevaluate when the task or phase changes. This priority does not make `normal` or `aggressive` delegate more work. In published `0.7.0` and `normal` or `aggressive`, route business logic, data, APIs, routes, application architecture, tooling, interaction behavior, and cross-system integration to an enabled ordinary role by task fit; the main agent retains final integration and acceptance. In `0.9.0` `orchestrator`, the main agent instead retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies.
 
 ## Install and start
 
