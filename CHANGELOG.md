@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-09-08
+
 ### Fixed
 
 - Make ContextShunt declared-read limits line-based, measure known textual results with real UTF-8 bytes and shared newline handling, and keep rejected requests out of the admitted-request window.
