@@ -7,7 +7,7 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 - Pi `>=0.84.3` satisfies the package peer requirement.
 - Pi `0.84.3` is the explicitly checked baseline; newer Pi versions are not claimed as tested.
-- Access to npm to install the latest published package, `0.9.1`.
+- Access to npm to install the latest published package, `0.10.0`.
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design is optional.
 
 ## Safe first-use path
