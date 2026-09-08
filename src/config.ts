@@ -46,8 +46,8 @@ const DEFAULT_LIMITS = {
   fullReadBytes: 16384,
   targetedReadLines: 250,
   targetedReadBytes: 16384,
-  readerOutputBytes: 8192,
 } as const;
+const LEGACY_LIMIT_KEYS = [...Object.keys(DEFAULT_LIMITS), "readerOutputBytes"] as const;
 const MAX_LIMIT = 1024 * 1024;
 
 export type ConfigDiagnostic = { message: string; reportWhenOff?: boolean };
@@ -154,10 +154,11 @@ function parseShunt(value: unknown): ContextShuntSettings | undefined {
   if (value.metrics !== undefined && value.metrics !== "memory") return undefined;
   let limits: ContextShuntLimits | undefined;
   if (value.limits !== undefined) {
-    if (!isRecord(value.limits) || !only(value.limits, Object.keys(DEFAULT_LIMITS)))
-      return undefined;
+    if (!isRecord(value.limits) || !only(value.limits, LEGACY_LIMIT_KEYS)) return undefined;
     if (Object.values(value.limits).some((item) => !validLimit(item))) return undefined;
-    limits = { ...value.limits } as ContextShuntLimits;
+    const effectiveLimits = { ...value.limits };
+    delete effectiveLimits.readerOutputBytes;
+    if (Object.keys(effectiveLimits).length) limits = effectiveLimits as ContextShuntLimits;
   }
   const exceptionPatterns =
     value.exceptionPatterns === undefined ? undefined : patterns(value.exceptionPatterns);

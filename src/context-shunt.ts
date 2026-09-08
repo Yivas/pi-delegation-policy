@@ -10,6 +10,7 @@ const MAX_ARTIFACTS = 8;
 const ARTIFACT_TTL_MS = 30 * 60 * 1000;
 const WINDOW_TTL_MS = 60_000;
 const EXCEPTION_TTL_MS = 60_000;
+const MAX_CONSUMED_EXCEPTIONS = 8;
 
 export type ShuntDecision = { action: "allow" | "block" | "skip"; reason: string };
 export type ShuntMetrics = {
@@ -17,16 +18,19 @@ export type ShuntMetrics = {
   wouldBlock: number;
   boundedResults: number;
   manualOverrides: number;
+  archiveFailures: number;
+  uncoveredResults: number;
 };
-type Window = { requestedLines: number; requestedBytes: number; updatedAt: number };
+type Window = { requestedLines: number; updatedAt: number };
 type Exception = { expiresAt: number; maxLines: number; maxBytes: number };
+export type ConsumedException = Exception & { toolName: string; input: string };
 type Clock = () => number;
 
 function positiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-type ReadInput = { path: string; offset?: number; limit?: number };
+type ReadInput = { path: string; offset?: number; limit?: number; targeted: boolean };
 
 function readInput(value: unknown): ReadInput | undefined {
   if (!value || typeof value !== "object") return undefined;
@@ -34,7 +38,7 @@ function readInput(value: unknown): ReadInput | undefined {
   if (typeof input.path !== "string" || !input.path) return undefined;
   if (
     input.offset !== undefined &&
-    (typeof input.offset !== "number" || !Number.isInteger(input.offset) || input.offset < 0)
+    (typeof input.offset !== "number" || !Number.isSafeInteger(input.offset) || input.offset < 1)
   ) {
     return undefined;
   }
@@ -43,6 +47,7 @@ function readInput(value: unknown): ReadInput | undefined {
     path: input.path,
     ...(typeof input.offset === "number" ? { offset: input.offset } : {}),
     ...(typeof input.limit === "number" ? { limit: input.limit } : {}),
+    targeted: input.offset !== undefined,
   };
 }
 
@@ -59,7 +64,7 @@ function shellReadInput(toolName: string, value: unknown): ReadInput | undefined
   if (!match?.groups?.path || !match.groups.limit) return undefined;
   const limit = Number(match.groups.limit);
   return Number.isSafeInteger(limit) && positiveInteger(limit)
-    ? { path: `shell:${match.groups.path}`, limit }
+    ? { path: `shell:${match.groups.path}`, limit, targeted: false }
     : undefined;
 }
 
@@ -79,107 +84,143 @@ function matchesPattern(path: string, patterns: readonly string[]): boolean {
   });
 }
 
-export function inputFingerprint(toolName: string, input: unknown): string {
-  return `${toolName}\u0000${JSON.stringify(input)}`;
+export function inputFingerprint(toolName: string, input: unknown): string | undefined {
+  try {
+    const serialized = JSON.stringify(input);
+    return serialized === undefined ? undefined : `${toolName}\u0000${serialized}`;
+  } catch {
+    return undefined;
+  }
 }
 
 export class ContextShuntEngine {
   private readonly windows = new Map<string, Window>();
   private readonly exceptions = new Map<string, Exception>();
+  private readonly consumed = new Map<string, ConsumedException>();
   private readonly now: Clock;
   readonly metrics: ShuntMetrics = {
     blocked: 0,
     wouldBlock: 0,
     boundedResults: 0,
     manualOverrides: 0,
+    archiveFailures: 0,
+    uncoveredResults: 0,
   };
 
   constructor(now: Clock = Date.now) {
     this.now = now;
   }
 
-  decide(toolName: string, input: unknown, settings: EffectiveContextShunt): ShuntDecision {
+  decide(
+    toolName: string,
+    input: unknown,
+    settings: EffectiveContextShunt,
+    toolCallId?: string,
+  ): ShuntDecision {
     if (settings.mode === "off") return { action: "skip", reason: "off" };
 
     const read = declaredRead(toolName, input);
-    if (!read) return { action: "skip", reason: "unsupported or unknown tool contract" };
+    if (!read) return { action: "skip", reason: "unknown-contract" };
 
-    this.expire(this.now());
+    const now = this.now();
+    this.expire(now);
     const fingerprint = inputFingerprint(toolName, input);
-    const exception = this.exceptions.get(fingerprint);
-    if (exception) {
+    const exception = fingerprint ? this.exceptions.get(fingerprint) : undefined;
+    if (exception && fingerprint && read.limit !== undefined) {
       this.exceptions.delete(fingerprint);
-      const declaredLines = read.limit ?? 0;
-      const declaredBytes = declaredLines * 80;
-      if (
-        exception.expiresAt > this.now() &&
-        declaredLines <= exception.maxLines &&
-        declaredBytes <= exception.maxBytes
-      ) {
+      if (exception.expiresAt > now && read.limit <= exception.maxLines && toolCallId) {
+        this.consumed.delete(toolCallId);
+        if (this.consumed.size >= MAX_CONSUMED_EXCEPTIONS) {
+          const oldestToolCallId = this.consumed.keys().next().value;
+          if (oldestToolCallId) this.consumed.delete(oldestToolCallId);
+        }
+        this.consumed.set(toolCallId, { ...exception, toolName, input: fingerprint });
         this.metrics.manualOverrides += 1;
-        return { action: "allow", reason: "one-time user exception" };
+        return { action: "allow", reason: "one-time-exception" };
       }
     }
 
     if (matchesPattern(read.path, settings.exceptionPatterns)) {
-      return {
-        action: "allow",
-        reason: "matches ContextShunt exemption; tool permissions unchanged",
-      };
+      return { action: "allow", reason: "configured-exemption" };
     }
+    if (read.limit === undefined) return { action: "allow", reason: "size-unknown" };
 
-    if (read.limit === undefined) {
-      return { action: "allow", reason: "size unknown; post-result guard applies" };
-    }
-
-    const requestedBytes = read.limit * 80;
-    const targeted = read.offset !== undefined;
-    const lineBudget = targeted ? settings.limits.targetedReadLines : settings.limits.fullReadLines;
-    const byteBudget = targeted ? settings.limits.targetedReadBytes : settings.limits.fullReadBytes;
+    const lineBudget = read.targeted
+      ? settings.limits.targetedReadLines
+      : settings.limits.fullReadLines;
     const windowKey = `${toolName}\u0000${read.path}`;
     const previous = this.windows.get(windowKey);
     const totalLines = (previous?.requestedLines ?? 0) + read.limit;
-    const totalBytes = (previous?.requestedBytes ?? 0) + requestedBytes;
-    const excessive =
-      read.limit > lineBudget ||
-      requestedBytes > byteBudget ||
-      totalLines > settings.limits.fullReadLines ||
-      totalBytes > settings.limits.fullReadBytes;
-    this.windows.set(windowKey, {
-      requestedLines: totalLines,
-      requestedBytes: totalBytes,
-      updatedAt: this.now(),
-    });
+    const excessive = read.limit > lineBudget || totalLines > settings.limits.fullReadLines;
+
     if (settings.mode === "observe") {
-      if (excessive) this.metrics.wouldBlock += 1;
+      if (excessive) {
+        this.metrics.wouldBlock += 1;
+        return { action: "allow", reason: "would-block-lines" };
+      }
+      this.windows.set(windowKey, { requestedLines: totalLines, updatedAt: now });
+      return { action: "allow", reason: "declared-bounded" };
+    }
+    if (excessive) {
+      this.metrics.blocked += 1;
       return {
-        action: "allow",
-        reason: excessive ? "would block declared excessive range" : "declared bounded range",
+        action: "block",
+        reason: `${matchesPattern(read.path, settings.delegationHintPatterns) ? "delegation-hinted-" : ""}lines-exceed-budget`,
       };
     }
-    if (!excessive) return { action: "allow", reason: "declared bounded range" };
-    this.metrics.blocked += 1;
-    return {
-      action: "block",
-      reason: `${
-        matchesPattern(read.path, settings.delegationHintPatterns) ? "delegation-hinted " : ""
-      }declared range exceeds ContextShunt budget; use a bounded read or a user-authorized one-time exception`,
-    };
+    this.windows.set(windowKey, { requestedLines: totalLines, updatedAt: now });
+    return { action: "allow", reason: "declared-bounded" };
   }
 
-  allowOnce(toolName: string, input: unknown, maxLines: number, maxBytes: number): boolean {
-    if (!positiveInteger(maxLines) || !positiveInteger(maxBytes)) return false;
-    this.exceptions.set(inputFingerprint(toolName, input), {
-      expiresAt: this.now() + EXCEPTION_TTL_MS,
-      maxLines,
-      maxBytes,
-    });
+  allowOnce(
+    toolName: string,
+    input: unknown,
+    maxLines: number,
+    maxBytes: number,
+    expiresAt = this.now() + EXCEPTION_TTL_MS,
+  ): boolean {
+    const fingerprint = inputFingerprint(toolName, input);
+    if (
+      !positiveInteger(maxLines) ||
+      !positiveInteger(maxBytes) ||
+      !fingerprint ||
+      expiresAt <= this.now()
+    )
+      return false;
+    this.exceptions.set(fingerprint, { expiresAt, maxLines, maxBytes });
     return true;
+  }
+
+  takeConsumed(
+    toolCallId: string,
+    toolName: string,
+    input: unknown,
+  ): ConsumedException | undefined {
+    const exception = this.consumed.get(toolCallId);
+    this.consumed.delete(toolCallId);
+    if (
+      !exception ||
+      exception.expiresAt <= this.now() ||
+      exception.toolName !== toolName ||
+      exception.input !== inputFingerprint(toolName, input)
+    ) {
+      return undefined;
+    }
+    return exception;
+  }
+
+  clearCall(toolCallId: string): void {
+    this.consumed.delete(toolCallId);
+  }
+
+  clearConsumed(): void {
+    this.consumed.clear();
   }
 
   clear(): void {
     this.windows.clear();
     this.exceptions.clear();
+    this.consumed.clear();
   }
 
   private expire(now: number): void {
@@ -188,6 +229,9 @@ export class ContextShuntEngine {
     }
     for (const [key, exception] of this.exceptions) {
       if (exception.expiresAt <= now) this.exceptions.delete(key);
+    }
+    for (const [key, exception] of this.consumed) {
+      if (exception.expiresAt <= now) this.consumed.delete(key);
     }
   }
 }
@@ -206,7 +250,7 @@ function isUtf8Boundary(source: Buffer, offset: number): boolean {
   return byte !== undefined && (byte & 0b1100_0000) !== 0b1000_0000;
 }
 
-function splitLines(text: string): string[] {
+export function splitLines(text: string): string[] {
   const lines: string[] = [];
   let start = 0;
   const endings = /\r\n|\n|\r/g;
@@ -435,23 +479,50 @@ function isJsonDocument(text: string): boolean {
   }
 }
 
+export type CompactionDecision =
+  | { kind: "compact"; text: string; reason: "result-exceeds-budget" | "exception-exceeds-budget" }
+  | {
+      kind: "skip";
+      reason:
+        | "off"
+        | "uncovered-contract"
+        | "uncovered-result"
+        | "within-budget"
+        | "exception-within-budget";
+    };
+
 export function shouldCompact(
   toolName: string,
+  input: unknown,
   isError: unknown,
   content: unknown,
   settings: EffectiveContextShunt,
-): string | undefined {
-  if (
-    settings.mode !== "enforce" ||
-    isError ||
-    !["read", "bash", "powershell", "grep"].includes(toolName)
-  ) {
-    return undefined;
-  }
+  exception?: Pick<ConsumedException, "maxLines" | "maxBytes">,
+): CompactionDecision {
+  if (settings.mode !== "enforce") return { kind: "skip", reason: "off" };
+  if (!["read", "bash", "powershell", "grep"].includes(toolName))
+    return { kind: "skip", reason: "uncovered-contract" };
+  const read = declaredRead(toolName, input);
+  if (!read) return { kind: "skip", reason: "uncovered-contract" };
   const text = textResult(content);
-  if (text === undefined || isJsonDocument(text) || text.includes("\u0000")) return undefined;
-  return Buffer.byteLength(text, "utf8") > settings.limits.fullReadBytes ||
-    text.split(/\r?\n/).length > settings.limits.fullReadLines
-    ? text
-    : undefined;
+  if (isError || text === undefined || isJsonDocument(text) || text.includes("\u0000"))
+    return { kind: "skip", reason: "uncovered-result" };
+
+  const targeted = read.targeted;
+  const lineBudget =
+    exception?.maxLines ??
+    (targeted ? settings.limits.targetedReadLines : settings.limits.fullReadLines);
+  const byteBudget =
+    exception?.maxBytes ??
+    (targeted ? settings.limits.targetedReadBytes : settings.limits.fullReadBytes);
+  if (text.length === 0) return { kind: "skip", reason: "within-budget" };
+  const exceeds =
+    Buffer.byteLength(text, "utf8") > byteBudget || splitLines(text).length > lineBudget;
+  if (!exceeds)
+    return { kind: "skip", reason: exception ? "exception-within-budget" : "within-budget" };
+  return {
+    kind: "compact",
+    text,
+    reason: exception ? "exception-exceeds-budget" : "result-exceeds-budget",
+  };
 }

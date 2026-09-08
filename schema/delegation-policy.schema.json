@@ -48,7 +48,11 @@
             "fullReadBytes": { "$ref": "#/$defs/positiveLimit" },
             "targetedReadLines": { "$ref": "#/$defs/positiveLimit" },
             "targetedReadBytes": { "$ref": "#/$defs/positiveLimit" },
-            "readerOutputBytes": { "$ref": "#/$defs/positiveLimit" }
+            "readerOutputBytes": {
+              "$ref": "#/$defs/positiveLimit",
+              "deprecated": true,
+              "description": "Legacy accepted field. It is validated then ignored and is not written by current versions."
+            }
           },
           "additionalProperties": false
         },

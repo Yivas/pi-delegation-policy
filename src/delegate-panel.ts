@@ -51,7 +51,6 @@ const ADVANCED_FIELDS = [
   "fullReadBytes",
   "targetedReadLines",
   "targetedReadBytes",
-  "readerOutputBytes",
   "exceptionPatterns",
   "delegationHintPatterns",
   "resetContextShunt",
@@ -63,7 +62,6 @@ const LIMIT_FIELDS = [
   "fullReadBytes",
   "targetedReadLines",
   "targetedReadBytes",
-  "readerOutputBytes",
 ] as const;
 type LimitField = (typeof LIMIT_FIELDS)[number];
 type EditableAdvancedField = Exclude<AdvancedField, "readerRole" | "resetContextShunt" | "back">;
@@ -718,7 +716,6 @@ export class DelegatePanel implements Component, Focusable {
         case "fullReadBytes":
         case "targetedReadLines":
         case "targetedReadBytes":
-        case "readerOutputBytes":
           return String(limit(field));
         case "exceptionPatterns":
           return effective.exceptionPatterns.length
@@ -757,7 +754,6 @@ export class DelegatePanel implements Component, Focusable {
       fullReadBytes: "Full read bytes",
       targetedReadLines: "Targeted read lines",
       targetedReadBytes: "Targeted read bytes",
-      readerOutputBytes: "Reader output bytes",
       exceptionPatterns: "Exempt patterns",
       delegationHintPatterns: "Delegation hint patterns",
       resetContextShunt: "Reset ContextShunt draft",
@@ -807,7 +803,6 @@ export class DelegatePanel implements Component, Focusable {
       fullReadBytes: "Full read bytes",
       targetedReadLines: "Targeted read lines",
       targetedReadBytes: "Targeted read bytes",
-      readerOutputBytes: "Reader output bytes",
       exceptionPatterns: "Exempt patterns",
       delegationHintPatterns: "Delegation hint patterns",
     };

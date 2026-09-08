@@ -785,6 +785,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
 
     piDelegationPolicy(pi as never);
     assert.deepEqual([...handlers.keys()].sort(), [
+      "agent_end",
       "before_agent_start",
       "session_shutdown",
       "session_start",

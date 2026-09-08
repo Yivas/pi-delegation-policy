@@ -11,6 +11,7 @@ import {
   defaultsFromEffectiveState,
   getGlobalConfigPath,
   parseConfig,
+  parseSessionState,
   resolveDelegateState,
   writeConfig,
 } from "../src/config.ts";
@@ -29,6 +30,11 @@ const defaults: GlobalDefaults = {
   small,
   medium,
   large,
+};
+
+type SyntheticEditor = {
+  focused: boolean;
+  handleInput: (data: string) => void;
 };
 
 function settings(mode: "off" | "observe" | "enforce" = "enforce") {
@@ -125,6 +131,41 @@ test("schema, parser, example, and documentation accept the same ContextShunt pa
   assert.ok(parseConfig(documentedValue));
 });
 
+test("schema 2, 3, and 4 configurations accept legacy limits without reserializing them", async () => {
+  const legacyLimits = { readerOutputBytes: 8192, fullReadLines: 205 };
+  const schema4 = {
+    schemaVersion: 4,
+    intensity: "normal",
+    small,
+    medium,
+    large,
+    contextShunt: { limits: legacyLimits },
+  };
+  const parsed = parseConfig(schema4);
+  assert.ok(parsed);
+  assert.deepEqual(parsed.contextShunt?.limits, { fullReadLines: 205 });
+  assert.ok(parseConfig({ schemaVersion: 2, intensity: "normal", small, medium, large }));
+  assert.ok(parseConfig({ schemaVersion: 3, intensity: "normal", small, medium, large }));
+  assert.ok(parseSessionState(schema4));
+  assert.equal(
+    parseConfig({
+      ...schema4,
+      contextShunt: { limits: { readerOutputBytes: 0 } },
+    }),
+    undefined,
+  );
+
+  const directory = await mkdtemp(join(tmpdir(), "pi-delegation-policy-config-"));
+  try {
+    const path = join(directory, "delegation-policy.json");
+    await writeConfig(path, parsed);
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    assert.equal("readerOutputBytes" in (saved.contextShunt?.limits ?? {}), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("configured ContextShunt mode survives delegation-off suspension when defaults are saved", () => {
   const state = resolveDelegateState(
     { ...defaults, contextShunt: { mode: "enforce", readerRole: "medium" } },
@@ -153,6 +194,8 @@ test("off is inert, observe is non-mutating, and enforce is bounded", () => {
     wouldBlock: 0,
     boundedResults: 0,
     manualOverrides: 0,
+    archiveFailures: 0,
+    uncoveredResults: 0,
   });
   assert.equal(
     engine.decide("read", { path: "large", limit: 999 }, settings("observe")).action,
@@ -172,11 +215,26 @@ test("valid JSON values of every root type remain untouched while ordinary text 
     "null",
   ];
   for (const text of largeValues) {
-    assert.equal(shouldCompact("read", false, [{ type: "text", text }], settings()), undefined);
+    assert.deepEqual(
+      shouldCompact(
+        "read",
+        { path: "sample", limit: 400 },
+        false,
+        [{ type: "text", text }],
+        settings(),
+      ),
+      { kind: "skip", reason: "uncovered-result" },
+    );
   }
-  assert.equal(
-    shouldCompact("read", false, [{ type: "text", text: "line\n".repeat(400) }], settings()),
-    "line\n".repeat(400),
+  assert.deepEqual(
+    shouldCompact(
+      "read",
+      { path: "sample", limit: 400 },
+      false,
+      [{ type: "text", text: "line\n".repeat(400) }],
+      settings(),
+    ),
+    { kind: "compact", text: "line\n".repeat(400), reason: "result-exceeds-budget" },
   );
 });
 
@@ -238,6 +296,92 @@ test("preservation failures and non-builtin results keep original content", asyn
   await adapter.close();
 });
 
+test("declared line budgets do not fabricate byte counts and rejected reads do not poison retries", () => {
+  const engine = new ContextShuntEngine(() => 0);
+  const active = settings();
+  assert.equal(engine.decide("read", { path: "sample.txt", limit: 205 }, active).action, "allow");
+  assert.equal(engine.decide("read", { path: "sample.txt", limit: 351 }, active).action, "block");
+  assert.equal(engine.decide("read", { path: "sample.txt", limit: 100 }, active).action, "allow");
+});
+
+test("declared ranges distinguish valid targeted reads and share an admitted window", () => {
+  let now = 0;
+  const engine = new ContextShuntEngine(() => now);
+  const active = settings();
+  assert.equal(
+    engine.decide("read", { path: "same", offset: 1, limit: 250 }, active).action,
+    "allow",
+  );
+  assert.equal(engine.decide("read", { path: "same", limit: 100 }, active).action, "allow");
+  assert.equal(engine.decide("read", { path: "same", limit: 1 }, active).action, "block");
+  assert.equal(
+    engine.decide("read", { path: "other", offset: 1, limit: 251 }, active).action,
+    "block",
+  );
+  assert.equal(
+    engine.decide("read", { path: "other", offset: 0, limit: 999 }, active).action,
+    "skip",
+  );
+  assert.equal(engine.decide("read", { path: "other", offset: 1 }, active).action, "allow");
+  now = 59_999;
+  assert.equal(engine.decide("read", { path: "same", limit: 1 }, active).action, "block");
+  now = 60_000;
+  assert.equal(engine.decide("read", { path: "same", limit: 350 }, active).action, "allow");
+});
+
+test("post-result budgets use targeted limits and exact UTF-8 line counts", () => {
+  const active = {
+    ...settings(),
+    limits: {
+      ...settings().limits,
+      fullReadBytes: 8,
+      fullReadLines: 2,
+      targetedReadBytes: 4,
+      targetedReadLines: 2,
+    },
+  };
+  assert.deepEqual(
+    shouldCompact(
+      "read",
+      { path: "sample", offset: 1, limit: 1 },
+      false,
+      [{ type: "text", text: "αβ" }],
+      active,
+    ),
+    { kind: "skip", reason: "within-budget" },
+  );
+  assert.equal(
+    shouldCompact(
+      "read",
+      { path: "sample", offset: 1, limit: 1 },
+      false,
+      [{ type: "text", text: "αβγ" }],
+      active,
+    ).kind,
+    "compact",
+  );
+  assert.equal(
+    shouldCompact(
+      "read",
+      { path: "sample", limit: 1 },
+      false,
+      [{ type: "text", text: "a\r\nb\rc\n" }],
+      active,
+    ).kind,
+    "compact",
+  );
+  assert.deepEqual(
+    shouldCompact(
+      "read",
+      { path: "sample", limit: 1 },
+      false,
+      [{ type: "text", text: "" }],
+      active,
+    ),
+    { kind: "skip", reason: "within-budget" },
+  );
+});
+
 test("repeated declared reads use a bounded window that expires", () => {
   let now = 0;
   const engine = new ContextShuntEngine(() => now);
@@ -257,7 +401,10 @@ test("one-time exceptions are tied to input, adapter session, and expiry", async
   const token = /context allow ([0-9a-f-]+)/.exec(blocked.reason)?.[1];
   assert.ok(token);
   assert.equal(adapter.allowPending(token, 999, 80_000), true);
-  assert.equal(adapter.onToolCall({ toolName: "read", input } as never, settings()), undefined);
+  assert.equal(
+    adapter.onToolCall({ toolCallId: "allowed", toolName: "read", input } as never, settings()),
+    undefined,
+  );
   assert.ok(
     adapter.onToolCall({ toolName: "read", input: { ...input, offset: 1 } } as never, settings()),
   );
@@ -276,6 +423,437 @@ test("one-time exceptions are tied to input, adapter session, and expiry", async
   await secondAdapter.close();
 });
 
+test("one-time exception TTL starts at the original blocked call", () => {
+  let now = 0;
+  const adapter = new ContextShuntAdapter({ now: () => now });
+  const active = settings();
+  const input = { path: "large", limit: 999 };
+  const blocked = adapter.onToolCall({ toolName: "read", input } as never, active);
+  const token = /context allow ([0-9a-f-]+)/.exec(blocked?.reason ?? "")?.[1];
+  assert.ok(token);
+  now = 59_999;
+  assert.equal(adapter.allowPending(token, 999, 80_000), true);
+  now = 60_000;
+  assert.ok(
+    adapter.onToolCall({ toolCallId: "expired", toolName: "read", input } as never, active),
+  );
+});
+
+test("disabling context revokes pending and consumed exceptions", async () => {
+  const now = 0;
+  const adapter = new ContextShuntAdapter({ now: () => now });
+  const input = { path: "large", limit: 999 };
+  const pendingInput = { path: "other", limit: 999 };
+  const active = settings();
+  const blocked = adapter.onToolCall({ toolName: "read", input } as never, active);
+  const token = /context allow ([0-9a-f-]+)/.exec(blocked?.reason ?? "")?.[1];
+  const pending = adapter.onToolCall({ toolName: "read", input: pendingInput } as never, active);
+  const pendingToken = /context allow ([0-9a-f-]+)/.exec(pending?.reason ?? "")?.[1];
+  assert.ok(token);
+  assert.ok(pendingToken);
+  assert.equal(adapter.allowPending(token, 999, 80_000), true);
+  assert.equal(
+    adapter.onToolCall(
+      { toolCallId: "consumed-before-clear", toolName: "read", input } as never,
+      active,
+    ),
+    undefined,
+  );
+  assert.equal(
+    await adapter.onToolResult(
+      {
+        toolCallId: "consumed-before-clear",
+        toolName: "read",
+        input,
+        isError: false,
+        content: [{ type: "text", text: "line\n".repeat(400) }],
+      } as never,
+      active,
+    ),
+    undefined,
+  );
+
+  const secondBlocked = adapter.onToolCall({ toolName: "read", input } as never, active);
+  const secondToken = /context allow ([0-9a-f-]+)/.exec(secondBlocked?.reason ?? "")?.[1];
+  assert.ok(secondToken);
+  assert.equal(adapter.allowPending(secondToken, 999, 80_000), true);
+  assert.equal(
+    adapter.onToolCall(
+      { toolCallId: "consumed-after-clear", toolName: "read", input } as never,
+      active,
+    ),
+    undefined,
+  );
+
+  adapter.onToolCall({ toolName: "read", input } as never, { ...active, mode: "off" });
+  assert.equal(adapter.allowPending(pendingToken, 999, 80_000), false);
+  assert.ok(adapter.onToolCall({ toolName: "read", input } as never, active));
+  assert.ok(
+    await adapter.onToolResult(
+      {
+        toolCallId: "consumed-after-clear",
+        toolName: "read",
+        input,
+        isError: false,
+        content: [{ type: "text", text: "line\n".repeat(400) }],
+      } as never,
+      active,
+    ),
+  );
+  await adapter.close();
+});
+
+test("agent_end clears consumed exceptions while pending tokens remain approvable", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeConfig(getGlobalConfigPath(directory), {
+      ...defaults,
+      contextShunt: {
+        mode: "enforce",
+        limits: { fullReadLines: 500, fullReadBytes: 10 },
+      },
+    });
+    const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+    const commands = new Map<
+      string,
+      { handler: (args: string, context: unknown) => Promise<void> }
+    >();
+    const pi = {
+      on: (name: string, handler: (event: unknown, context: unknown) => unknown) =>
+        handlers.set(name, handler),
+      registerTool: () => undefined,
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, context: unknown) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      getAllTools: () => [{ name: "read", sourceInfo: { source: "builtin" } }],
+    };
+    const context = extensionContext();
+    piDelegationPolicy(pi as never);
+    await handlers.get("session_start")?.({ type: "session_start" }, context);
+    assert.equal(handlers.has("agent_end"), true);
+
+    const consumedInput = { path: "consumed", limit: 501 };
+    const consumedBlock = (await handlers.get("tool_call")?.(
+      { toolName: "read", input: consumedInput },
+      context,
+    )) as { reason: string } | undefined;
+    const consumedToken = /context allow ([0-9a-f-]+)/.exec(consumedBlock?.reason ?? "")?.[1];
+    assert.ok(consumedToken);
+    await commands.get("delegate")?.handler(`context allow ${consumedToken} 501 20`, context);
+    assert.equal(
+      await handlers.get("tool_call")?.(
+        { toolCallId: "agent-ended", toolName: "read", input: consumedInput },
+        context,
+      ),
+      undefined,
+    );
+
+    const pendingInput = { path: "pending", limit: 501 };
+    const pendingBlock = (await handlers.get("tool_call")?.(
+      { toolName: "read", input: pendingInput },
+      context,
+    )) as { reason: string } | undefined;
+    const pendingToken = /context allow ([0-9a-f-]+)/.exec(pendingBlock?.reason ?? "")?.[1];
+    assert.ok(pendingToken);
+
+    await handlers.get("agent_end")?.({ type: "agent_end", messages: [] }, context);
+    assert.ok(
+      await handlers.get("tool_result")?.(
+        {
+          toolCallId: "agent-ended",
+          toolName: "read",
+          input: consumedInput,
+          isError: false,
+          content: [{ type: "text", text: "x".repeat(11) }],
+        },
+        context,
+      ),
+      "a late result after agent_end uses ordinary byte limits",
+    );
+    await commands.get("delegate")?.handler(`context allow ${pendingToken} 501 20`, context);
+    assert.equal(
+      await handlers.get("tool_call")?.(
+        { toolCallId: "pending-after-end", toolName: "read", input: pendingInput },
+        context,
+      ),
+      undefined,
+      "a normal agent end does not revoke a pending user token",
+    );
+    await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context);
+  });
+});
+
+test("consumed exception retention is capped and evicted results use ordinary limits", async () => {
+  const adapter = new ContextShuntAdapter();
+  const active = {
+    ...settings(),
+    limits: { ...settings().limits, fullReadLines: 500, fullReadBytes: 10 },
+  };
+  for (let index = 0; index < 9; index += 1) {
+    const input = { path: `large-${index}`, limit: 501 };
+    const blocked = adapter.onToolCall({ toolName: "read", input } as never, active);
+    const token = /context allow ([0-9a-f-]+)/.exec(blocked?.reason ?? "")?.[1];
+    assert.ok(token);
+    assert.equal(adapter.allowPending(token, 501, 20), true);
+    assert.equal(
+      adapter.onToolCall({ toolCallId: `call-${index}`, toolName: "read", input } as never, active),
+      undefined,
+    );
+  }
+  assert.ok(
+    await adapter.onToolResult(
+      {
+        toolCallId: "call-0",
+        toolName: "read",
+        input: { path: "large-0", limit: 501 },
+        isError: false,
+        content: [{ type: "text", text: "x".repeat(11) }],
+      } as never,
+      active,
+    ),
+    "the evicted first result is compacted by ordinary limits",
+  );
+  assert.equal(
+    await adapter.onToolResult(
+      {
+        toolCallId: "call-8",
+        toolName: "read",
+        input: { path: "large-8", limit: 501 },
+        isError: false,
+        content: [{ type: "text", text: "x".repeat(11) }],
+      } as never,
+      active,
+    ),
+    undefined,
+    "the newest retained result still uses its explicit byte maximum",
+  );
+  await adapter.close();
+});
+
+test("the registered editor Apply revokes ContextShunt state across off and on", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeConfig(getGlobalConfigPath(directory), {
+      ...defaults,
+      contextShunt: { mode: "enforce" },
+    });
+
+    const branch: unknown[] = [];
+    const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+    const commands = new Map<
+      string,
+      { handler: (args: string, context: unknown) => Promise<void> }
+    >();
+    const pi = {
+      on: (name: string, handler: (event: unknown, context: unknown) => unknown) =>
+        handlers.set(name, handler),
+      registerTool: () => undefined,
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, context: unknown) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      getAllTools: () => [{ name: "read", sourceInfo: { source: "builtin" } }],
+      appendEntry: (customType: string, data?: unknown) =>
+        branch.push({ type: "custom", customType, data }),
+    };
+    const context = extensionContext(branch) as unknown as {
+      ui: {
+        theme: unknown;
+        custom: (factory: (...args: unknown[]) => SyntheticEditor) => Promise<unknown>;
+      };
+    };
+    context.ui.custom = (factory) =>
+      new Promise((resolve, reject) => {
+        try {
+          const component = factory(
+            { terminal: { rows: 30 }, requestRender: () => undefined },
+            context.ui.theme,
+            {},
+            resolve,
+          );
+          component.focused = true;
+          component.handleInput("\r");
+          component.handleInput("\x1b[B");
+          component.handleInput("\r");
+          component.handleInput("a");
+        } catch (error) {
+          reject(error);
+        }
+      });
+
+    piDelegationPolicy(pi as never);
+    await handlers.get("session_start")?.({ type: "session_start" }, context);
+
+    const input = { path: "large", limit: 999 };
+    const blocked = (await handlers.get("tool_call")?.({ toolName: "read", input }, context)) as
+      { reason: string } | undefined;
+    assert.ok(blocked);
+    const token = /context allow ([0-9a-f-]+)/.exec(blocked.reason)?.[1];
+    assert.ok(token);
+    await commands.get("delegate")?.handler(`context allow ${token} 999 80000`, context);
+    assert.equal(
+      await handlers.get("tool_call")?.(
+        { toolCallId: "consumed-before-ui", toolName: "read", input },
+        context,
+      ),
+      undefined,
+    );
+    assert.equal(
+      await handlers.get("tool_result")?.(
+        {
+          toolCallId: "consumed-before-ui",
+          toolName: "read",
+          input,
+          isError: false,
+          content: [{ type: "text", text: "line\n".repeat(400) }],
+        },
+        context,
+      ),
+      undefined,
+    );
+
+    const secondBlocked = (await handlers.get("tool_call")?.(
+      { toolName: "read", input },
+      context,
+    )) as { reason: string } | undefined;
+    assert.ok(secondBlocked);
+    const secondToken = /context allow ([0-9a-f-]+)/.exec(secondBlocked.reason)?.[1];
+    assert.ok(secondToken);
+    await commands.get("delegate")?.handler(`context allow ${secondToken} 999 80000`, context);
+    assert.equal(
+      await handlers.get("tool_call")?.(
+        { toolCallId: "consumed-before-ui", toolName: "read", input },
+        context,
+      ),
+      undefined,
+    );
+    assert.equal(
+      await handlers.get("tool_result")?.(
+        {
+          toolCallId: "consumed-before-ui",
+          toolName: "read",
+          input,
+          isError: false,
+          content: [{ type: "text", text: "line\n".repeat(400) }],
+        },
+        context,
+      ),
+      undefined,
+    );
+
+    const pendingInput = { path: "pending", limit: 999 };
+    const pendingBlocked = (await handlers.get("tool_call")?.(
+      { toolName: "read", input: pendingInput },
+      context,
+    )) as { reason: string } | undefined;
+    assert.ok(pendingBlocked);
+    const pendingToken = /context allow ([0-9a-f-]+)/.exec(pendingBlocked.reason)?.[1];
+    assert.ok(pendingToken);
+
+    const uiBlocked = (await handlers.get("tool_call")?.({ toolName: "read", input }, context)) as
+      { reason: string } | undefined;
+    assert.ok(uiBlocked);
+    const uiToken = /context allow ([0-9a-f-]+)/.exec(uiBlocked.reason)?.[1];
+    assert.ok(uiToken);
+    await commands.get("delegate")?.handler(`context allow ${uiToken} 999 80000`, context);
+    assert.equal(
+      await handlers.get("tool_call")?.(
+        { toolCallId: "ui-consumed", toolName: "read", input },
+        context,
+      ),
+      undefined,
+    );
+
+    await commands.get("delegate")?.handler("", context);
+    assert.equal((branch.at(-1) as { data?: { intensity?: string } }).data?.intensity, "off");
+    await commands.get("delegate")?.handler("", context);
+    assert.equal((branch.at(-1) as { data?: { intensity?: string } }).data?.intensity, "normal");
+
+    const afterReenable = (await handlers.get("tool_call")?.(
+      { toolCallId: "ui-consumed", toolName: "read", input },
+      context,
+    )) as { reason: string } | undefined;
+    assert.ok(afterReenable);
+    assert.match(afterReenable.reason, /context allow/);
+    await commands.get("delegate")?.handler(`context allow ${pendingToken} 999 80000`, context);
+    assert.ok(
+      await handlers.get("tool_call")?.({ toolName: "read", input: pendingInput }, context),
+    );
+  });
+});
+
+test("invalid recognized shell contracts keep the original result", () => {
+  const active = settings();
+  const oversized = [{ type: "text", text: "x".repeat(10_000) }];
+  for (const toolName of ["bash", "powershell", "grep"]) {
+    assert.deepEqual(shouldCompact(toolName, {}, false, oversized, active), {
+      kind: "skip",
+      reason: "uncovered-contract",
+    });
+  }
+});
+
+test("one-time exceptions require the matching call ID and immutable input", async () => {
+  const adapter = new ContextShuntAdapter();
+  const input = { path: "large", limit: 501 };
+  const active = {
+    ...settings(),
+    limits: { ...settings().limits, fullReadBytes: 10, fullReadLines: 500 },
+  };
+  const blocked = adapter.onToolCall({ toolName: "read", input } as never, active);
+  const token = /context allow ([0-9a-f-]+)/.exec(blocked?.reason ?? "")?.[1];
+  assert.ok(token);
+  assert.equal(adapter.allowPending(token, 501, 20), true);
+  assert.equal(
+    adapter.onToolCall({ toolCallId: "matching", toolName: "read", input } as never, active),
+    undefined,
+  );
+  assert.equal(
+    await adapter.onToolResult(
+      {
+        toolCallId: "matching",
+        toolName: "read",
+        input,
+        isError: false,
+        content: [{ type: "text", text: "x".repeat(11) }],
+      } as never,
+      active,
+    ),
+    undefined,
+  );
+
+  const second = adapter.onToolCall({ toolName: "read", input } as never, active);
+  const secondToken = /context allow ([0-9a-f-]+)/.exec(second?.reason ?? "")?.[1];
+  assert.ok(secondToken);
+  assert.equal(adapter.allowPending(secondToken, 501, 20), true);
+  assert.equal(
+    adapter.onToolCall({ toolCallId: "mutated", toolName: "read", input } as never, active),
+    undefined,
+  );
+  assert.ok(
+    await adapter.onToolResult(
+      {
+        toolCallId: "mutated",
+        toolName: "read",
+        input: { ...input, extra: true },
+        isError: false,
+        content: [{ type: "text", text: "x".repeat(11) }],
+      } as never,
+      active,
+    ),
+  );
+  await adapter.close();
+});
+
+test("unserializable inputs cannot create exceptions or break preflight", () => {
+  const engine = new ContextShuntEngine();
+  const input: { path: string; limit: number; self?: unknown } = { path: "large", limit: 400 };
+  input.self = input;
+  assert.equal(engine.allowOnce("read", input, 400, 20), false);
+  assert.equal(engine.decide("read", input, settings()).action, "block");
+});
+
 test("adapter compacts only preservable successful text and recovers exact ranges", async () => {
   const adapter = new ContextShuntAdapter();
   const text = `${"α\r\n".repeat(400)}tail`;
@@ -288,13 +866,25 @@ test("adapter compacts only preservable successful text and recovers exact range
   );
   assert.equal(
     await adapter.onToolResult(
-      { toolName: "read", isError: false, content: [{ type: "text", text }] } as never,
+      {
+        toolCallId: "observed",
+        toolName: "read",
+        input: { path: "large", limit: 999 },
+        isError: false,
+        content: [{ type: "text", text }],
+      } as never,
       settings("observe"),
     ),
     undefined,
   );
   const patch = await adapter.onToolResult(
-    { toolName: "read", isError: false, content: [{ type: "text", text }] } as never,
+    {
+      toolCallId: "bounded",
+      toolName: "read",
+      input: { path: "large", limit: 999 },
+      isError: false,
+      content: [{ type: "text", text }],
+    } as never,
     settings(),
   );
   assert.ok(patch);
@@ -541,12 +1131,12 @@ test("Context advanced stages reader role, limits, patterns, reset, and disabled
   panel.handleInput("9");
   panel.handleInput("\r");
   assert.equal(panel.getDraft().contextShunt?.limits?.fullReadLines, 9);
-  for (let index = 0; index < 6; index += 1) panel.handleInput("\x1b[B");
+  for (let index = 0; index < 5; index += 1) panel.handleInput("\x1b[B");
   panel.handleInput("\r");
   for (const character of "src/*.ts, docs/*.md") panel.handleInput(character);
   panel.handleInput("\r");
   assert.deepEqual(panel.getDraft().contextShunt?.exceptionPatterns, ["src/*.ts", "docs/*.md"]);
-  for (let index = 0; index < 8; index += 1) panel.handleInput("\x1b[B");
+  for (let index = 0; index < 7; index += 1) panel.handleInput("\x1b[B");
   panel.handleInput("\r");
   assert.equal(panel.getDraft().contextShunt, undefined);
 });

@@ -80,19 +80,38 @@ function updateStatus(ctx: ExtensionContext, state: RuntimeState): void {
   ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", statusLabel(state)));
 }
 
+function contextStatusText(state: RuntimeState, shunt: ContextShuntAdapter): string {
+  const context = state.effective.contextShunt;
+  const limits = context.limits;
+  const metrics = shunt.engine.metrics;
+  return `${statusText(state)} | context-limits=preflight-lines full=${limits.fullReadLines} targeted=${limits.targetedReadLines}; postresult-utf8-bytes full=${limits.fullReadBytes} targeted=${limits.targetedReadBytes} | context-coverage=known builtin text only; unknown contracts and invalid inputs are unchanged | context-events=blocked:${metrics.blocked},would-block:${metrics.wouldBlock},bounded:${metrics.boundedResults},exceptions:${metrics.manualOverrides},archive-failures:${metrics.archiveFailures},uncovered:${metrics.uncoveredResults}`;
+}
+
 function isBuiltinTool(pi: ExtensionAPI, toolName: string): boolean {
   return pi
     .getAllTools()
     .some((tool) => tool.name === toolName && tool.sourceInfo.source === "builtin");
 }
+function isContextShuntDisabled(state: RuntimeState): boolean {
+  return (
+    state.effective.intensity === "off" ||
+    state.effective.contextShunt.mode === "off" ||
+    state.effective.contextShunt.suspended
+  );
+}
+function synchronizeContextShunt(shunt: ContextShuntAdapter, state: RuntimeState): void {
+  if (isContextShuntDisabled(state)) shunt.clearPending();
+}
 async function openEditor(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   setRuntime: (state: RuntimeState) => void,
+  shunt: ContextShuntAdapter,
 ): Promise<void> {
   await openDelegateEditor(ctx, pi);
   const state = await loadRuntime(ctx);
   setRuntime(state);
+  synchronizeContextShunt(shunt, state);
   updateStatus(ctx, state);
 }
 export function statusText(state: RuntimeState): string {
@@ -233,27 +252,36 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
     getArgumentCompletions,
     handler: async (args, ctx) => {
       const action = parseCommand(args);
-      if (action.kind === "open") return openEditor(pi, ctx, rememberRuntime);
+      if (action.kind === "open") return openEditor(pi, ctx, rememberRuntime, shunt);
       if (action.kind === "status" || action.kind === "context-status") {
         const state = await refreshRuntime(ctx);
-        ctx.ui.notify(statusText(state), hasRuntimeError(state) ? "error" : "info");
+        ctx.ui.notify(
+          action.kind === "context-status" ? contextStatusText(state, shunt) : statusText(state),
+          hasRuntimeError(state) ? "error" : "info",
+        );
         return;
       }
       if (action.kind === "reset") {
-        rememberRuntime(await resetSession(pi, ctx));
+        const state = rememberRuntime(await resetSession(pi, ctx));
+        synchronizeContextShunt(shunt, state);
         return;
       }
       if (action.kind === "intensity") {
-        rememberRuntime(await setSessionIntensity(pi, ctx, action.intensity));
+        const state = rememberRuntime(await setSessionIntensity(pi, ctx, action.intensity));
+        synchronizeContextShunt(shunt, state);
         return;
       }
       if (action.kind === "context-mode") {
-        rememberRuntime(await setContextMode(pi, ctx, action.mode));
+        const state = rememberRuntime(await setContextMode(pi, ctx, action.mode));
+        synchronizeContextShunt(shunt, state);
         return;
       }
       if (action.kind === "context-allow") {
         const state = await refreshRuntime(ctx);
-        const allowed = shunt.allowPending(action.token, action.maxLines, action.maxBytes);
+        synchronizeContextShunt(shunt, state);
+        const allowed =
+          !isContextShuntDisabled(state) &&
+          shunt.allowPending(action.token, action.maxLines, action.maxBytes);
         ctx.ui.notify(
           allowed
             ? "One-time ContextShunt exception is ready for the matching next call."
@@ -271,12 +299,13 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
   });
   pi.registerShortcut("alt+g", {
     description: "Open delegation policy",
-    handler: async (ctx) => openEditor(pi, ctx, rememberRuntime),
+    handler: async (ctx) => openEditor(pi, ctx, rememberRuntime, shunt),
   });
   pi.on("session_start", async (_event, ctx) => {
     await refreshRuntime(ctx);
   });
   pi.on("session_tree", async (_event, ctx) => {
+    shunt.clearPending();
     await refreshRuntime(ctx);
   });
   pi.on("before_agent_start", async (event, ctx) => {
@@ -284,14 +313,23 @@ export default function piDelegationPolicy(pi: ExtensionAPI): void {
     const policy = buildDelegationPolicy(state);
     return policy ? { systemPrompt: `${event.systemPrompt}\n\n${policy}` } : undefined;
   });
+  pi.on("agent_end", async () => {
+    shunt.clearConsumed();
+  });
   pi.on("tool_call", async (event) => {
     const settings = latestRuntime?.effective.contextShunt;
-    if (!settings || settings.mode === "off") return undefined;
+    if (!settings || settings.mode === "off") {
+      shunt.clearPending();
+      return undefined;
+    }
     return shunt.onToolCall(event, settings, isBuiltinTool(pi, event.toolName));
   });
   pi.on("tool_result", async (event, ctx) => {
     const settings = latestRuntime?.effective.contextShunt;
-    if (!settings || settings.mode === "off") return undefined;
+    if (!settings || settings.mode === "off") {
+      shunt.clearPending();
+      return undefined;
+    }
     return shunt.onToolResult(event, settings, ctx.signal, isBuiltinTool(pi, event.toolName));
   });
   pi.on("session_shutdown", async (_event, ctx) => {

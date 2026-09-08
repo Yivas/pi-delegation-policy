@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-No unreleased changes.
+### Fixed
+
+- Make ContextShunt declared-read limits line-based, measure known textual results with real UTF-8 bytes and shared newline handling, and keep rejected requests out of the admitted-request window.
+- Keep the one-time `allow TOKEN MAX_LINES MAX_BYTES` command while binding its authorization to one tool call and immutable input snapshot; enforce its byte maximum against the real result.
+- Continue accepting the deprecated schema-4 `readerOutputBytes` field for compatibility while ignoring it, omitting it from new saves, and removing its inert panel control.
 
 ## 0.9.0 - 2026-09-07
 

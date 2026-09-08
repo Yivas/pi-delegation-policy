@@ -82,9 +82,9 @@ The source is `default`, `global`, or `session`. The stable Visual Design token 
 
 Choose **Context protection** in the panel or use `/delegate context observe` before `/delegate context enforce`. `off` performs no ContextShunt work. `observe` changes neither the tool call nor its result. `enforce` blocks only a recognized declared excess; when a known successful text result is too large, it first preserves the original in a private temporary artifact and then returns a short recovery instruction. If preservation fails, the original result remains unchanged.
 
-`/delegate context status` reports the requested reader role and `model=unknown`: this package has no automatic hook-to-worker bridge. The packaged `agents/pi-delegation-policy.bulk-reader.md` profile allows only `read`, `grep`, `find`, and `ls` when a compatible executor loads it from the package path. It is not installed into user agent directories or automatically run. If an executor cannot load a path-based profile, use the guided redirection and exact bounded reads instead.
+`/delegate context status` reports the requested reader role and `model=unknown`, declared-line and post-result UTF-8-byte budgets, finite aggregate counters, and known-contract coverage without paths or preserved text: this package has no automatic hook-to-worker bridge. The packaged `agents/pi-delegation-policy.bulk-reader.md` profile allows only `read`, `grep`, `find`, and `ls` when a compatible executor loads it from the package path. It is not installed into user agent directories or automatically run. If an executor cannot load a path-based profile, use the guided redirection and exact bounded reads instead.
 
-A blocked call can be narrowed, or a real user can approve its matching next call once through the token shown in the block message. The exception is tied to that operation, requested range, and one-minute expiry; model text cannot grant it.
+A blocked call can be narrowed, or a real user can approve its matching next call once through the token shown in the block message. The exception is tied to that tool call and immutable input snapshot, requested line range, real-result byte maximum, and one-minute expiry; model text cannot grant it.
 
 ## 7. Diagnose `D:ERR`
 

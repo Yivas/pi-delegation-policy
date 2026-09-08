@@ -22,8 +22,7 @@
       "fullReadLines": 350,
       "fullReadBytes": 16384,
       "targetedReadLines": 250,
-      "targetedReadBytes": 16384,
-      "readerOutputBytes": 8192
+      "targetedReadBytes": 16384
     },
     "shell": "conservative",
     "metrics": "memory",

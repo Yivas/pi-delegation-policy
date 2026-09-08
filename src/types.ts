@@ -25,7 +25,6 @@ export type ContextShuntLimits = {
   fullReadBytes?: number;
   targetedReadLines?: number;
   targetedReadBytes?: number;
-  readerOutputBytes?: number;
 };
 export type ContextShuntSettings = {
   mode?: ContextShuntMode;

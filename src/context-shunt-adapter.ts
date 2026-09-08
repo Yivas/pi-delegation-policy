@@ -36,10 +36,13 @@ export class ContextShuntAdapter {
     settings: EffectiveContextShunt,
     isBuiltinTool = true,
   ): { block: true; reason: string } | undefined {
-    if (settings.mode === "off" || (settings.mode === "enforce" && !isBuiltinTool))
+    if (settings.mode === "off") {
+      this.clearPending();
       return undefined;
+    }
+    if (settings.mode === "enforce" && !isBuiltinTool) return undefined;
 
-    const decision = this.engine.decide(event.toolName, event.input, settings);
+    const decision = this.engine.decide(event.toolName, event.input, settings, event.toolCallId);
     if (decision.action !== "block") return undefined;
 
     this.expirePending();
@@ -73,7 +76,13 @@ export class ContextShuntAdapter {
     const pending = this.pending.get(token);
     this.pending.delete(token);
     if (!pending || pending.expiresAt <= this.now()) return false;
-    return this.engine.allowOnce(pending.toolName, pending.input, maxLines, maxBytes);
+    return this.engine.allowOnce(
+      pending.toolName,
+      pending.input,
+      maxLines,
+      maxBytes,
+      pending.expiresAt,
+    );
   }
 
   async onToolResult(
@@ -82,12 +91,29 @@ export class ContextShuntAdapter {
     signal?: AbortSignal,
     isBuiltinTool = true,
   ): Promise<ToolResultPatch | undefined> {
-    if (settings.mode !== "enforce" || !isBuiltinTool || signal?.aborted) return undefined;
+    if (settings.mode !== "enforce" || !isBuiltinTool || signal?.aborted) {
+      this.engine.clearCall(event.toolCallId);
+      return undefined;
+    }
 
-    const text = shouldCompact(event.toolName, event.isError, event.content, settings);
-    if (!text) return undefined;
-    const artifactId = await this.artifacts.archive(text, signal);
-    if (!artifactId) return undefined;
+    const exception = this.engine.takeConsumed(event.toolCallId, event.toolName, event.input);
+    const decision = shouldCompact(
+      event.toolName,
+      event.input,
+      event.isError,
+      event.content,
+      settings,
+      exception,
+    );
+    if (decision.kind === "skip") {
+      if (decision.reason.startsWith("uncovered")) this.engine.metrics.uncoveredResults += 1;
+      return undefined;
+    }
+    const artifactId = await this.artifacts.archive(decision.text, signal);
+    if (!artifactId) {
+      this.engine.metrics.archiveFailures += 1;
+      return undefined;
+    }
 
     this.engine.metrics.boundedResults += 1;
     return {
@@ -113,9 +139,17 @@ export class ContextShuntAdapter {
     return "error" in result ? result : { text: result.text, range: result.range };
   }
 
-  async close(): Promise<void> {
+  clearConsumed(): void {
+    this.engine.clearConsumed();
+  }
+
+  clearPending(): void {
     this.pending.clear();
     this.engine.clear();
+  }
+
+  async close(): Promise<void> {
+    this.clearPending();
     await this.artifacts.close();
   }
 
