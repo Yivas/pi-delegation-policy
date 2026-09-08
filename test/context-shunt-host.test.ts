@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 type HostReport = {
@@ -132,11 +132,15 @@ function runChild(
   });
 }
 
-async function runHost(piRoot: string): Promise<HostReport> {
+async function runHost(
+  piRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+  nodeCommand = process.execPath,
+): Promise<HostReport> {
   const result = await runChild(
-    process.execPath,
+    nodeCommand,
     ["scripts/test-context-shunt-host.mjs", "--pi-root", piRoot, "--pack"],
-    { cwd: process.cwd() },
+    { cwd: process.cwd(), env },
   );
   try {
     return JSON.parse(result.stdout.trim()) as HostReport;
@@ -195,8 +199,13 @@ test("bounds the outer host child output and lifetime", async () => {
   await assert.rejects(runChild(join(temporary, "missing-child"), []), /failed to spawn/);
 });
 
-async function assertHost(piRoot: string, expectedVersion: string): Promise<void> {
-  const result = await runHost(piRoot);
+async function assertHost(
+  piRoot: string,
+  expectedVersion: string,
+  env: NodeJS.ProcessEnv = process.env,
+  nodeCommand = process.execPath,
+): Promise<void> {
+  const result = await runHost(piRoot, env, nodeCommand);
   assert.equal(result.piVersion, expectedVersion);
   assert.match(result.tarball.file, /^pi-delegation-policy-.*\.tgz$/);
   assert.match(result.tarball.sha256, /^[a-f0-9]{64}$/);
@@ -248,8 +257,57 @@ async function assertHost(piRoot: string, expectedVersion: string): Promise<void
   );
 }
 
-test("loads the packed extension through the baseline Pi CLI RPC host", async () => {
-  await assertHost(join(process.cwd(), "node_modules/@earendil-works/pi-coding-agent"), "0.84.3");
+test("rejects malformed npm_execpath before packing", async () => {
+  for (const [npmExecPath, expectedError] of [
+    ["", /npm_execpath must not be empty/],
+    ["npm-cli.js", /npm_execpath must be an absolute path/],
+  ] as const) {
+    await assert.rejects(
+      runHost(join(process.cwd(), "node_modules/@earendil-works/pi-coding-agent"), {
+        ...process.env,
+        npm_execpath: npmExecPath,
+      }),
+      expectedError,
+    );
+  }
+});
+
+const npmExecPath = process.env.npm_execpath?.trim();
+
+test("loads the packed extension through the selected npm CLI", async () => {
+  const baselinePiRoot = join(process.cwd(), "node_modules/@earendil-works/pi-coding-agent");
+  if (process.env.npm_execpath === undefined) {
+    await assertHost(baselinePiRoot, "0.84.3");
+    return;
+  }
+
+  assert.ok(npmExecPath, "npm_execpath must be non-empty for the host pack regression");
+  const temporary = await mkdtemp(join(tmpdir(), "context-shunt-npm-cli-test-"));
+  try {
+    const isolatedNode = join(temporary, process.platform === "win32" ? "node.exe" : "node");
+    await copyFile(process.execPath, isolatedNode);
+    if (process.platform !== "win32") {
+      await chmod(isolatedNode, 0o755);
+      assert.equal(
+        (await stat(isolatedNode)).mode & 0o111,
+        0o111,
+        "copied Node executable has POSIX execute permissions",
+      );
+    }
+    assert.notEqual(
+      dirname(npmExecPath),
+      dirname(isolatedNode),
+      "npm_execpath is outside the isolated Node install",
+    );
+    await assertHost(
+      baselinePiRoot,
+      "0.84.3",
+      { ...process.env, npm_execpath: npmExecPath },
+      isolatedNode,
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 const currentPiRoot = process.env.PI_CONTEXT_SHUNT_CURRENT_PI_ROOT;

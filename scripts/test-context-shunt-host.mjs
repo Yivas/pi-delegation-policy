@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { setTimeout, clearTimeout } from "node:timers";
 import { fileURLToPath, URL } from "node:url";
 
@@ -179,8 +179,22 @@ async function packEnvironment() {
   };
 }
 
+function resolveNpmCliPath() {
+  const configuredPath = process.env.npm_execpath;
+  if (configuredPath !== undefined) {
+    const npmCliPath = configuredPath.trim();
+    if (!npmCliPath) throw new Error("npm_execpath must not be empty");
+    if (!isAbsolute(npmCliPath)) {
+      throw new Error("npm_execpath must be an absolute path");
+    }
+    return npmCliPath;
+  }
+
+  return join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+}
+
 async function packAndExtract(hostNodeModules) {
-  const npmCli = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  const npmCli = resolveNpmCliPath();
   const npm = await packEnvironment();
   const packed = await run(
     process.execPath,
@@ -199,7 +213,7 @@ async function packAndExtract(hostNodeModules) {
       "--pack-destination",
       temporary,
     ],
-    { env: npm.environment },
+    { env: { ...npm.environment, npm_execpath: npmCli } },
   );
   const records = JSON.parse(packed.stdout);
   assert.equal(records.length, 1, "npm pack must produce exactly one tarball");
