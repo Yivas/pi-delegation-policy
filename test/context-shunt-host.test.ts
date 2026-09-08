@@ -15,6 +15,7 @@ type HostReport = {
 type ChildRunOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  onSpawn?: (pid: number) => void;
   outputLimitBytes?: number;
   timeoutMs?: number;
 };
@@ -36,10 +37,12 @@ function runChild(
   const {
     cwd,
     env,
+    onSpawn,
     outputLimitBytes = DEFAULT_CHILD_OUTPUT_LIMIT_BYTES,
     timeoutMs = DEFAULT_CHILD_TIMEOUT_MS,
   } = options;
   return new Promise((resolve, reject) => {
+    const deadlineAt = Date.now() + timeoutMs;
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -64,10 +67,18 @@ function runChild(
     };
     const terminate = () => {
       if (closeObserved || child.exitCode !== null || child.signalCode !== null) return;
-      child.kill();
+      try {
+        child.kill();
+      } catch {
+        // Continue to the escalation timer when the initial signal fails.
+      }
       terminationTimer = setTimeout(() => {
         if (!closeObserved && child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGKILL");
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // The child may have failed to spawn or exited during escalation.
+          }
         }
       }, CHILD_TERMINATION_GRACE_MS);
     };
@@ -103,6 +114,7 @@ function runChild(
     };
 
     if (!child.stdout || !child.stderr) {
+      child.kill();
       reject(new Error(`${command} did not provide piped output`));
       return;
     }
@@ -126,9 +138,21 @@ function runChild(
       }
       finish();
     });
-    const deadlineTimer = setTimeout(() => {
-      fail(new Error(`${command} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    const deadlineTimer = setTimeout(
+      () => {
+        fail(new Error(`${command} timed out after ${timeoutMs}ms`));
+      },
+      Math.max(0, deadlineAt - Date.now()),
+    );
+    if (child.pid === undefined) {
+      fail(new Error(`${command} failed to spawn: process did not report a process ID`));
+    } else {
+      try {
+        onSpawn?.(child.pid);
+      } catch (error) {
+        fail(new Error(`${command} onSpawn callback failed: ${String(error)}`));
+      }
+    }
   });
 }
 
@@ -164,31 +188,25 @@ test("bounds the outer host child output and lifetime", async () => {
     /exceeded 64 bytes/,
   );
 
-  const temporary = await mkdtemp(join(tmpdir(), "context-shunt-host-test-"));
-  const pidFile = join(temporary, "child.pid");
+  let childPid: number | undefined;
+  await assert.rejects(
+    runChild(process.execPath, ["-e", "setInterval(() => {}, 1_000);"], {
+      onSpawn: (pid) => {
+        childPid = pid;
+      },
+      timeoutMs: 50,
+      outputLimitBytes: 64,
+    }),
+    /timed out after 50ms/,
+  );
+  assert.ok(childPid !== undefined, "successful spawn reports the child PID");
+  let childAlive = true;
   try {
-    await assert.rejects(
-      runChild(
-        process.execPath,
-        [
-          "-e",
-          `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1_000);`,
-        ],
-        { timeoutMs: 50, outputLimitBytes: 64 },
-      ),
-      /timed out after 50ms/,
-    );
-    const childPid = Number(await readFile(pidFile, "utf8"));
-    let childAlive = true;
-    try {
-      process.kill(childPid, 0);
-    } catch {
-      childAlive = false;
-    }
-    assert.equal(childAlive, false, "timed-out child is terminated before rejection");
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
+    process.kill(childPid, 0);
+  } catch {
+    childAlive = false;
   }
+  assert.equal(childAlive, false, "timed-out child is terminated before rejection");
 
   const valid = await runChild(process.execPath, ["-e", "process.stdout.write('valid output')"]);
   assert.equal(valid.stdout, "valid output");
@@ -196,7 +214,12 @@ test("bounds the outer host child output and lifetime", async () => {
     runChild(process.execPath, ["-e", "process.stderr.write('failed'); process.exit(7)"]),
     /exited with code 7/,
   );
-  await assert.rejects(runChild(join(temporary, "missing-child"), []), /failed to spawn/);
+  const temporary = await mkdtemp(join(tmpdir(), "context-shunt-host-test-missing-child-"));
+  try {
+    await assert.rejects(runChild(join(temporary, "missing-child"), []), /failed to spawn/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 async function assertHost(
