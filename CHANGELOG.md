@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.11.1 - 2026-09-16
 
 ### Changed
 
+- Show one row per setting in the `/delegate` panel instead of two, and move the focused row's description and provenance into a single hint block under the list, so the list no longer spends half its height repeating the same sentences. Values are aligned in one column, and thinking values show `unset`, a level, or `min..max` with the provenance in the hint.
+- Mark a truncated line in the effective policy preview with an ellipsis instead of cutting it silently.
 - Update the maintained development toolchain: the Pi packages to `0.85.1`, TypeScript to `6.0.3`, and the wiki to Astro 7.3.2, Starlight 0.42.0 and the patched `js-yaml` 4.3.2. The Pi peer range stays `>=0.84.3`, so `0.84.3` remains the minimum supported version; the explicitly checked baseline is now Pi `0.85.1`. Nothing in the published behaviour changes.
 
 ## 0.11.0 - 2026-09-16
