@@ -300,7 +300,7 @@ const npmExecPath = process.env.npm_execpath?.trim();
 test("loads the packed extension through the selected npm CLI", async () => {
   const baselinePiRoot = join(process.cwd(), "node_modules/@earendil-works/pi-coding-agent");
   if (process.env.npm_execpath === undefined) {
-    await assertHost(baselinePiRoot, "0.84.3");
+    await assertHost(baselinePiRoot, "0.85.1");
     return;
   }
 
@@ -324,7 +324,7 @@ test("loads the packed extension through the selected npm CLI", async () => {
     );
     await assertHost(
       baselinePiRoot,
-      "0.84.3",
+      "0.85.1",
       { ...process.env, npm_execpath: npmExecPath },
       isolatedNode,
     );

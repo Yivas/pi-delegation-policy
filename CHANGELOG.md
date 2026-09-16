@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Update the maintained development toolchain: the Pi packages to `0.85.1`, TypeScript to `6.0.3`, and the wiki to Astro 7.3.2, Starlight 0.42.0 and the patched `js-yaml` 4.3.2. The Pi peer range stays `>=0.84.3`, so `0.84.3` remains the minimum supported version; the explicitly checked baseline is now Pi `0.85.1`. Nothing in the published behaviour changes.
+
 ## 0.11.0 - 2026-09-16
 
 ### Added

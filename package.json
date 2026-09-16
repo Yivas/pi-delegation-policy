@@ -42,15 +42,15 @@
     "@earendil-works/pi-tui": ">=0.84.3"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.3",
-    "@earendil-works/pi-coding-agent": "0.84.3",
-    "@earendil-works/pi-tui": "0.84.3",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.6.1",
     "ajv": "^8.20.0",
     "eslint": "^10.9.1",
     "prettier": "^3.0.0",
-    "typescript": "^5.7.0",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.68.0"
   },
   "pi": {
