@@ -1214,7 +1214,9 @@ test("Context advanced stages reader enabled, role, answer cap, and reset with k
   }
   terminal.rows = 30;
   const wideSettings = panel.render(100);
-  assert.ok(wideSettings.some((line) => line.includes("Context protection enforce")));
+  assert.ok(
+    wideSettings.some((line) => /^\s*(> )?Context protection\s+enforce$/.test(line.trimEnd())),
+  );
   assert.equal(
     wideSettings.some((line) => line.includes("Context protectionenforce")),
     false,

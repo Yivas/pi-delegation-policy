@@ -1390,9 +1390,24 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
   const { panel } = createPanelHarness();
   const settings = panel.render(100).join("\n");
   assert.match(settings, /Effective policy preview/);
+  assert.match(settings, /^> Intensity\s+off\s*$/m);
+  assert.match(settings, /^ {2}Small thinking\s+unset\s*$/m);
   assert.match(settings, /When delegation is worth considering/);
-  assert.match(settings, /Tie-break only; task fit decides the role first/);
-  assert.match(settings, /Design, assets, and bounded presentation work; no app behavior/);
+  assert.equal(
+    (settings.match(/built-in/g) ?? []).length,
+    1,
+    "only the focused row explains its provenance",
+  );
+
+  sendKeys(panel, KEY_DOWN);
+  assert.match(panel.render(100).join("\n"), /Tie-break only; task fit decides the role first/);
+  sendKeys(panel, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN);
+  assert.match(
+    panel.render(100).join("\n"),
+    /Design, assets, and bounded presentation work; no app behavior/,
+  );
+  sendKeys(panel, KEY_HOME);
+  assert.match(panel.render(100).join("\n"), /When delegation is worth considering/);
 
   const live = createPanelHarness();
   sendKeys(live.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
@@ -1454,6 +1469,35 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
   const offView = offDraft.panel.render(100).join("\n");
   assert.match(offView, /off · no policy injected/);
   assert.doesNotMatch(offView, /D:ERR · policy unavailable/);
+});
+
+test("the settings list keeps one row per field and one hint block that follows the focus", () => {
+  const harness = createPanelHarness({ rows: 24 });
+  const item =
+    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design |Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
+  const view = (steps: number) => {
+    for (let step = 0; step < steps; step += 1) sendKeys(harness.panel, KEY_DOWN);
+    const lines = harness.panel.render(80);
+    const separator = "─".repeat(80);
+    const rules = lines.flatMap((line, index) => (line === separator ? [index] : []));
+    const body = lines.slice(rules[0]! + 1, rules[rules.length - 1]);
+    return { body: body.join("\n"), rows: body.filter((line) => item.test(line)).length };
+  };
+
+  const first = view(0);
+  // On 24 rows the preview and the reserved hint leave 13 of the 16 settings rows visible.
+  assert.equal(first.rows, 13, "one row per field");
+  assert.match(first.body, /When delegation is worth considering/);
+
+  const context = view(6);
+  assert.equal(context.rows, first.rows, "a longer hint does not resize the list viewport");
+  assert.match(context.body, /Off, observe, or enforce bounded context protection/);
+  assert.match(context.body, /reader off; role small; answer 8192 bytes/);
+  assert.equal(
+    (context.body.match(/built-in/g) ?? []).length,
+    1,
+    "the hint replaces the previous row's provenance",
+  );
 });
 
 test("the delegate panel searches models, keeps pinned actions, and stages safe edits", () => {
@@ -2961,7 +3005,12 @@ test("the thinking field sets fixed, sets a range, normalizes one level, and ret
   assert.doesNotMatch(fixedLevels, /xhigh/);
   sendKeys(panel, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   assert.deepEqual(panel.getDraft().thinking, { small: { level: "high" } });
-  assert.match(panel.render(100).join("\n"), /fixed high \(session\)/);
+  const fixedRow = panel.render(100).join("\n");
+  assert.match(fixedRow, /^> Small thinking\s+high\s*$/m);
+  assert.doesNotMatch(fixedRow, /fixed high/);
+  assert.match(fixedRow, /built-in unset/);
+  assert.match(fixedRow, /global —/);
+  assert.match(fixedRow, /session high/);
 
   openSmallThinking();
   sendKeys(panel, KEY_DOWN, KEY_ENTER);
@@ -2974,7 +3023,10 @@ test("the thinking field sets fixed, sets a range, normalizes one level, and ret
   assert.doesNotMatch(maximumView, /^[> ] minimal\s*$/m);
   sendKeys(panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   assert.deepEqual(panel.getDraft().thinking, { small: { min: "low", max: "high" } });
-  assert.match(panel.render(100).join("\n"), /range low\.\.high inclusive \(session\)/);
+  const rangeRow = panel.render(100).join("\n");
+  assert.match(rangeRow, /^> Small thinking\s+low\.\.high\s*$/m);
+  assert.match(rangeRow, /session low\.\.high/);
+  assert.doesNotMatch(rangeRow, /\(session\)/);
 
   openSmallThinking();
   sendKeys(panel, KEY_ENTER, KEY_DOWN, KEY_ENTER, KEY_UP, KEY_ENTER);

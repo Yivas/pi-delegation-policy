@@ -25,7 +25,7 @@ There is no separate off shortcut: run `/delegate off` or choose `off` in the ed
 
 ## 2. Edit the panel
 
-The panel starts with an **Effective policy preview**. It summarizes effective intensity, task fit before preference, active preference behavior, enabled and disabled ordinary roles, exact role bases, and each covered role's thinking policy or `:per-run` state. It also shows each setting's effective value and built-in, global, and session sources.
+The panel starts with an **Effective policy preview**. It summarizes effective intensity, task fit before preference, active preference behavior, enabled and disabled ordinary roles, exact role bases, and each covered role's thinking policy or `:per-run` state. Each setting then occupies one row with its effective value, and a single hint block under the list explains the focused row and reports its built-in, global, and session sources.
 
 Move with `Up` and `Down`; press `Enter` or `Space` to edit. Every model field, including Small, Medium, Large, and Visual Design, starts with two pinned keyboard-selectable rows:
 
@@ -34,7 +34,7 @@ Move with `Up` and `Down`; press `Enter` or `Space` to edit. Every model field, 
 
 The selector shows the model ID first and `[provider]` last. Type to fuzzy-search provider, model ID, or display name. At most 10 model rows are visible; use `Page Up` and `Page Down` for longer results. When Pi supplies public model metadata, the selected row can show name, API, reasoning support, context window, and maximum output. The metadata is transient and not saved.
 
-**Small thinking**, **Medium thinking**, **Large thinking**, and **Visual Design thinking** set the optional per-role thinking policy. Each row shows the effective policy and its source, as `fixed high (session)`, `range low..high inclusive (global)`, or `unset`. Editing one offers **Use global default** (which drops the session override), **Unset for this session (no policy)**, **Fixed level…**, and **Range (min–max)…**. A range asks for the minimum and then for the maximum, and the maximum list never goes below the chosen minimum.
+**Small thinking**, **Medium thinking**, **Large thinking**, and **Visual Design thinking** set the optional per-role thinking policy. Each row shows the effective policy as `unset`, one level such as `high`, or an inclusive range such as `low..high`; the built-in, global, and session values for the focused row appear in the hint block under the list. Editing one offers **Use global default** (which drops the session override), **Unset for this session (no policy)**, **Fixed level…**, and **Range (min–max)…**. A range asks for the minimum and then for the maximum, and the maximum list never goes below the chosen minimum.
 
 Both level lists contain only the levels the role's configured model supports, in canonical order. When the role is disabled or not configured, or its model is not selectable in the panel, the panel states the reason and offers only the two unset actions. Fixed and range remain distinguishable from their text, not only from colour.
 

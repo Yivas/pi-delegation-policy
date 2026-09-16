@@ -33,7 +33,7 @@ ContextShunt takes its large-read routing pattern from the approach described in
 
 ## Panel and status limits
 
-The panel shows a compact preview and field explanations. Model selection presents model ID first and `[provider]` last, fuzzy-searches provider, model ID, and display name, and can show transient public metadata: name, API, reasoning support, context window, and maximum output. The extension does not persist that metadata.
+The panel shows a compact preview, one row per setting, and a hint block with the focused row's explanation and sources. Model selection presents model ID first and `[provider]` last, fuzzy-searches provider, model ID, and display name, and can show transient public metadata: name, API, reasoning support, context window, and maximum output. The extension does not persist that metadata.
 
 `/delegate status` shows exact effective references and provenance (`default`, `global`, or `session`), one `thinking-<role>` token per role, plus sanitized diagnostics. `D:NORM`, `D:AGG`, and `D:ORCH` mean local validation passed; they do not prove a delegated launch occurred or another system followed guidance. The published `0.9.0` package supports all four intensities.
 

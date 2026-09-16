@@ -69,6 +69,9 @@ const THINKING_FIELD_KEYS: Record<ThinkingField, ModelConfigKey> = {
 function isThinkingField(field: string): field is ThinkingField {
   return (THINKING_FIELDS as readonly string[]).includes(field);
 }
+function isDelegateField(item: string): item is DelegateField {
+  return (FIELD_IDS as readonly string[]).includes(item);
+}
 type EnumField = "intensity" | "preference" | "contextShunt";
 type PanelAction = "apply" | "save-defaults" | "reset" | "cancel";
 type SettingsItem = DelegateField | PanelAction;
@@ -172,6 +175,12 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   thinkingUiDesign: "Visual Design thinking",
 };
 
+/** One alignment column for every field value, wide enough for the longest label. */
+const SETTINGS_LABEL_WIDTH = Math.max(
+  16,
+  ...FIELD_IDS.map((field) => visibleWidth(FIELD_LABELS[field]) + 1),
+);
+
 const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
   intensity: "When delegation is worth considering.",
   preference: "Tie-break only; task fit decides the role first.",
@@ -231,9 +240,7 @@ function sameThinking(
 }
 
 function thinkingSummary(policy: ThinkingPolicy): string {
-  return "level" in policy
-    ? `fixed ${policy.level}`
-    : `range ${policy.min}..${policy.max} inclusive`;
+  return "level" in policy ? policy.level : `${policy.min}..${policy.max}`;
 }
 
 export function sameSessionState(left: SessionDelegateState, right: SessionDelegateState): boolean {
@@ -550,58 +557,75 @@ export class DelegatePanel implements Component, Focusable {
   private renderSettings(width: number, budget: number): string[] {
     const effective = resolveDelegateState(this.global, this.draft);
     const preview = this.renderPolicyPreview(width, budget, effective);
-    const settingsBudget = Math.max(1, budget - preview.length);
+    const hintRows = this.settingsHintRows(width, budget - preview.length);
+    const settingsBudget = Math.max(1, budget - preview.length - hintRows);
     const blocks = SETTINGS_ITEMS.map((item, index) => {
       const selected = index === this.settingsIndex;
-      if (FIELD_IDS.includes(item as DelegateField)) {
-        const field = item as DelegateField;
-        const value = isThinkingField(field)
-          ? this.thinkingValue(field)
-          : field === "intensity" || field === "preference"
-            ? effective[field]
-            : field === "contextShunt"
-              ? effective.contextShunt.suspended
-                ? `off (suspended; configured ${effective.contextShunt.configuredMode})`
-                : effective.contextShunt.mode
-              : field === "contextAdvanced"
-                ? `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`
-                : field === "uiDesign"
-                  ? effective.uiDesign
-                    ? modelText(effective.uiDesign)
-                    : "disabled"
-                  : rawModelText(effective[field], "not configured");
-        const details = this.sourceDetails(field);
-        if (width < 48) {
-          return [
-            selectedLine(this.theme, FIELD_LABELS[field], width, selected),
-            ...wrapTextWithAnsi(`  ${FIELD_DESCRIPTIONS[field]}`, width),
-            ...wrapTextWithAnsi(`  ${value}`, width),
-            ...details.flatMap((line) =>
-              wrapTextWithAnsi(this.theme.fg("dim", `  ${line}`), width),
-            ),
-          ];
-        }
-        const labelWidth = Math.max(16, visibleWidth(FIELD_LABELS[field]) + 1);
-        const first = `${pad(FIELD_LABELS[field], labelWidth)}${value}`;
-        return [
-          selectedLine(this.theme, first, width, selected),
-          ...wrapTextWithAnsi(
-            this.theme.fg("dim", `  ${FIELD_DESCRIPTIONS[field]} · ${details.join(" · ")}`),
-            width,
-          ),
-        ];
+      if (isDelegateField(item)) {
+        const row = this.settingsRow(item, this.settingsValue(item, effective), width);
+        return [selectedLine(this.theme, row, width, selected)];
       }
-      const action = item as PanelAction;
-      const disabled = action === "apply" && !this.isDirty();
-      const label = disabled ? `${ACTION_LABELS[action]} (no changes)` : ACTION_LABELS[action];
+      const disabled = item === "apply" && !this.isDirty();
+      const label = disabled ? `${ACTION_LABELS[item]} (no changes)` : ACTION_LABELS[item];
       const line = selectedLine(this.theme, label, width, selected);
       return [disabled ? this.theme.fg("dim", line) : line];
     });
+    const focused = SETTINGS_ITEMS[this.settingsIndex];
+    const hint = focused && isDelegateField(focused) ? this.settingsHint(focused, width) : [];
 
     return [
       ...preview,
       ...this.renderBlockViewport(blocks, this.settingsIndex, width, settingsBudget),
+      ...hint.slice(0, hintRows),
     ];
+  }
+
+  /** One line per field: padded label followed by the effective value. */
+  private settingsRow(field: DelegateField, value: string, width: number): string {
+    // Align every value on one column so the list scans vertically. The width cap only matters on
+    // very narrow terminals, where a longer label would leave no room for the value at all.
+    const labelWidth = Math.max(16, Math.min(SETTINGS_LABEL_WIDTH, Math.floor(width * 0.6)));
+    return `${pad(FIELD_LABELS[field], labelWidth)}${value}`;
+  }
+
+  private settingsValue(
+    field: DelegateField,
+    effective: ReturnType<typeof resolveDelegateState>,
+  ): string {
+    if (isThinkingField(field)) return this.thinkingValue(field);
+    if (field === "intensity" || field === "preference") return effective[field];
+    if (field === "contextShunt")
+      return effective.contextShunt.suspended
+        ? `off (suspended; configured ${effective.contextShunt.configuredMode})`
+        : effective.contextShunt.mode;
+    if (field === "contextAdvanced")
+      return `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`;
+    if (field === "uiDesign")
+      return effective.uiDesign ? modelText(effective.uiDesign) : "disabled";
+    return rawModelText(effective[field], "not configured");
+  }
+
+  /**
+   * The focused field's description and provenance, wrapped to the width. It sits after the list so
+   * every field keeps one row, and its height is reserved from the width alone, not from the
+   * selection, so the list viewport stays where it is while the focus moves.
+   */
+  private settingsHint(field: DelegateField, width: number): string[] {
+    const provenance = this.sourceDetails(field).join(" · ");
+    const text = `${FIELD_DESCRIPTIONS[field]} · ${provenance}`;
+    // Indent every wrapped line, not only the first, so the hint reads as one block.
+    return wrapTextWithAnsi(text, Math.max(1, width - 2)).map((line) =>
+      this.theme.fg("dim", `  ${line}`),
+    );
+  }
+
+  /** Tallest field hint at this width, capped so the list keeps at least half of the body. */
+  private settingsHintRows(width: number, budget: number): number {
+    const tallest = FIELD_IDS.reduce(
+      (rows, field) => Math.max(rows, this.settingsHint(field, width).length),
+      1,
+    );
+    return Math.max(1, Math.min(tallest, Math.floor(budget / 2)));
   }
 
   private renderPolicyPreview(
@@ -617,7 +641,7 @@ export class DelegatePanel implements Component, Focusable {
       width >= 60 && budget >= 8 ? (effective.intensity === "orchestrator" ? 5 : 4) : 2;
     return ["Effective policy preview", ...lines]
       .slice(0, maximum)
-      .map((line) => truncateToWidth(this.theme.fg("dim", line), width, ""));
+      .map((line) => truncateToWidth(this.theme.fg("dim", line), width, "…"));
   }
 
   private thinkingValue(field: ThinkingField): string {
@@ -625,10 +649,10 @@ export class DelegatePanel implements Component, Focusable {
     const local = this.draft.thinking;
     if (local && Object.hasOwn(local, key)) {
       const policy = local[key];
-      return policy ? `${thinkingSummary(policy)} (session)` : "unset (session)";
+      return policy ? thinkingSummary(policy) : "unset";
     }
     const global = this.global.thinking?.[key];
-    return global ? `${thinkingSummary(global)} (global)` : "unset";
+    return global ? thinkingSummary(global) : "unset";
   }
 
   /** The selectable thinking levels come from the role's resolved model only. */
