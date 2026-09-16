@@ -25,7 +25,7 @@ There is no separate off shortcut: run `/delegate off` or choose `off` in the ed
 
 ## 2. Edit the panel
 
-The panel starts with an **Effective policy preview**. It summarizes effective intensity, task fit before preference, active preference behavior, enabled and disabled ordinary roles, exact role bases, and the requirement to choose thinking per launch. It also shows each setting's effective value and built-in, global, and session sources.
+The panel starts with an **Effective policy preview**. It summarizes effective intensity, task fit before preference, active preference behavior, enabled and disabled ordinary roles, exact role bases, and each covered role's thinking policy or `:per-run` state. It also shows each setting's effective value and built-in, global, and session sources.
 
 Move with `Up` and `Down`; press `Enter` or `Space` to edit. Every model field, including Small, Medium, Large, and Visual Design, starts with two pinned keyboard-selectable rows:
 
@@ -33,6 +33,10 @@ Move with `Up` and `Down`; press `Enter` or `Space` to edit. Every model field, 
 2. **Disable for this session**.
 
 The selector shows the model ID first and `[provider]` last. Type to fuzzy-search provider, model ID, or display name. At most 10 model rows are visible; use `Page Up` and `Page Down` for longer results. When Pi supplies public model metadata, the selected row can show name, API, reasoning support, context window, and maximum output. The metadata is transient and not saved.
+
+**Small thinking**, **Medium thinking**, **Large thinking**, and **Visual Design thinking** set the optional per-role thinking policy. Each row shows the effective policy and its source, as `fixed high (session)`, `range low..high inclusive (global)`, or `unset`. Editing one offers **Use global default** (which drops the session override), **Unset for this session (no policy)**, **Fixed level…**, and **Range (min–max)…**. A range asks for the minimum and then for the maximum, and the maximum list never goes below the chosen minimum.
+
+Both level lists contain only the levels the role's configured model supports, in canonical order. When the role is disabled or not configured, or its model is not selectable in the panel, the panel states the reason and offers only the two unset actions. Fixed and range remain distinguishable from their text, not only from colour.
 
 The panel keeps one explicit draft:
 
@@ -56,9 +60,9 @@ At or above that size, both pinned actions and at least one model row remain vis
 
 Applied changes affect the **next agent run**. Pi rebuilds the system prompt for each run, so turning the policy off excludes a policy block from later runs; an agent already running keeps its starting prompt.
 
-An active policy requires each ordinary role to be explicitly enabled with a valid exact reference or disabled, plus at least one enabled ordinary role. A configured Visual Design reference is also validated. Before every delegated launch, use the selected exact `provider/model` base and choose thinking for that task. With `pi-subagents`, append the selected level as `model: "provider/model:LEVEL"`; use a separate per-run thinking field when another launcher provides one.
+An active policy requires each ordinary role to be explicitly enabled with a valid exact reference or disabled, plus at least one enabled ordinary role. A configured Visual Design reference is also validated. Before every delegated launch, use the selected exact `provider/model` base and that role's thinking policy. With no policy, choose the level for that task from demand, difficulty, quantity, risk, review cost, and the selected model's capabilities. With a fixed policy, use exactly that level and do not change it. With a range policy, use a level inside its inclusive bounds. A bound policy is not an ambient launcher default and is never inherited by another role or by the main agent. With `pi-subagents`, append the chosen or fixed level as `model: "provider/model:LEVEL"`; a fixed policy shows its literal level in the role line instead of the `LEVEL` placeholder. Use a separate per-run thinking field when another launcher provides one.
 
-An invalid enabled reference produces `D:ERR` and no policy, so it is never rerouted. With a valid partial configuration, guidance may select another configured enabled role only when it can satisfy the task; it never invents a role, model, or thinking level. When Visual Design is configured, every task or phase evaluates its four eligibility conditions before ordinary-role selection. For an eligible visual portion that is already being delegated, or whose delegation the active intensity requires, it takes priority over Small, Medium, and Large; reevaluate when the task or phase changes. This does not make `normal` or `aggressive` delegate more work.
+An invalid enabled reference produces `D:ERR` and no policy, so it is never rerouted. A well-formed thinking level the role's resolved model does not support is also `D:ERR`, and the detail names the role, the level, and the model. With a valid partial configuration, guidance may select another configured enabled role only when it can satisfy the task; it never invents a role, model, or thinking level and never clamps a level to fit. When Visual Design is configured, every task or phase evaluates its four eligibility conditions before ordinary-role selection. For an eligible visual portion that is already being delegated, or whose delegation the active intensity requires, it takes priority over Small, Medium, and Large; reevaluate when the task or phase changes. This does not make `normal` or `aggressive` delegate more work.
 
 ## 5. Read the footer and status output
 
@@ -68,15 +72,17 @@ An invalid enabled reference produces `D:ERR` and no policy, so it is never rero
 | `D:NORM` | A valid `normal` configuration is active.                    | Delegate only with clear expected benefit.                                                                                                         |
 | `D:AGG`  | A valid `aggressive` configuration is active.                | Delegate suitable substantial work unless coupling or overhead dominates.                                                                          |
 | `D:ORCH` | A valid `orchestrator` configuration is active.              | Published `0.9.0`: delegate all transferable execution first; retain final acceptance. Published `0.7.0` retains its permissive historical policy. |
-| `D:ERR`  | An active configuration is invalid. No policy is injected.   | Inspect `/delegate status` and correct the role.                                                                                                   |
+| `D:ERR`  | An active configuration is invalid. No policy is injected.   | Inspect `/delegate status` and correct the role or thinking policy.                                                                                |
 
 `/delegate status` keeps stable tokens and reports exact effective references and sources, for example:
 
 ```text
 small=disabled (session) | medium=provider/example-medium (global) | large=not configured (default)
+ui-design=disabled (default) | thinking-small=fixed:high (global) | thinking-medium=range:low..high (session)
+thinking-large=unset (default) | thinking-ui-design=unset (default)
 ```
 
-The source is `default`, `global`, or `session`. The stable Visual Design token remains `ui-design=`. A sanitized restoration warning can accompany `D:OFF` when the latest stored state is invalid or from a future schema; it neither enables injection nor reveals session content.
+The source is `default`, `global`, or `session`. The stable Visual Design token remains `ui-design=`. Each role also reports its thinking policy as `unset`, `fixed:<level>`, or `range:<min>..<max>`. The token says what the policy allows, not which level a launch used; that per-run choice is never stored. `unset (session)` means the branch keeps no policy even when global defaults set one. A sanitized restoration warning can accompany `D:OFF` when the latest stored state is invalid or from a future schema, including a malformed `thinking` entry; it neither enables injection nor reveals session content.
 
 ## 6. Use ContextShunt safely
 
@@ -91,6 +97,9 @@ A blocked call can be narrowed, or a real user can approve its matching next cal
 1. Run `/delegate status` and read the reported role and detail.
 2. Check that every ordinary role has an exact current-scope model or is explicitly disabled. Check Visual Design if configured.
 3. Confirm each enabled model is authenticated, available, and in scope; the extension has no model fallback.
-4. Apply the corrected draft, run `/delegate status` again, and wait for the next agent run.
+4. Read the `thinking-<role>` token of the role in the detail. A `fixed:<level>` or `range:<min>..<max>` policy that names a level the role's model does not support produces this error; change the policy or the model.
+5. Apply the corrected draft, run `/delegate status` again, and wait for the next agent run.
+
+A malformed `thinking` entry is not part of this list: it invalidates the whole document, so no policy is injected at all and the sanitized warning in section 5 applies instead.
 
 See [configuration](/pi-delegation-policy/configuration/) for inheritance and policy meanings, and [limits and privacy](/pi-delegation-policy/limits-and-privacy/) for the fail-closed boundary.

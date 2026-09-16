@@ -116,19 +116,43 @@ test("schema, parser, example, and documentation accept the same ContextShunt pa
     assert.equal(validate(value), false, pattern);
     assert.equal(parseConfig(value), undefined, pattern);
   }
+  for (const answerMaxBytes of [1024, 16384]) {
+    assert.equal(
+      validate({
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        contextShunt: { readerEnabled: true, answerMaxBytes },
+      }),
+      true,
+    );
+  }
+  for (const contextShunt of [
+    { readerEnabled: "true" },
+    { answerMaxBytes: 1023 },
+    { answerMaxBytes: 16385 },
+    { limits: { readerOutputBytes: 8192 } },
+    { extra: true },
+  ]) {
+    assert.equal(validate({ schemaVersion: CURRENT_SCHEMA_VERSION, contextShunt }), false);
+  }
 
   const example = JSON.parse(await readFile(join(process.cwd(), "examples/global.json"), "utf8"));
-  assert.equal(validate(example), true, JSON.stringify(validate.errors));
-  assert.ok(parseConfig(example));
+  assert.equal(example.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.equal(validate(example), true, "the example must match the schema the code writes");
+  assert.ok(parseConfig(example), "the example stays readable");
+
   const configuration = await readFile(
     join(process.cwd(), "wiki/src/content/docs/configuration.md"),
     "utf8",
   );
   const documented = /```json\s*([\s\S]*?)```/.exec(configuration)?.[1];
-  assert.ok(documented);
+  assert.ok(documented, "the configuration page must document a JSON example");
   const documentedValue = JSON.parse(documented);
-  assert.equal(validate(documentedValue), true, JSON.stringify(validate.errors));
-  assert.ok(parseConfig(documentedValue));
+  assert.equal(
+    validate(documentedValue),
+    true,
+    `documented example must match the schema: ${JSON.stringify(validate.errors)}`,
+  );
+  assert.ok(parseConfig(documentedValue), "the documented example stays readable");
 });
 
 test("schema 2, 3, and 4 configurations accept legacy limits without reserializing them", async () => {
@@ -154,13 +178,91 @@ test("schema 2, 3, and 4 configurations accept legacy limits without reserializi
     }),
     undefined,
   );
+  assert.equal(
+    parseConfig({ ...schema4, contextShunt: { readerEnabled: true } }),
+    undefined,
+    "schema 4 rejects schema 5 reader fields",
+  );
 
   const directory = await mkdtemp(join(tmpdir(), "pi-delegation-policy-config-"));
   try {
     const path = join(directory, "delegation-policy.json");
     await writeConfig(path, parsed);
     const saved = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
     assert.equal("readerOutputBytes" in (saved.contextShunt?.limits ?? {}), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("schema 6 reader fields validate, inherit independently, and save only with material ContextShunt defaults", async () => {
+  for (const answerMaxBytes of [1024, 16384]) {
+    const value = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      contextShunt: { readerEnabled: true, answerMaxBytes },
+    };
+    assert.ok(parseConfig(value));
+    assert.ok(parseSessionState(value));
+  }
+  for (const contextShunt of [
+    { readerEnabled: "true" },
+    { answerMaxBytes: 1023 },
+    { answerMaxBytes: 16385 },
+    { answerMaxBytes: 8192.5 },
+    { unexpected: true },
+    { limits: { readerOutputBytes: 8192 } },
+  ]) {
+    assert.equal(parseConfig({ schemaVersion: CURRENT_SCHEMA_VERSION, contextShunt }), undefined);
+    assert.equal(
+      parseSessionState({ schemaVersion: CURRENT_SCHEMA_VERSION, contextShunt }),
+      undefined,
+    );
+  }
+
+  const effective = resolveDelegateState(
+    {
+      ...defaults,
+      contextShunt: { readerEnabled: true, readerRole: "medium", answerMaxBytes: 1024 },
+    },
+    {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      contextShunt: { readerRole: "large", answerMaxBytes: 16384 },
+    },
+  );
+  assert.equal(effective.contextShunt.readerEnabled, true);
+  assert.equal(effective.contextShunt.readerRole, "large");
+  assert.equal(effective.contextShunt.answerMaxBytes, 16384);
+  assert.deepEqual(
+    {
+      readerEnabled: effective.contextShunt.source.readerEnabled,
+      readerRole: effective.contextShunt.source.readerRole,
+      answerMaxBytes: effective.contextShunt.source.answerMaxBytes,
+    },
+    { readerEnabled: "global", readerRole: "session", answerMaxBytes: "session" },
+  );
+  assert.equal(
+    defaultsFromEffectiveState(
+      resolveDelegateState(defaults, { schemaVersion: CURRENT_SCHEMA_VERSION }),
+    ).contextShunt,
+    undefined,
+  );
+  const savedDefaults = defaultsFromEffectiveState(effective);
+  assert.deepEqual(savedDefaults.contextShunt?.readerEnabled, true);
+  assert.deepEqual(savedDefaults.contextShunt?.answerMaxBytes, 16384);
+
+  const directory = await mkdtemp(join(tmpdir(), "pi-delegation-policy-config-"));
+  try {
+    const path = join(directory, "delegation-policy.json");
+    await writeConfig(path, savedDefaults);
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
+    assert.equal(saved.contextShunt.answerMaxBytes, 16384);
+    await assert.rejects(
+      writeConfig(path, { ...savedDefaults, schemaVersion: 4 } as never),
+      /Refusing to write invalid delegation policy defaults/,
+    );
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), saved);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1085,7 +1187,7 @@ test("tool hooks do not read session state or inspect provenance while ContextSh
   });
 });
 
-test("Context advanced stages reader role, limits, patterns, reset, and disabled-role diagnostics", () => {
+test("Context advanced stages reader enabled, role, answer cap, and reset with keyboard focus", () => {
   const terminal = { rows: 30 };
   const panel = new DelegatePanel({
     tui: { terminal, requestRender: () => undefined } as never,
@@ -1094,7 +1196,7 @@ test("Context advanced stages reader role, limits, patterns, reset, and disabled
       bg: (_: string, text: string) => text,
       bold: (text: string) => text,
     } as never,
-    global: { ...defaults, small: null, contextShunt: { mode: "enforce" } },
+    global: { ...defaults, contextShunt: { mode: "enforce", readerEnabled: false } },
     session: { schemaVersion: CURRENT_SCHEMA_VERSION },
     candidates: [model(small), model(medium), model(large)] as never,
     diagnostics: [],
@@ -1119,24 +1221,40 @@ test("Context advanced stages reader role, limits, patterns, reset, and disabled
   );
   for (let index = 0; index < 7; index += 1) panel.handleInput("\x1b[B");
   panel.handleInput("\r");
-  assert.match(panel.render(100).join("\n"), /small is disabled/);
-  assert.match(panel.render(100).join("\n"), /effective model unknown; bridge unavailable/);
+  assert.match(panel.render(100).join("\n"), /Reader enabled: off/);
+  assert.match(panel.render(100).join("\n"), /Reader answer max bytes: 8192/);
+  assert.match(panel.render(100).join("\n"), /Reader is disabled\./);
+  assert.doesNotMatch(
+    panel.render(100).join("\n"),
+    /bridge unavailable|effective model unknown|not implemented/,
+  );
+
+  panel.handleInput("\r");
+  panel.handleInput("\x1b[B");
+  panel.handleInput("\x1b[B");
+  panel.handleInput("\r");
+  assert.equal(panel.getDraft().contextShunt?.readerEnabled, true);
+  assert.match(
+    panel.render(100).join("\n"),
+    /Reader role Small is selected; executor is checked\s+only when invoked\./,
+  );
+  assert.doesNotMatch(panel.render(100).join("\n"), /not implemented/);
+
+  panel.handleInput("\x1b[B");
   panel.handleInput("\r");
   panel.handleInput("\x1b[B");
   panel.handleInput("\x1b[B");
   panel.handleInput("\r");
   assert.equal(panel.getDraft().contextShunt?.readerRole, "medium");
+
+  panel.handleInput("\x1b[B");
   panel.handleInput("\x1b[B");
   panel.handleInput("\r");
-  panel.handleInput("9");
+  for (const character of "8193") panel.handleInput(character);
   panel.handleInput("\r");
-  assert.equal(panel.getDraft().contextShunt?.limits?.fullReadLines, 9);
-  for (let index = 0; index < 5; index += 1) panel.handleInput("\x1b[B");
-  panel.handleInput("\r");
-  for (const character of "src/*.ts, docs/*.md") panel.handleInput(character);
-  panel.handleInput("\r");
-  assert.deepEqual(panel.getDraft().contextShunt?.exceptionPatterns, ["src/*.ts", "docs/*.md"]);
-  for (let index = 0; index < 7; index += 1) panel.handleInput("\x1b[B");
+  assert.equal(panel.getDraft().contextShunt?.answerMaxBytes, 8193);
+
+  for (let index = 0; index < 9; index += 1) panel.handleInput("\x1b[B");
   panel.handleInput("\r");
   assert.equal(panel.getDraft().contextShunt, undefined);
 });
@@ -1187,6 +1305,8 @@ test("Use global default for Context protection preserves advanced session field
   });
   panel.handleInput("\x1b[B");
   panel.handleInput("\x1b[B");
+  panel.handleInput("\x1b[F");
+  for (let index = 0; index < 3; index += 1) panel.handleInput("\x1b[A");
   panel.handleInput("\r");
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(applied, panel.getDraft());

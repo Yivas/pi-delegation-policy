@@ -699,16 +699,15 @@ export default function adversarialExtension(pi) {
     }
     if (mode === "abort" && event.input.path === "abort.txt") {
       await record({ kind: "abort-listener-armed", toolCallId: event.toolCallId });
-      await new Promise((resolve) => {
+      await new Promise((resolve, reject) => {
+        const settle = () => {
+          record({ kind: "abort-listener-fired", toolCallId: event.toolCallId }).then(resolve, reject);
+        };
         if (ctx.signal?.aborted) {
-          void record({ kind: "abort-listener-fired", toolCallId: event.toolCallId });
-          resolve();
+          settle();
           return;
         }
-        ctx.signal?.addEventListener("abort", () => {
-          void record({ kind: "abort-listener-fired", toolCallId: event.toolCallId });
-          resolve();
-        }, { once: true });
+        ctx.signal?.addEventListener("abort", settle, { once: true });
       });
     }
     return undefined;

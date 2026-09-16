@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "citationConvention": { "lineNumbers": "1-indexed", "ranges": "inclusive" },
+  "lineSplitting": {
+    "recognizedTerminators": ["LF", "CRLF", "CR"],
+    "terminalTerminatorAddsLine": false
+  },
+  "corpus": {
+    "path": "corpus.txt",
+    "expectedSplitLineCount": 620,
+    "encoding": "utf-8",
+    "physicalLineEnding": "LF"
+  },
+  "cases": [
+    {
+      "id": "c01-small-file",
+      "class": "small-file",
+      "mode": "semantic",
+      "source": { "lineRange": [1, 10] },
+      "question": "Which lockers contain the compass and the signal lamp?",
+      "expectedId": "c01-small-file"
+    },
+    {
+      "id": "c02-short-205-lines",
+      "class": "short-205-lines",
+      "mode": "semantic",
+      "source": { "lineRange": [1, 205] },
+      "question": "What does the inclusive 205-line boundary allow?",
+      "expectedId": "c02-short-205-lines"
+    },
+    {
+      "id": "c03-large-full-read",
+      "class": "large-full-read",
+      "mode": "semantic",
+      "source": { "lineRange": [1, 620] },
+      "question": "Name the western and eastern boundaries in the full source.",
+      "expectedId": "c03-large-full-read"
+    },
+    {
+      "id": "c04-targeted-read",
+      "class": "targeted-read",
+      "mode": "semantic",
+      "readRequest": { "offset": 206, "limit": 5 },
+      "source": { "lineRange": [206, 210] },
+      "question": "What does the targeted window say about its start and marker?",
+      "expectedId": "c04-targeted-read"
+    },
+    {
+      "id": "c05-repeated-query",
+      "class": "repeated-query",
+      "mode": "semantic",
+      "source": { "lineRange": [211, 213] },
+      "question": "What is the archive label?",
+      "repetitions": 2,
+      "expectedId": "c05-repeated-query"
+    },
+    {
+      "id": "c06-unicode",
+      "class": "unicode",
+      "mode": "semantic",
+      "source": { "lineRange": [214, 215] },
+      "question": "What are the café sign and route marker?",
+      "expectedId": "c06-unicode"
+    },
+    {
+      "id": "c07-crlf",
+      "class": "crlf",
+      "mode": "semantic",
+      "source": { "lineRange": [216, 219] },
+      "materialization": {
+        "fromCorpus": { "lineRange": [216, 219] },
+        "lineEnding": "CRLF",
+        "terminalLineEnding": false
+      },
+      "question": "List the four tree records in order.",
+      "expectedId": "c07-crlf"
+    },
+    {
+      "id": "c08-long-line",
+      "class": "long-line",
+      "mode": "semantic",
+      "source": { "lineRange": [230, 230] },
+      "question": "What longitude does the long record identify?",
+      "expectedId": "c08-long-line"
+    },
+    {
+      "id": "c09-pre-truncated-result",
+      "class": "pre-truncated-result",
+      "mode": "semantic",
+      "source": { "lineRange": [240, 248] },
+      "hostResult": { "returnedLineRange": [240, 242], "truncated": true },
+      "question": "What can be established from the returned fragment?",
+      "expectedId": "c09-pre-truncated-result"
+    },
+    {
+      "id": "c10-multi-fragment-search",
+      "class": "multi-fragment-search",
+      "mode": "semantic",
+      "source": {
+        "lineRanges": [
+          [260, 261],
+          [280, 281]
+        ]
+      },
+      "question": "Which material belongs to each station, and when was each check?",
+      "expectedId": "c10-multi-fragment-search"
+    },
+    {
+      "id": "c11-json-uncovered",
+      "class": "json-uncovered",
+      "mode": "contract-only",
+      "input": {
+        "toolResult": "{\"records\":[{\"station\":\"delta\",\"status\":\"ok\"}],\"next\":null}"
+      },
+      "expectedId": "c11-json-uncovered"
+    },
+    {
+      "id": "c12-failure-or-quota",
+      "class": "failure-or-quota",
+      "mode": "contract-only",
+      "input": { "conditions": ["reader-unavailable", "artifact-quota-exhausted"] },
+      "expectedId": "c12-failure-or-quota"
+    }
+  ]
+}

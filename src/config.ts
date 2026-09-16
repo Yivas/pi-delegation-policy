@@ -14,11 +14,18 @@ import {
   INTENSITIES,
   type Intensity,
   MODEL_ROLES,
+  type ModelConfigKey,
   type ModelRef,
   type ModelRole,
   type OrdinaryRoleSetting,
   type Preference,
   type SessionDelegateState,
+  type SessionThinkingSettings,
+  THINKING_LEVEL_NAMES,
+  THINKING_ROLE_KEYS,
+  type ThinkingLevelName,
+  type ThinkingPolicy,
+  type ThinkingSettings,
   type ValueSource,
 } from "./types.ts";
 
@@ -41,6 +48,8 @@ const SCHEMA2_KEYS = [
 ] as const;
 const SCHEMA3_KEYS = SCHEMA2_KEYS;
 const SCHEMA4_KEYS = [...SCHEMA2_KEYS, "contextShunt"] as const;
+const SCHEMA5_KEYS = SCHEMA4_KEYS;
+const SCHEMA6_KEYS = [...SCHEMA5_KEYS, "thinking"] as const;
 const DEFAULT_LIMITS = {
   fullReadLines: 350,
   fullReadBytes: 16384,
@@ -49,6 +58,9 @@ const DEFAULT_LIMITS = {
 } as const;
 const LEGACY_LIMIT_KEYS = [...Object.keys(DEFAULT_LIMITS), "readerOutputBytes"] as const;
 const MAX_LIMIT = 1024 * 1024;
+const DEFAULT_ANSWER_MAX_BYTES = 8192;
+const MIN_ANSWER_MAX_BYTES = 1024;
+const MAX_ANSWER_MAX_BYTES = 16384;
 
 export type ConfigDiagnostic = { message: string; reportWhenOff?: boolean };
 export type LoadedDefaults = {
@@ -110,6 +122,44 @@ function model(value: unknown): ModelRef | undefined {
 function ordinary(value: unknown): OrdinaryRoleSetting | undefined {
   return value === null ? null : model(value);
 }
+/** A thinking level name the host recognizes. Anything else invalidates the document. */
+export function isThinkingLevelName(value: unknown): value is ThinkingLevelName {
+  return typeof value === "string" && (THINKING_LEVEL_NAMES as readonly string[]).includes(value);
+}
+function thinkingPolicy(value: unknown): ThinkingPolicy | undefined {
+  if (!isRecord(value)) return undefined;
+  if (only(value, ["level"])) {
+    const level = value.level;
+    return isThinkingLevelName(level) ? { level } : undefined;
+  }
+  if (only(value, ["min", "max"])) {
+    const min = value.min;
+    const max = value.max;
+    if (!isThinkingLevelName(min) || !isThinkingLevelName(max)) return undefined;
+    if (THINKING_LEVEL_NAMES.indexOf(min) > THINKING_LEVEL_NAMES.indexOf(max)) return undefined;
+    return min === max ? { level: min } : { min, max };
+  }
+  return undefined;
+}
+function parseThinking(
+  value: unknown,
+  session: boolean,
+): ThinkingSettings | SessionThinkingSettings | undefined {
+  if (!isRecord(value) || !only(value, THINKING_ROLE_KEYS)) return undefined;
+  const thinking: SessionThinkingSettings = {};
+  for (const key of THINKING_ROLE_KEYS) {
+    if (!Object.hasOwn(value, key)) continue;
+    const raw = value[key];
+    if (session && raw === null) {
+      thinking[key] = null;
+      continue;
+    }
+    const policy = thinkingPolicy(raw);
+    if (!policy) return undefined;
+    thinking[key] = policy;
+  }
+  return thinking;
+}
 function copyRole(value: OrdinaryRoleSetting | undefined): OrdinaryRoleSetting | undefined {
   return value === null ? null : value ? { ...value } : undefined;
 }
@@ -133,28 +183,38 @@ function patterns(value: unknown): string[] | undefined {
     return undefined;
   return [...value];
 }
-function parseShunt(value: unknown): ContextShuntSettings | undefined {
-  if (
-    !isRecord(value) ||
-    !only(value, [
-      "mode",
-      "readerRole",
-      "limits",
-      "shell",
-      "metrics",
-      "exceptionPatterns",
-      "delegationHintPatterns",
-    ])
-  )
-    return undefined;
+function validAnswerMaxBytes(value: unknown): value is number {
+  return (
+    Number.isInteger(value) &&
+    (value as number) >= MIN_ANSWER_MAX_BYTES &&
+    (value as number) <= MAX_ANSWER_MAX_BYTES
+  );
+}
+function parseShunt(value: unknown, schema: 4 | 5 | 6): ContextShuntSettings | undefined {
+  const keys = [
+    "mode",
+    "readerRole",
+    "limits",
+    "shell",
+    "metrics",
+    "exceptionPatterns",
+    "delegationHintPatterns",
+    ...(schema === 4 ? [] : ["readerEnabled", "answerMaxBytes"]),
+  ];
+  if (!isRecord(value) || !only(value, keys)) return undefined;
   if (value.mode !== undefined && !CONTEXT_SHUNT_MODES.includes(value.mode as never))
     return undefined;
+  if (value.readerEnabled !== undefined && typeof value.readerEnabled !== "boolean")
+    return undefined;
   if (value.readerRole !== undefined && !isRole(value.readerRole)) return undefined;
+  if (value.answerMaxBytes !== undefined && !validAnswerMaxBytes(value.answerMaxBytes))
+    return undefined;
   if (value.shell !== undefined && value.shell !== "conservative") return undefined;
   if (value.metrics !== undefined && value.metrics !== "memory") return undefined;
   let limits: ContextShuntLimits | undefined;
   if (value.limits !== undefined) {
-    if (!isRecord(value.limits) || !only(value.limits, LEGACY_LIMIT_KEYS)) return undefined;
+    const limitKeys = schema === 4 ? LEGACY_LIMIT_KEYS : Object.keys(DEFAULT_LIMITS);
+    if (!isRecord(value.limits) || !only(value.limits, limitKeys)) return undefined;
     if (Object.values(value.limits).some((item) => !validLimit(item))) return undefined;
     const effectiveLimits = { ...value.limits };
     delete effectiveLimits.readerOutputBytes;
@@ -171,7 +231,11 @@ function parseShunt(value: unknown): ContextShuntSettings | undefined {
     return undefined;
   return {
     ...(value.mode ? { mode: value.mode as ContextShuntSettings["mode"] } : {}),
+    ...(value.readerEnabled !== undefined ? { readerEnabled: value.readerEnabled as boolean } : {}),
     ...(value.readerRole ? { readerRole: value.readerRole as ModelRole } : {}),
+    ...(value.answerMaxBytes !== undefined
+      ? { answerMaxBytes: value.answerMaxBytes as number }
+      : {}),
     ...(limits ? { limits } : {}),
     ...(value.shell ? { shell: "conservative" as const } : {}),
     ...(value.metrics ? { metrics: "memory" as const } : {}),
@@ -181,7 +245,7 @@ function parseShunt(value: unknown): ContextShuntSettings | undefined {
 }
 function envelope(
   value: unknown,
-  schema: 2 | 3 | 4,
+  schema: 2 | 3 | 4 | 5 | 6,
   keys: readonly string[],
   intensityValidator: (value: unknown) => boolean,
 ): value is Record<string, unknown> {
@@ -227,10 +291,17 @@ export function parseSchema2Config(value: unknown): Schema2Config | undefined {
 }
 function parseModern(
   value: unknown,
-  schema: 3 | 4,
+  schema: 3 | 4 | 5 | 6,
   session: boolean,
 ): GlobalDefaults | SessionDelegateState | undefined {
-  const keys = schema === 3 ? SCHEMA3_KEYS : SCHEMA4_KEYS;
+  const keys =
+    schema === 3
+      ? SCHEMA3_KEYS
+      : schema === 4
+        ? SCHEMA4_KEYS
+        : schema === 5
+          ? SCHEMA5_KEYS
+          : SCHEMA6_KEYS;
   if (!envelope(value, schema, keys, isIntensity)) return undefined;
   const small = value.small === undefined ? undefined : ordinary(value.small);
   const medium = value.medium === undefined ? undefined : ordinary(value.medium);
@@ -246,9 +317,18 @@ function parseModern(
     (value.uiDesign !== undefined && uiDesign === undefined)
   )
     return undefined;
+  const supportsContextShunt = schema === 4 || schema === 5 || schema === 6;
   const contextShunt =
-    schema === 4 && value.contextShunt !== undefined ? parseShunt(value.contextShunt) : undefined;
-  if (schema === 4 && value.contextShunt !== undefined && !contextShunt) return undefined;
+    supportsContextShunt && value.contextShunt !== undefined
+      ? parseShunt(value.contextShunt, schema as 4 | 5 | 6)
+      : undefined;
+  if (supportsContextShunt && value.contextShunt !== undefined && !contextShunt) return undefined;
+  const supportsThinking = schema === 6;
+  const thinking =
+    supportsThinking && value.thinking !== undefined
+      ? parseThinking(value.thinking, session)
+      : undefined;
+  if (supportsThinking && value.thinking !== undefined && !thinking) return undefined;
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
@@ -261,6 +341,9 @@ function parseModern(
       : uiDesign
         ? { uiDesign: uiDesign as ModelRef }
         : {}),
+    ...(thinking && Object.keys(thinking).length
+      ? { thinking: thinking as SessionThinkingSettings }
+      : {}),
     ...(contextShunt ? { contextShunt } : {}),
   } as GlobalDefaults | SessionDelegateState;
 }
@@ -269,6 +352,12 @@ export function parseSchema3Config(value: unknown): GlobalDefaults | undefined {
 }
 export function parseSchema4Config(value: unknown): GlobalDefaults | undefined {
   return parseModern(value, 4, false) as GlobalDefaults | undefined;
+}
+export function parseSchema5Config(value: unknown): GlobalDefaults | undefined {
+  return parseModern(value, 5, false) as GlobalDefaults | undefined;
+}
+export function parseSchema6Config(value: unknown): GlobalDefaults | undefined {
+  return parseModern(value, 6, false) as GlobalDefaults | undefined;
 }
 function migrate2(value: Schema2Config | Schema2Session): SessionDelegateState {
   return {
@@ -287,6 +376,8 @@ function migrate2(value: Schema2Config | Schema2Session): SessionDelegateState {
 }
 export function parseConfig(value: unknown): GlobalDefaults | undefined {
   return (
+    parseSchema6Config(value) ??
+    parseSchema5Config(value) ??
     parseSchema4Config(value) ??
     parseSchema3Config(value) ??
     (() => {
@@ -313,6 +404,8 @@ function parseSchema2Session(value: unknown): Schema2Session | undefined {
 }
 export function parseSessionState(value: unknown): SessionDelegateState | undefined {
   return (
+    (parseModern(value, 6, true) as SessionDelegateState | undefined) ??
+    (parseModern(value, 5, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 4, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 3, true) as SessionDelegateState | undefined) ??
     (() => {
@@ -363,7 +456,7 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
   }
 }
 export async function writeConfig(path: string, defaults: GlobalDefaults): Promise<void> {
-  const parsed = parseSchema4Config(defaults);
+  const parsed = parseSchema6Config(defaults);
   if (!parsed) throw new Error("Refusing to write invalid delegation policy defaults.");
   await atomicWrite(path, parsed);
 }
@@ -386,6 +479,38 @@ export function restoreSessionState(entries: unknown[]): SessionDelegateState {
 }
 function source(session: Record<string, unknown>, globalValue: unknown, key: string): ValueSource {
   return Object.hasOwn(session, key) ? "session" : globalValue !== undefined ? "global" : "default";
+}
+function copyPolicy(policy: ThinkingPolicy): ThinkingPolicy {
+  return "level" in policy ? { level: policy.level } : { min: policy.min, max: policy.max };
+}
+function copyThinking(settings: ThinkingSettings): ThinkingSettings {
+  return Object.fromEntries(
+    Object.entries(settings).map(([key, policy]) => [key, copyPolicy(policy)]),
+  ) as ThinkingSettings;
+}
+/** Session `null` means "no policy in this branch"; a bound policy never inherits `null`. */
+function resolveThinking(
+  defaults: GlobalDefaults,
+  session: SessionDelegateState,
+): { thinking: ThinkingSettings; source: Record<ModelConfigKey, ValueSource> } {
+  const global = defaults.thinking ?? {};
+  const local = session.thinking ?? {};
+  const thinking: ThinkingSettings = {};
+  const source = Object.fromEntries(THINKING_ROLE_KEYS.map((key) => [key, "default"])) as Record<
+    ModelConfigKey,
+    ValueSource
+  >;
+  for (const key of THINKING_ROLE_KEYS) {
+    if (Object.hasOwn(local, key)) {
+      source[key] = "session";
+      const policy = local[key];
+      if (policy) thinking[key] = copyPolicy(policy);
+    } else if (Object.hasOwn(global, key)) {
+      source[key] = "global";
+      thinking[key] = copyPolicy(global[key]!);
+    }
+  }
+  return { thinking, source };
 }
 function resolveShunt(
   defaults: GlobalDefaults,
@@ -417,7 +542,9 @@ function resolveShunt(
   return {
     mode: suspended ? "off" : configuredMode,
     configuredMode,
+    readerEnabled: choose("readerEnabled", false),
     readerRole: choose("readerRole", "small" as const),
+    answerMaxBytes: choose("answerMaxBytes", DEFAULT_ANSWER_MAX_BYTES),
     limits,
     shell: choose("shell", "conservative" as const),
     metrics: choose("metrics", "memory" as const),
@@ -426,7 +553,9 @@ function resolveShunt(
     suspended,
     source: {
       mode: keySource("mode"),
+      readerEnabled: keySource("readerEnabled"),
       readerRole: keySource("readerRole"),
+      answerMaxBytes: keySource("answerMaxBytes"),
       limits: keySource("limits"),
       shell: keySource("shell"),
       metrics: keySource("metrics"),
@@ -453,6 +582,7 @@ export function resolveDelegateState(
   const small = role("small");
   const medium = role("medium");
   const large = role("large");
+  const { thinking, source: thinkingSource } = resolveThinking(defaults, session);
   return {
     intensity,
     preference: session.preference ?? defaults.preference ?? "standard",
@@ -460,6 +590,7 @@ export function resolveDelegateState(
     ...(medium !== undefined ? { medium } : {}),
     ...(large !== undefined ? { large } : {}),
     ...(uiDesign ? { uiDesign } : {}),
+    thinking,
     contextShunt: resolveShunt(defaults, session, intensity),
     source: {
       intensity: source(session, defaults.intensity, "intensity"),
@@ -468,6 +599,7 @@ export function resolveDelegateState(
       medium: source(session, defaults.medium, "medium"),
       large: source(session, defaults.large, "large"),
       uiDesign: source(session, defaults.uiDesign, "uiDesign"),
+      thinking: thinkingSource,
     },
   };
 }
@@ -486,11 +618,14 @@ export function defaultsFromEffectiveState(state: EffectiveDelegateState): Globa
     ...("value" in role(state.medium) ? { medium: role(state.medium).value } : {}),
     ...("value" in role(state.large) ? { large: role(state.large).value } : {}),
     ...(state.uiDesign ? { uiDesign: { ...state.uiDesign } } : {}),
+    ...(Object.keys(state.thinking).length ? { thinking: copyThinking(state.thinking) } : {}),
     ...(hasConfiguredContext
       ? {
           contextShunt: {
             mode: context.configuredMode,
+            readerEnabled: context.readerEnabled,
             readerRole: context.readerRole,
+            answerMaxBytes: context.answerMaxBytes,
             limits: { ...context.limits },
             shell: context.shell,
             metrics: context.metrics,

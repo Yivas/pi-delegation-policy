@@ -5,13 +5,14 @@
   "type": "object",
   "required": ["schemaVersion"],
   "properties": {
-    "schemaVersion": { "const": 4 },
+    "schemaVersion": { "const": 6 },
     "intensity": { "enum": ["off", "normal", "aggressive", "orchestrator"] },
     "preference": { "enum": ["efficient", "standard", "intensive"] },
     "small": { "$ref": "#/$defs/ordinaryRole" },
     "medium": { "$ref": "#/$defs/ordinaryRole" },
     "large": { "$ref": "#/$defs/ordinaryRole" },
     "uiDesign": { "$ref": "#/$defs/modelRef" },
+    "thinking": { "$ref": "#/$defs/thinking" },
     "contextShunt": { "$ref": "#/$defs/contextShunt" }
   },
   "$defs": {
@@ -25,6 +26,38 @@
       "additionalProperties": false
     },
     "ordinaryRole": { "anyOf": [{ "$ref": "#/$defs/modelRef" }, { "type": "null" }] },
+    "thinkingLevel": {
+      "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    },
+    "roleThinking": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["level"],
+          "properties": { "level": { "$ref": "#/$defs/thinkingLevel" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "$ref": "#/$defs/thinkingLevel" },
+            "max": { "$ref": "#/$defs/thinkingLevel" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "thinking": {
+      "type": "object",
+      "properties": {
+        "small": { "$ref": "#/$defs/roleThinking" },
+        "medium": { "$ref": "#/$defs/roleThinking" },
+        "large": { "$ref": "#/$defs/roleThinking" },
+        "uiDesign": { "$ref": "#/$defs/roleThinking" }
+      },
+      "additionalProperties": false
+    },
     "positiveLimit": { "type": "integer", "minimum": 1, "maximum": 1048576 },
     "patterns": {
       "type": "array",
@@ -40,19 +73,16 @@
       "type": "object",
       "properties": {
         "mode": { "enum": ["off", "observe", "enforce"] },
+        "readerEnabled": { "type": "boolean" },
         "readerRole": { "enum": ["small", "medium", "large"] },
+        "answerMaxBytes": { "type": "integer", "minimum": 1024, "maximum": 16384 },
         "limits": {
           "type": "object",
           "properties": {
             "fullReadLines": { "$ref": "#/$defs/positiveLimit" },
             "fullReadBytes": { "$ref": "#/$defs/positiveLimit" },
             "targetedReadLines": { "$ref": "#/$defs/positiveLimit" },
-            "targetedReadBytes": { "$ref": "#/$defs/positiveLimit" },
-            "readerOutputBytes": {
-              "$ref": "#/$defs/positiveLimit",
-              "deprecated": true,
-              "description": "Legacy accepted field. It is validated then ignored and is not written by current versions."
-            }
+            "targetedReadBytes": { "$ref": "#/$defs/positiveLimit" }
           },
           "additionalProperties": false
         },

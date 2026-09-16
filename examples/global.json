@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 6,
   "intensity": "normal",
   "preference": "standard",
   "small": {
@@ -14,6 +14,10 @@
   "uiDesign": {
     "provider": "example-provider",
     "model": "example-ui-design"
+  },
+  "thinking": {
+    "small": { "level": "high" },
+    "medium": { "min": "low", "max": "high" }
   },
   "contextShunt": {
     "mode": "off",

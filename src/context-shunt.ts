@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -236,12 +236,32 @@ export class ContextShuntEngine {
   }
 }
 
-type Artifact = { path: string; bytes: number; expiresAt: number };
+type ArtifactKind = "source" | "derived";
+type Artifact = {
+  kind: ArtifactKind;
+  path: string;
+  bytes: number;
+  expiresAt: number;
+  digest: string;
+  sourceId?: string;
+};
+
+export type SourceSnapshot = Readonly<{
+  sourceId: string;
+  text: string;
+  digest: string;
+  lineCount: number;
+  expiresAt: number;
+}>;
 
 type Timer = ReturnType<typeof setTimeout>;
 type SetTimer = (callback: () => void, delay: number) => Timer;
 type ClearTimer = (timer: Timer) => void;
 type ArtifactWriter = (path: string, payload: Buffer, signal?: AbortSignal) => Promise<void>;
+
+function digest(payload: Buffer): string {
+  return createHash("sha256").update(payload).digest("hex");
+}
 
 function isUtf8Boundary(source: Buffer, offset: number): boolean {
   if (offset < 0 || offset > source.length) return false;
@@ -275,6 +295,7 @@ export type RecoveryResult = { text: string; range: string } | { error: string }
 export class ArtifactStore {
   private directory: string | undefined;
   private readonly artifacts = new Map<string, Artifact>();
+  private readonly sourceSnapshots = new WeakSet<SourceSnapshot>();
   private bytes = 0;
   private readonly now: Clock;
   private readonly setTimer: SetTimer;
@@ -299,63 +320,102 @@ export class ArtifactStore {
   }
 
   async archive(text: string, signal?: AbortSignal): Promise<string | undefined> {
-    if (this.closed || signal?.aborted) return undefined;
+    const payload = Buffer.from(text, "utf8");
+    return this.archivePayload("source", payload, signal);
+  }
+
+  async snapshotSource(id: string): Promise<SourceSnapshot | undefined> {
+    return this.withLock(async () => {
+      if (this.closed) return undefined;
+      await this.purgeUnlocked();
+      const source = await this.readSourceUnlocked(id);
+      if (!source) return undefined;
+      const text = source.payload.toString("utf8");
+      const snapshot: SourceSnapshot = Object.freeze({
+        sourceId: id,
+        text,
+        digest: source.artifact.digest,
+        lineCount: splitLines(text).length,
+        expiresAt: source.artifact.expiresAt,
+      });
+      this.sourceSnapshots.add(snapshot);
+      return snapshot;
+    });
+  }
+
+  async revalidateSource(snapshot: SourceSnapshot): Promise<boolean> {
+    return this.withLock(async () => {
+      if (this.closed) return false;
+      return this.revalidateSourceUnlocked(snapshot);
+    });
+  }
+
+  async archiveDerived(
+    snapshot: SourceSnapshot,
+    text: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
     const payload = Buffer.from(text, "utf8");
     if (payload.byteLength > MAX_ARTIFACT_BYTES) return undefined;
     return this.withLock(async () => {
       if (this.closed || signal?.aborted) return undefined;
-      await this.purgeUnlocked();
+      if (!(await this.revalidateSourceUnlocked(snapshot))) return undefined;
+      const source = this.artifacts.get(snapshot.sourceId);
+      if (!source || source.kind !== "source") return undefined;
       if (
         this.artifacts.size >= MAX_ARTIFACTS ||
         this.bytes + payload.byteLength > MAX_SESSION_BYTES
       ) {
         return undefined;
       }
+      return this.writeUnlocked(
+        `derived-${randomUUID()}`,
+        "derived",
+        payload,
+        source.expiresAt,
+        snapshot.sourceId,
+        signal,
+        () => this.revalidateSourceUnlocked(snapshot),
+      );
+    });
+  }
 
-      try {
-        this.directory ??= await mkdtemp(join(tmpdir(), "pi-delegation-policy-context-"));
-      } catch {
-        return undefined;
+  async discardDerived(answerArtifactId: string, snapshot: SourceSnapshot): Promise<void> {
+    await this.withLock(async () => {
+      if (this.closed || !this.sourceSnapshots.has(snapshot)) return;
+      const artifact = this.artifacts.get(answerArtifactId);
+      if (!artifact || artifact.kind !== "derived" || artifact.sourceId !== snapshot.sourceId) {
+        return;
       }
-      const id = randomUUID();
-      const path = join(this.directory, id);
-      try {
-        await this.writeArtifact(path, payload, signal);
-        if (this.closed || signal?.aborted) return undefined;
-        this.artifacts.set(id, {
-          path,
-          bytes: payload.byteLength,
-          expiresAt: this.now() + ARTIFACT_TTL_MS,
-        });
-        this.bytes += payload.byteLength;
-        this.scheduleCleanup();
-        return id;
-      } catch {
-        return undefined;
-      } finally {
-        if (!this.artifacts.has(id)) await rm(path, { force: true }).catch(() => undefined);
-      }
+      await this.remove(answerArtifactId, artifact);
     });
   }
 
   async recover(request: RecoveryRequest, maxRangeBytes: number): Promise<RecoveryResult> {
     return this.withLock(async () => {
       if (this.closed) return { error: "Recovery artifact is unavailable or expired." };
-      const artifact = this.artifacts.get(request.artifactId);
-      if (!artifact) return { error: "Recovery artifact is unavailable or expired." };
-
       const hasLines = request.lineOffset !== undefined || request.lineLimit !== undefined;
       const hasBytes = request.byteOffset !== undefined || request.maxBytes !== undefined;
       if (hasLines === hasBytes) return { error: "Choose either a line range or a byte range." };
 
       await this.purgeUnlocked();
-      if (!this.artifacts.has(request.artifactId))
-        return { error: "Recovery artifact is unavailable or expired." };
+      const artifact = this.artifacts.get(request.artifactId);
+      if (!artifact) return { error: "Recovery artifact is unavailable or expired." };
+      if (artifact.kind === "derived") {
+        if (!artifact.sourceId || !(await this.readSourceUnlocked(artifact.sourceId)))
+          return { error: "Recovery artifact is unavailable or expired." };
+        if (!this.artifacts.has(request.artifactId))
+          return { error: "Recovery artifact is unavailable or expired." };
+      }
 
       let source: Buffer;
       try {
         source = await readFile(artifact.path);
       } catch {
+        await this.remove(request.artifactId, artifact);
+        return { error: "Recovery artifact is unavailable or expired." };
+      }
+      if (digest(source) !== artifact.digest) {
         await this.remove(request.artifactId, artifact);
         return { error: "Recovery artifact is unavailable or expired." };
       }
@@ -398,6 +458,102 @@ export class ArtifactStore {
     });
   }
 
+  private async archivePayload(
+    kind: "source",
+    payload: Buffer,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    if (this.closed || signal?.aborted || payload.byteLength > MAX_ARTIFACT_BYTES) return undefined;
+    return this.withLock(async () => {
+      if (this.closed || signal?.aborted) return undefined;
+      await this.purgeUnlocked();
+      if (
+        this.artifacts.size >= MAX_ARTIFACTS ||
+        this.bytes + payload.byteLength > MAX_SESSION_BYTES
+      ) {
+        return undefined;
+      }
+      return this.writeUnlocked(
+        randomUUID(),
+        kind,
+        payload,
+        this.now() + ARTIFACT_TTL_MS,
+        undefined,
+        signal,
+      );
+    });
+  }
+
+  private async writeUnlocked(
+    id: string,
+    kind: ArtifactKind,
+    payload: Buffer,
+    expiresAt: number,
+    sourceId: string | undefined,
+    signal?: AbortSignal,
+    stillValid?: () => Promise<boolean>,
+  ): Promise<string | undefined> {
+    try {
+      this.directory ??= await mkdtemp(join(tmpdir(), "pi-delegation-policy-context-"));
+    } catch {
+      return undefined;
+    }
+    const path = join(this.directory, id);
+    try {
+      await this.writeArtifact(path, payload, signal);
+      if (this.closed || signal?.aborted || (stillValid && !(await stillValid()))) return undefined;
+      this.artifacts.set(id, {
+        kind,
+        path,
+        bytes: payload.byteLength,
+        expiresAt,
+        digest: digest(payload),
+        ...(sourceId ? { sourceId } : {}),
+      });
+      this.bytes += payload.byteLength;
+      this.scheduleCleanup();
+      return id;
+    } catch {
+      return undefined;
+    } finally {
+      if (!this.artifacts.has(id)) await rm(path, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private async readSourceUnlocked(
+    id: string,
+  ): Promise<{ artifact: Artifact; payload: Buffer } | undefined> {
+    const artifact = this.artifacts.get(id);
+    if (!artifact || artifact.kind !== "source") return undefined;
+    try {
+      const payload = await readFile(artifact.path);
+      if (digest(payload) !== artifact.digest) {
+        await this.remove(id, artifact);
+        return undefined;
+      }
+      return { artifact, payload };
+    } catch {
+      await this.remove(id, artifact);
+      return undefined;
+    }
+  }
+
+  private async revalidateSourceUnlocked(snapshot: SourceSnapshot): Promise<boolean> {
+    if (!this.sourceSnapshots.has(snapshot)) return false;
+    await this.purgeUnlocked();
+    const source = await this.readSourceUnlocked(snapshot.sourceId);
+    if (!source) return false;
+
+    const text = source.payload.toString("utf8");
+    return (
+      source.artifact.digest === snapshot.digest &&
+      source.artifact.expiresAt === snapshot.expiresAt &&
+      digest(Buffer.from(snapshot.text, "utf8")) === snapshot.digest &&
+      splitLines(snapshot.text).length === snapshot.lineCount &&
+      text === snapshot.text
+    );
+  }
+
   async purge(): Promise<void> {
     if (this.closed) return;
     await this.withLock(() => this.purgeUnlocked());
@@ -429,9 +585,21 @@ export class ArtifactStore {
   }
 
   private async remove(id: string, artifact: Artifact): Promise<void> {
-    this.artifacts.delete(id);
-    this.bytes -= artifact.bytes;
-    await rm(artifact.path, { force: true }).catch(() => undefined);
+    const removed = [[id, artifact] as const];
+    if (artifact.kind === "source") {
+      for (const [derivedId, derived] of this.artifacts) {
+        if (derived.kind === "derived" && derived.sourceId === id)
+          removed.push([derivedId, derived]);
+      }
+    }
+
+    for (const [removedId, removedArtifact] of removed) {
+      this.artifacts.delete(removedId);
+      this.bytes -= removedArtifact.bytes;
+    }
+    await Promise.all(
+      removed.map(([, removedArtifact]) => rm(removedArtifact.path, { force: true })),
+    ).catch(() => undefined);
   }
 
   async close(): Promise<void> {

@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import {
   getGlobalConfigPath,
   readConfig,
@@ -18,6 +18,8 @@ import {
   type ModelStatus,
   type OrdinaryRoleSetting,
   type SessionDelegateState,
+  type ThinkingLevelName,
+  type ThinkingPolicy,
 } from "./types.ts";
 
 export type RuntimeState = {
@@ -100,6 +102,28 @@ function statusDetail(status: ModelStatus): string {
   }
 }
 
+function policyLevels(policy: ThinkingPolicy): ThinkingLevelName[] {
+  return "level" in policy ? [policy.level] : [policy.min, policy.max];
+}
+/** A well-formed level the resolved role model does not support is a new `D:ERR` cause. */
+function validateThinkingPolicy(
+  state: RuntimeState,
+  role: ModelConfigKey,
+  reference: ModelRef,
+  status: ModelStatus,
+): void {
+  const policy = state.effective.thinking[role];
+  if (!policy || status.kind !== "available") return;
+  const supported = getSupportedThinkingLevels(status.model);
+  for (const level of policyLevels(policy)) {
+    if (!supported.includes(level)) {
+      state.runtimeErrors.push(
+        `${ROLE_LABELS[role]} thinking level "${level}" is not supported by ${reference.provider}/${reference.model}.`,
+      );
+    }
+  }
+}
+
 function validateEnabledRole(
   ctx: ExtensionContext,
   state: RuntimeState,
@@ -111,6 +135,24 @@ function validateEnabledRole(
   if (status.kind !== "available") {
     state.runtimeErrors.push(`${ROLE_LABELS[role]} model ${statusDetail(status)}.`);
   }
+  validateThinkingPolicy(state, role, reference, status);
+}
+
+function readerRoleDiagnostic(state: RuntimeState): string | undefined {
+  const { contextShunt } = state.effective;
+  if (!contextShunt.readerEnabled) return undefined;
+
+  const role = contextShunt.readerRole;
+  const setting = state.effective[role];
+  const label = ROLE_LABELS[role];
+  if (setting === null) return `Reader role ${label} is disabled; choose an enabled ordinary role.`;
+  if (setting === undefined)
+    return `Reader role ${label} is not configured; configure it or choose an enabled ordinary role.`;
+
+  const status = state.modelStatuses.get(role);
+  return status?.kind === "available"
+    ? undefined
+    : `Reader role ${label} model ${statusDetail(status ?? { kind: "unavailable" })}.`;
 }
 
 export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> {
@@ -151,6 +193,9 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
   }
   if (state.effective.uiDesign)
     validateEnabledRole(ctx, state, "uiDesign", state.effective.uiDesign);
+
+  const readerDiagnostic = readerRoleDiagnostic(state);
+  if (readerDiagnostic) state.runtimeErrors.push(readerDiagnostic);
 }
 
 export function hasRuntimeError(state: RuntimeState): boolean {

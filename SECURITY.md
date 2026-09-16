@@ -2,7 +2,7 @@
 
 ## Scope
 
-This project is a local Pi extension. It stores delegation policy data and model identifiers in global defaults and session entries. ContextShunt is off by default. When explicitly enforced, it may keep a known successful text result in a private, session-only temporary file to serve bounded recovery; the file has an opaque ID, quota, cancellation check, and an absolute 30-minute TTL from creation. Cleanup is scheduled while the process is active and runs at shutdown, but crashes or OS suspension can delay deletion. It does not store credentials, execute subagents, or make network requests.
+This project is a local Pi extension. It stores delegation policy data, model identifiers, and any configured per-role thinking policy in global defaults and session entries; it does not store the thinking level chosen for an individual run. ContextShunt is off by default. When explicitly enforced, it may keep a known successful text result in a private, session-only temporary file to serve bounded recovery; the file has an opaque ID, quota, cancellation check, and an absolute 30-minute TTL from creation. Cleanup is scheduled while the process is active and runs at shutdown, but crashes or OS suspension can delay deletion. It does not store credentials, execute subagents, or make network requests.
 
 ContextShunt is not a sandbox or a worker bridge. It preserves permissions and backends, does not inspect files before tool authorization, and leaves errors, structured/mixed results, images, binaries, invalid inputs, and unknown contracts unchanged. One-time exceptions are user-authorized, short-lived, bound to one call and immutable input snapshot, and capped by declared lines plus real returned UTF-8 bytes. The policy guides the main agent. It cannot guarantee that another system will follow a configured role or thinking choice. Review local configuration before using it.
 
@@ -14,4 +14,4 @@ Include the affected version or commit, operating system, Pi version, reproducti
 
 ## Supported versions
 
-Only the latest published version is supported. Version 0.9.0 is the current supported release.
+Only the latest published version is supported. Version 0.10.0 is the current supported release.

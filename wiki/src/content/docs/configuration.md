@@ -1,44 +1,52 @@
 ---
 title: Configuration
-description: Set valid global defaults and session-branch overrides without persisting thinking.
+description: Set valid global defaults, session-branch overrides, and optional thinking policies per role.
 ---
 
 ## Quick valid configuration
 
 The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply the draft. In an active policy, every ordinary role needs an explicit decision: an exact, authenticated reference or `disabled`; at least one ordinary role must be enabled. Visual Design is optional and does not satisfy that minimum.
 
-Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 4:
+Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 6:
 
 ```json
 {
-  "schemaVersion": 4,
+  "schemaVersion": 6,
   "intensity": "normal",
   "preference": "standard",
   "small": { "provider": "example-provider", "model": "example-small" },
   "medium": { "provider": "example-provider", "model": "example-medium" },
   "large": null,
   "uiDesign": { "provider": "example-provider", "model": "example-ui-design" },
+  "thinking": {
+    "small": { "level": "high" },
+    "medium": { "min": "low", "max": "high" }
+  },
   "contextShunt": { "mode": "off" }
 }
 ```
 
 The references are fictional. An absent setting inherits in a session or is **not configured** without a global value; an exact `{ "provider", "model" }` reference enables an ordinary role; `null` explicitly disables it. Global `uiDesign`, when present, remains an exact reference; only a session override may use `null` to disable Visual Design.
 
+`thinking` is optional and holds at most one policy per role. Omitting it, or omitting a role inside it, changes nothing: the main agent chooses that role's level for each launch, as before. See [Thinking](#thinking) for the three states and their validation.
+
 ## Global defaults and session inheritance
 
-Global defaults may contain intensity, preference, tri-state ordinary roles, and the compatible `uiDesign` key. If global intensity is absent, the built-in default is `off`. A branch inherits a global value until it records an override. **Use global default** removes that branch override. A session `null` wins over a global model; a session model wins over a global `null`. Sources are `default`, `global`, or `session`.
+Global defaults may contain intensity, preference, tri-state ordinary roles, the compatible `uiDesign` key, and one thinking policy per role. If global intensity is absent, the built-in default is `off`. A branch inherits a global value until it records an override. **Use global default** removes that branch override. A session `null` wins over a global model; a session model wins over a global `null`. A session thinking `null` keeps no policy for that role in the branch even when global defaults set one. Sources are `default`, `global`, or `session`.
 
-**Save effective configuration as defaults** copies the effective configuration to the global file, including ordinary `null` values and the configured ContextShunt mode even when delegation currently suspends it, but does not apply the current session draft or change its branch. `/delegate reset` writes `off` for the branch and returns other fields to global inheritance. In the panel, **Reset draft to off** is only a draft until Apply.
+**Save effective configuration as defaults** copies the effective configuration to the global file, including ordinary `null` values, the effective thinking policies, and the configured ContextShunt mode even when delegation currently suspends it, but does not apply the current session draft or change its branch. A role with no effective policy is written without one, never as `null`. `/delegate reset` writes `off` for the branch and returns other fields to global inheritance. In the panel, **Reset draft to off** is only a draft until Apply.
 
-Schema 2 and 3 defaults and session entries remain supported as input and are migrated in memory to schema 4 without a write. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
+Schema 2 through 5 defaults and session entries remain supported as input and are migrated in memory to schema 6 without a write. A schema 2 through 5 document has no thinking policy, so every level stays a per-launch choice for it. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
 
-Each session Apply, quick intensity command, ContextShunt mode command, and reset first append a schema 2 `off` guard and then the schema 4 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
+Each session Apply, quick intensity command, ContextShunt mode command, and reset first append a schema 2 `off` guard and then the schema 6 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
 
 Published `0.9.0` includes `orchestrator`. Before downgrading:
 
 1. Set the global `intensity` to `off`, `normal`, or `aggressive`, preferably `off`.
 2. Run `/delegate off` in every active branch before installing the older package.
 3. For `0.6.0`, keep schema 3 and the existing role settings. For `<=0.5.0`, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references.
+
+A package that cannot read schema 6 treats the document as invalid: global defaults fall back to empty defaults with `off` and no injection, and a branch falls back to `off` with a sanitized notice. The guarded branch write already presents schema 2 `off` to older versions.
 
 Schema 2 never accepts `orchestrator`. Saving defaults alone does not update branch overrides; changing a branch alone does not repair unsupported global defaults.
 
@@ -71,9 +79,25 @@ Large quantities of repetitive independent work favor multiple Small delegations
 
 `efficient` breaks a credible Small/Medium tie toward Small. `intensive` breaks the same tie toward Medium. `standard` adds no bias. If Small or Medium is disabled, all three preferences are inert: they do not redirect work to Large or another role.
 
-## Thinking and Visual Design
+## Thinking
 
-The main agent chooses thinking for every delegated task from demand, difficulty, quantity, risk, error and review cost, and the selected model's capabilities. Thinking is dynamic and advisory; this extension does not configure, validate, or persist it. With `pi-subagents`, the selected base and level are sent as `model: "provider/model:LEVEL"`; another launcher may expose a separate per-run field.
+The main agent chooses thinking for every delegated task from demand, difficulty, quantity, risk, error and review cost, and the selected model's capabilities. That per-launch choice is the default, and the extension neither stores it nor reports it. What you may configure is a policy per role. Configuring one is optional; leaving a role unset keeps the per-launch behavior exactly as before.
+
+Each role has three states:
+
+- **Unset** (key absent) — the main agent chooses the level for each launch.
+- **Fixed** (`{ "level": "<name>" }`) — every launch of that role uses exactly that level, and the main agent must not change it.
+- **Range** (`{ "min": "<name>", "max": "<name>" }`) — the main agent chooses a level inside the inclusive bounds.
+
+The level names are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, in lower case. A range whose `min` and `max` are the same level is normalized to a fixed level. A configured policy is binding: the injected block states `fixed <level> (must not change)` or `range <min>..<max> inclusive (choose within it)` for that role, and the level cannot come from an ambient launcher default or from another role.
+
+The extension validates each configured level locally against the role's resolved model when an active policy is loaded. A well-formed level the model does not support produces `D:ERR`, names the role, the level, and the model, and injects no policy. It never substitutes or clamps a level. A policy on a disabled or **not configured** role, or on Visual Design while it is disabled, is stored and inert until that role is enabled again; it adds no error.
+
+A `thinking` entry outside those three states is a malformed document rather than a policy error: an unrecognized level name (including an empty string or a number), an empty or malformed policy object such as `{}` for a role, a `min` above its `max`, mixed or unknown keys inside a policy, a non-object, an unknown role key, or `null` in global defaults. The `thinking` object itself may be empty; that simply means no role has a policy. Malformed documents follow the strict contract described above: global defaults fall back to empty defaults with no injection, and a session branch falls back to `off` with a sanitized notice. That case does not produce `D:ERR`.
+
+With `pi-subagents`, the selected base and level are sent as `model: "provider/model:LEVEL"`; a fixed policy shows its literal level instead of the `LEVEL` placeholder. Another launcher may expose a separate per-run field. The stored policy appears in the panel and in `/delegate status`.
+
+## Visual Design
 
 Visual Design is an optional specialist, not a fourth execution tier. Use it only when the primary acceptance criterion is visual or user experience, behavior and data contracts remain unchanged, the patch is bounded, and it needs no logic, data flow, APIs, routes, architecture, tooling, or cross-system coordination. When it is configured, evaluate those four conditions before ordinary-role selection for every task or phase. If they hold and the visual portion is being delegated by the main agent's decision or required by the active intensity, Visual Design takes priority over Small, Medium, and Large. Reevaluate eligibility when the task or phase changes. This priority does not require delegation in `normal` or `aggressive`. It may design, create, implement, and review scoped presentation code and assets, including visual accessibility, and run its relevant checks. In published `0.7.0` and `normal` or `aggressive`, the main agent retains integration and final acceptance. In published `0.9.0` `orchestrator`, it retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies. Visual Design does not replace ordinary roles or own interaction behavior, state, validation, semantic accessibility, persistence, test infrastructure, or integration mechanics. When disabled, an enabled ordinary role handles eligible visual work by task fit.
 

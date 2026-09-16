@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Add an optional thinking policy per role in a top-level `thinking` object. `{ "level": "high" }` fixes one level for every launch of that role, and `{ "min": "low", "max": "high" }` lets the main agent choose inside an inclusive range; a role with no policy keeps the per-launch choice. The extension validates a configured level against the role's resolved model and reports a level the model does not support as a new `D:ERR` cause with no injection. The extension persists the configured policy, never the level chosen for an individual run. Configurations without `thinking` keep working unchanged.
+- Add four thinking rows to the `/delegate` panel and one `thinking-<role>` token per role to `/delegate status`, both reporting the policy and its source.
+
+### Changed
+
+- Raise the written schema to version 6. Defaults and session entries from schemas 2 through 5 are still read and normalized in memory, keep no thinking policy, and are not rewritten; a package that cannot read schema 6 treats the document as invalid and falls back to `off` without injection.
+- Present the injected policy with an explicit decision order and labeled sections, so each rule's obligation and exception are stated together. Thresholds, precedence, exceptions, and role semantics are otherwise unchanged; the previous limits sentence is restated more precisely as non-enforcement at runtime.
+
 ## 0.10.0 - 2026-09-08
 
 ### Changed
@@ -153,4 +163,4 @@
 ### Changed
 
 - Replaced the unpublished preset-based prototype with schema 2 global defaults and session-branch delegation state.
-- Removed project configuration, external skill loading, tool interception, enforcement, persisted thinking, and model fallbacks.
+- Removed project configuration, external skill loading, tool interception, enforcement, persisted per-run thinking, and model fallbacks.

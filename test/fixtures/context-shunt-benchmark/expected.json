@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "citationConvention": { "lineNumbers": "1-indexed", "ranges": "inclusive" },
+  "rubric": {
+    "frozen": true,
+    "scale": "binary",
+    "dimensions": {
+      "factuality": {
+        "passWhen": "Every required fact is stated without a contradiction or unsupported substitution.",
+        "failWhen": "Any required fact is contradicted or replaced with an unsupported claim."
+      },
+      "completeness": {
+        "passWhen": "Every required fact for the case is present.",
+        "failWhen": "Any required fact is absent."
+      },
+      "citationSupport": {
+        "passWhen": "Every required fact has at least one cited 1-indexed inclusive range containing its supporting source line.",
+        "failWhen": "Any required fact lacks a supporting citation or any citation is out of the supplied source range."
+      },
+      "contract": {
+        "passWhen": "The exact declared status and handling are returned without raw-result substitution, retry, or language score for contract-only cases.",
+        "failWhen": "The declared handling changes, raw data is substituted, an implicit retry occurs, or a contract-only case receives a language score."
+      }
+    },
+    "semanticCasePass": "factuality=1 and completeness=1 and citationSupport=1",
+    "contractOnlyCasePass": "contract=1; factuality, completeness, and citationSupport are not applicable"
+  },
+  "cases": [
+    {
+      "id": "c01-small-file",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [
+        { "text": "The compass is in the blue locker.", "citations": [[3, 3]] },
+        { "text": "The signal lamp is in the red locker.", "citations": [[4, 4]] }
+      ]
+    },
+    {
+      "id": "c02-short-205-lines",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [
+        { "text": "The inclusive 205-line boundary is allowed.", "citations": [[205, 205]] }
+      ]
+    },
+    {
+      "id": "c03-large-full-read",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [
+        { "text": "Lake Orion is the western boundary.", "citations": [[400, 400]] },
+        { "text": "Ridge Vega is the eastern boundary.", "citations": [[575, 575]] }
+      ]
+    },
+    {
+      "id": "c04-targeted-read",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [
+        { "text": "The targeted window begins at line 206.", "citations": [[206, 206]] },
+        { "text": "The window names the north marker.", "citations": [[209, 209]] }
+      ]
+    },
+    {
+      "id": "c05-repeated-query",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [{ "text": "The archive label is amber-17.", "citations": [[212, 212]] }],
+      "repeatExpectation": "Both repetitions have the same required fact and citation support."
+    },
+    {
+      "id": "c06-unicode",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [
+        { "text": "The café sign reads “mañana”.", "citations": [[214, 214]] },
+        { "text": "The route marker is 東京-7.", "citations": [[215, 215]] }
+      ]
+    },
+    {
+      "id": "c07-crlf",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [
+        {
+          "text": "The records are cedar, birch, ash, and elm in that order.",
+          "citations": [[216, 219]]
+        }
+      ]
+    },
+    {
+      "id": "c08-long-line",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [{ "text": "The beacon longitude is 14.75.", "citations": [[230, 230]] }],
+      "sourceRequirements": { "minimumUtf8BytesForLine": { "line": 230, "bytes": 1500 } }
+    },
+    {
+      "id": "c09-pre-truncated-result",
+      "status": "insufficient-evidence",
+      "languageScored": true,
+      "requiredFacts": [
+        {
+          "text": "The visible fragment identifies batch northwind and an item count of three.",
+          "citations": [[240, 241]]
+        }
+      ],
+      "mustNotAssert": ["Any fact from lines 243 through 248."],
+      "contract": {
+        "handling": "Retain the host truncation boundary and do not infer concealed content."
+      }
+    },
+    {
+      "id": "c10-multi-fragment-search",
+      "status": "answered",
+      "languageScored": true,
+      "requiredFacts": [
+        {
+          "text": "Copper belongs to station delta, whose check was in the morning.",
+          "citations": [[260, 261]]
+        },
+        {
+          "text": "Silver belongs to station echo, whose check was in the evening.",
+          "citations": [[280, 281]]
+        }
+      ]
+    },
+    {
+      "id": "c11-json-uncovered",
+      "status": "preserve-unchanged",
+      "languageScored": false,
+      "contract": {
+        "handling": "Return the JSON result byte-for-byte unchanged.",
+        "citations": "not-applicable",
+        "providerCall": "not-applicable"
+      }
+    },
+    {
+      "id": "c12-failure-or-quota",
+      "status": "contract-handled",
+      "languageScored": false,
+      "contract": {
+        "reader-unavailable": "Return reader-unavailable without a fallback provider call or retry.",
+        "artifact-quota-exhausted": "Return artifact-quota-exhausted without exposing raw corpus content.",
+        "citations": "not-applicable"
+      }
+    }
+  ]
+}

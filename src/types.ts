@@ -1,6 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-export const CURRENT_SCHEMA_VERSION = 4 as const;
+export const CURRENT_SCHEMA_VERSION = 6 as const;
 
 export const INTENSITIES = ["off", "normal", "aggressive", "orchestrator"] as const;
 export type Intensity = (typeof INTENSITIES)[number];
@@ -18,6 +18,22 @@ export const ROLE_LABELS: Record<ModelConfigKey, string> = {
 
 export type ModelRef = { provider: string; model: string };
 export type OrdinaryRoleSetting = ModelRef | null;
+export const THINKING_ROLE_KEYS: readonly ModelConfigKey[] = [...MODEL_ROLES, "uiDesign"];
+/** Level names the host recognizes. Single canonical copy for the whole product. */
+export const THINKING_LEVEL_NAMES = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type ThinkingLevelName = (typeof THINKING_LEVEL_NAMES)[number];
+export type ThinkingPolicy =
+  { level: ThinkingLevelName } | { min: ThinkingLevelName; max: ThinkingLevelName };
+export type ThinkingSettings = Partial<Record<ModelConfigKey, ThinkingPolicy>>;
+export type SessionThinkingSettings = Partial<Record<ModelConfigKey, ThinkingPolicy | null>>;
 export const CONTEXT_SHUNT_MODES = ["off", "observe", "enforce"] as const;
 export type ContextShuntMode = (typeof CONTEXT_SHUNT_MODES)[number];
 export type ContextShuntLimits = {
@@ -28,7 +44,9 @@ export type ContextShuntLimits = {
 };
 export type ContextShuntSettings = {
   mode?: ContextShuntMode;
+  readerEnabled?: boolean;
   readerRole?: ModelRole;
+  answerMaxBytes?: number;
   limits?: ContextShuntLimits;
   shell?: "conservative";
   metrics?: "memory";
@@ -43,6 +61,7 @@ export type GlobalDefaults = {
   medium?: OrdinaryRoleSetting;
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
+  thinking?: ThinkingSettings;
   contextShunt?: ContextShuntSettings;
 };
 export type SessionDelegateState = {
@@ -53,13 +72,16 @@ export type SessionDelegateState = {
   medium?: OrdinaryRoleSetting;
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef | null;
+  thinking?: SessionThinkingSettings;
   contextShunt?: ContextShuntSettings;
 };
 export type ValueSource = "default" | "global" | "session";
 export type EffectiveContextShunt = {
   mode: ContextShuntMode;
   configuredMode: ContextShuntMode;
+  readerEnabled: boolean;
   readerRole: ModelRole;
+  answerMaxBytes: number;
   limits: Required<ContextShuntLimits>;
   shell: "conservative";
   metrics: "memory";
@@ -75,6 +97,7 @@ export type EffectiveDelegateState = {
   medium?: OrdinaryRoleSetting;
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
+  thinking: ThinkingSettings;
   contextShunt: EffectiveContextShunt;
   source: {
     intensity: ValueSource;
@@ -83,6 +106,7 @@ export type EffectiveDelegateState = {
     medium: ValueSource;
     large: ValueSource;
     uiDesign: ValueSource;
+    thinking: Record<ModelConfigKey, ValueSource>;
   };
 };
 export type ModelStatus =
