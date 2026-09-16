@@ -213,11 +213,13 @@ function code(result: unknown): string {
 }
 
 async function waitFor(condition: () => boolean, message: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (condition()) return;
-    await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+  // Wait on a real deadline: the awaited work reads files, so a fixed number of microtask or
+  // setImmediate turns is not a reliable bound on a slow or contended machine.
+  const deadline = Date.now() + 10_000;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise<void>((resolveTick) => setTimeout(resolveTick, 5));
   }
-  throw new Error(message);
 }
 
 async function waitForSnapshot(adapter: CountingAdapter): Promise<void> {
