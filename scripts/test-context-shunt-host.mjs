@@ -612,9 +612,11 @@ async function verifyHarnessBounds() {
   );
   recordAssertion("harness: process timeout terminates its owned child", true);
 
+  // The output cap must be what terminates the flood, so the process timeout has to be far enough
+  // away that a slow or contended machine cannot let it win the race instead.
   await assert.rejects(
     run(process.execPath, ["-e", "process.stdout.write('x'.repeat(1024))"], {
-      timeoutMs: 1_000,
+      timeoutMs: 10_000,
       outputLimitBytes: 64,
     }),
     /stdout exceeded 64 bytes/,
@@ -633,7 +635,7 @@ async function verifyHarnessBounds() {
     [],
     packageRoot,
     isolatedEnvironment(join(temporary, "limits-home")),
-    { outputLimitBytes: 64, requestTimeoutMs: 20, processTimeoutMs: 100 },
+    { outputLimitBytes: 64, requestTimeoutMs: 20, processTimeoutMs: 10_000 },
   );
   await assert.rejects(rpc.close(), /stdout exceeded 64 bytes/);
   recordAssertion("harness: RPC line, event, and output cap terminates a synthetic flood", true);
