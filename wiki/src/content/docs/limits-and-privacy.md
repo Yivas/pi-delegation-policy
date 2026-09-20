@@ -94,7 +94,7 @@ Failures use six bounded codes that carry no paths, content, or secrets:
 
 One request per explicit tool may be in flight at a time. A busy `advisor_ask` neither cancels nor disturbs a ContextShunt reader request already in flight, and the reverse holds too.
 
-The advisor's plain-text path through the external executor has no packed end-to-end coverage yet, so its launch contract is checked only against a simulated preflight, never a real executor response. The package pins protocol version `0.69.0`, so a different executor build fails the preflight and `advisor_ask` reports `advisor-unavailable`, with no advice and no partial output.
+The advisor's plain-text path has been exercised end to end in a real session against a configured provider: two sequential questions reached the advisor through the external executor and the approved profile, the second one repeating a six-digit number chosen in the first, which shows the rebuilt thread carries the conversation, and a pair of parallel calls was refused with `advisor-busy`. It still has no packed matrix coverage, so outside those runs its launch contract is checked against a simulated preflight rather than a real executor response. The package pins protocol version `0.69.0`, so a different executor build fails the preflight and `advisor_ask` reports `advisor-unavailable`, with no advice and no partial output.
 
 ### What one request contains
 
