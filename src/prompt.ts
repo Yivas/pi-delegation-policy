@@ -53,6 +53,8 @@ const LEGACY_VISUAL_DESIGN_ROUTING_POLICY =
 const ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY =
   "In orchestrator, route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration responsibility, coordination, and final acceptance, but MUST delegate transferable integration mechanics and detailed review to a capable enabled ordinary role unless a named direct-work exception applies.";
 
+const ADVISOR_POLICY = `Advisor is an optional consultation role. It is optional to configure, and it never executes work. Consult it when a decision is ambiguous, when undoing that decision would be costly, or when a risk remains that the main agent cannot resolve alone. Launch it as a normal subagent with the bundled pi-subagents profile "pi-delegation-policy.advisor", the exact configured model on the Advisor role line, and the thinking policy of that line; do not substitute another model or level. These are the triggers for consulting it, not a threshold that forces a call on every decision, and no rule in this block requires one.`;
+
 function hasSmallMedium(enabled: readonly ModelRole[]): boolean {
   return enabled.includes("small") && enabled.includes("medium");
 }
@@ -196,7 +198,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
       : `${VISUAL_DESIGN_POLICY}\n\n${LEGACY_VISUAL_DESIGN_ROUTING_POLICY}`;
   const advisorThinking = roleThinking(effective.thinking.advisor);
   const advisor = effective.advisor
-    ? `\n- Advisor (optional): ${formatReference(effective.advisor)}; exact model base: ${formatLaunchModel(effective.advisor)}; pi-subagents form: ${formatThinkingLaunchModel(effective.advisor, advisorThinking)}; thinking policy: ${thinkingPolicyText(advisorThinking)}. The advisor_ask tool is available for one bounded piece of advice; the advisor executes no work, consulting it is optional, and no rule in this block requires it.`
+    ? `\n- Advisor (optional): ${formatReference(effective.advisor)}; exact model base: ${formatLaunchModel(effective.advisor)}; pi-subagents form: ${formatThinkingLaunchModel(effective.advisor, advisorThinking)}; thinking policy: ${thinkingPolicyText(advisorThinking)}`
     : "";
   const roleLines = enabled
     .map((role) => {
@@ -212,7 +214,7 @@ in the order below. This block states each rule's obligation and its exceptions;
 acting.
 
 Intensity: ${effective.intensity}.
-Intensity rule: ${intensityPolicy}${effective.uiDesign ? `\n\nVisual Design obligation:\n${visualDesignPolicy}` : ""}
+Intensity rule: ${intensityPolicy}${effective.uiDesign ? `\n\nVisual Design obligation:\n${visualDesignPolicy}` : ""}${effective.advisor ? `\n\nAdvisor consultation:\n${ADVISOR_POLICY}` : ""}
 
 Decision order:
 1. Decide under the active intensity whether this work should be delegated at all.
@@ -245,9 +247,9 @@ ${roleLines}${uiDesign}${advisor}
 Limits:
 These instructions state the main agent's obligations in this session. The extension cannot enforce
 them at runtime and it performs no delegated work of its own: it does not route, supervise, or accept
-subagent results. Its only launches belong to two explicit tools, context_shunt_delegate and
-advisor_ask, and each asks the host-authorized external executor for one bounded answer or one piece
-of advice. Neither tool is ever invoked from a hook, and neither replaces delegation, the launcher, or
-the roles above.
+subagent results. Its only launch belongs to one explicit tool, context_shunt_delegate: that tool asks
+the host-authorized external executor for one bounded answer about an already-preserved text
+artifact, it is never invoked from a hook, and it never replaces delegation, the launcher, or the
+roles above.
 </delegation_policy>`;
 }

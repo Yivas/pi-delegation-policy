@@ -7,18 +7,6 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { appendGuardedSessionState, type GuardedAppendResult } from "./config.ts";
-import { buildAdvisorTask } from "./advisor-context.ts";
-import {
-  ADVISOR_THINKING_LEVELS,
-  ADVISOR_TOOL_NAME,
-  AdvisorExecutor,
-  advisorToolError,
-  finalizeAdvisorAdvice,
-  parseAdvisorRequest,
-  type AdvisorAvailableModel,
-  type AdvisorModel,
-  type AdvisorThinking,
-} from "./advisor-executor.ts";
 import { ContextShuntAdapter } from "./context-shunt-adapter.ts";
 import { ContextShuntExecutor } from "./context-shunt-executor.ts";
 import {
@@ -170,14 +158,12 @@ async function openEditor(
   ctx: ExtensionContext,
   setRuntime: (state: RuntimeState) => void,
   invalidateReaderAuthorization: () => void,
-  invalidateAdvisorAuthorization: () => void,
   shunt: ContextShuntAdapter,
 ): Promise<void> {
   await openDelegateEditor(ctx, pi);
   // Applying or discarding an editor draft may have changed authorization while it was open.
   // Conservatively revoke before rereading runtime state so a prepared snapshot cannot launch.
   invalidateReaderAuthorization();
-  invalidateAdvisorAuthorization();
   const state = await loadRuntime(ctx);
   setRuntime(state);
   synchronizeContextShunt(shunt, state);
@@ -282,84 +268,23 @@ async function resetSession(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pro
 export type PiDelegationPolicyOptions = {
   shunt?: ContextShuntAdapter;
   executor?: ContextShuntExecutor;
-  advisor?: AdvisorExecutor;
 };
-
-type AdvisorAuthorization = Readonly<{
-  fingerprint: string;
-  model: { provider: string; id: string };
-  availableModels: readonly [AdvisorAvailableModel];
-  supportedThinking: ReadonlySet<AdvisorThinking>;
-  thinkingPolicy: ThinkingPolicy | undefined;
-}>;
-
-/**
- * Availability is decided on invocation: an unconfigured advisor, delegation
- * `off`, a runtime error or a model that is not available all leave the tool
- * registered but idle.
- */
-function advisorAuthorization(state: RuntimeState | undefined): AdvisorAuthorization | undefined {
-  const reference = state?.effective.advisor;
-  // Delegation `off` is checked here on purpose instead of being inferred: `validateRuntime`
-  // returns before it populates `modelStatuses`, so without this condition the documented
-  // `off` behaviour would silently depend on that early return.
-  if (!state || !reference || state.effective.intensity === "off" || hasRuntimeError(state))
-    return undefined;
-  const status = state.modelStatuses.get("advisor");
-  if (status?.kind !== "available") return undefined;
-
-  const supportedThinking = new Set<AdvisorThinking>(
-    getSupportedThinkingLevels(status.model).filter((level): level is AdvisorThinking =>
-      (ADVISOR_THINKING_LEVELS as readonly string[]).includes(level),
-    ),
-  );
-  return {
-    fingerprint: JSON.stringify([
-      status.model.provider,
-      status.model.id,
-      [...supportedThinking].sort(),
-    ]),
-    model: { provider: status.model.provider, id: status.model.id },
-    availableModels: [
-      {
-        provider: status.model.provider,
-        id: status.model.id,
-        fullId: `${status.model.provider}/${status.model.id}`,
-        reasoning: status.model.reasoning,
-      },
-    ],
-    supportedThinking,
-    thinkingPolicy: state.effective.thinking.advisor,
-  };
-}
 
 export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}) {
   return function piDelegationPolicy(pi: ExtensionAPI): void {
     const shunt = options.shunt ?? new ContextShuntAdapter();
     const executor = options.executor ?? new ContextShuntExecutor();
-    const advisorExecutor = options.advisor ?? new AdvisorExecutor();
     let latestRuntime: RuntimeState | undefined;
     let readerEpoch = 0;
-    let advisorEpoch = 0;
     const invalidateReaderAuthorization = (): void => {
       readerEpoch += 1;
       executor.cancel();
-    };
-    // One pending request per tool: revoking the advisor never cancels the reader, and the reverse.
-    const invalidateAdvisorAuthorization = (): void => {
-      advisorEpoch += 1;
-      advisorExecutor.cancel();
     };
     const rememberRuntime = (state: RuntimeState): RuntimeState => {
       if (
         readerAuthorization(latestRuntime)?.fingerprint !== readerAuthorization(state)?.fingerprint
       )
         readerEpoch += 1;
-      if (
-        advisorAuthorization(latestRuntime)?.fingerprint !==
-        advisorAuthorization(state)?.fingerprint
-      )
-        advisorEpoch += 1;
       latestRuntime = state;
       return state;
     };
@@ -472,66 +397,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       },
     });
     pi.registerTool({
-      name: ADVISOR_TOOL_NAME,
-      label: "Advisor Ask",
-      description:
-        "Ask the configured advisor model for advice on one bounded question. The advisor executes no work.",
-      parameters: Type.Object(
-        {
-          question: Type.String({ minLength: 1 }),
-          context: Type.Optional(Type.String()),
-          thinking: Type.Union([
-            Type.Literal("off"),
-            Type.Literal("minimal"),
-            Type.Literal("low"),
-            Type.Literal("medium"),
-            Type.Literal("high"),
-            Type.Literal("xhigh"),
-            Type.Literal("max"),
-          ]),
-        },
-        { additionalProperties: false },
-      ),
-      async execute(_id, input, signal, _update, ctx) {
-        const authorization = advisorAuthorization(latestRuntime);
-        if (!authorization) return advisorToolError("advisor-unavailable");
-        if (advisorExecutor.busy) return advisorToolError("advisor-busy");
-        const parsed = parseAdvisorRequest(input, authorization);
-        if (!parsed.ok) return advisorToolError(parsed.code);
-        if (typeof ctx.cwd !== "string") return advisorToolError("advisor-unavailable");
-
-        const authorizationEpoch = advisorEpoch;
-        const isAuthorized = (): boolean => {
-          const currentAuthorization = advisorAuthorization(latestRuntime);
-          return (
-            authorizationEpoch === advisorEpoch &&
-            currentAuthorization !== undefined &&
-            currentAuthorization.fingerprint === authorization.fingerprint &&
-            currentAuthorization.supportedThinking.has(parsed.value.thinking)
-          );
-        };
-
-        // Read-only window and thread: the session history is never modified here.
-        const task = buildAdvisorTask(
-          ctx.sessionManager.buildContextEntries(),
-          parsed.value.question,
-          parsed.value.context,
-        );
-        if (task === undefined) return advisorToolError("advisor-invalid-request");
-
-        const model: AdvisorModel = { ...authorization.model, thinking: parsed.value.thinking };
-        const run = await advisorExecutor.execute(
-          { task, model, availableModels: authorization.availableModels },
-          { cwd: ctx.cwd, events: pi.events },
-          signal,
-        );
-        if (run.kind !== "completed") return advisorToolError(run.kind);
-        // A revocation that landed while the launch settled discards the advice.
-        if (!isAuthorized()) return advisorToolError("advisor-cancelled");
-        return finalizeAdvisorAdvice(run.value, model);
-      },
-    });
-    pi.registerTool({
       name: "context_shunt_recover",
       label: "ContextShunt Recover",
       description: "Recover a bounded range from a ContextShunt artifact.",
@@ -567,14 +432,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       handler: async (args, ctx) => {
         const action = parseCommand(args);
         if (action.kind === "open")
-          return openEditor(
-            pi,
-            ctx,
-            rememberRuntime,
-            invalidateReaderAuthorization,
-            invalidateAdvisorAuthorization,
-            shunt,
-          );
+          return openEditor(pi, ctx, rememberRuntime, invalidateReaderAuthorization, shunt);
         if (action.kind === "status" || action.kind === "context-status") {
           const state = await refreshRuntime(ctx);
           ctx.ui.notify(
@@ -585,7 +443,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         }
         if (action.kind === "reset") {
           invalidateReaderAuthorization();
-          invalidateAdvisorAuthorization();
           const state = rememberRuntime(await resetSession(pi, ctx));
           synchronizeContextShunt(shunt, state);
           return;
@@ -593,7 +450,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         if (action.kind === "intensity") {
           if (action.intensity === "off") {
             invalidateReaderAuthorization();
-            invalidateAdvisorAuthorization();
           }
           const state = rememberRuntime(await setSessionIntensity(pi, ctx, action.intensity));
           synchronizeContextShunt(shunt, state);
@@ -629,23 +485,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.registerShortcut("alt+g", {
       description: "Open delegation policy",
       handler: async (ctx) =>
-        openEditor(
-          pi,
-          ctx,
-          rememberRuntime,
-          invalidateReaderAuthorization,
-          invalidateAdvisorAuthorization,
-          shunt,
-        ),
+        openEditor(pi, ctx, rememberRuntime, invalidateReaderAuthorization, shunt),
     });
     pi.on("session_start", async (_event, ctx) => {
       await refreshRuntime(ctx);
     });
     pi.on("session_tree", async (_event, ctx) => {
       readerEpoch += 1;
-      advisorEpoch += 1;
       executor.rotate();
-      advisorExecutor.rotate();
       shunt.clearPending();
       await refreshRuntime(ctx);
     });
@@ -675,10 +522,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     });
     pi.on("session_shutdown", async (_event, ctx) => {
       readerEpoch += 1;
-      advisorEpoch += 1;
       latestRuntime = undefined;
       executor.close();
-      advisorExecutor.close();
       await shunt.close();
       ctx.ui.setStatus(STATUS_KEY, undefined);
     });

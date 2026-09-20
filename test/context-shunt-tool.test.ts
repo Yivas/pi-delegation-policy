@@ -229,11 +229,10 @@ async function waitForSnapshot(adapter: CountingAdapter): Promise<void> {
 // The integration seam keeps the external executor out of this test while exercising the real store.
 test("registers the delegate tool and preserves the exact request boundary", async () => {
   await withRuntime(defaults, async (run, ctx) => {
-    // The advisor tool is registered unconditionally too; without an advisor it answers
-    // advisor-unavailable, so the reader's boundary is the only one exercised here.
-    assert.equal(run.tools.size, 3);
+    // The plugin registers exactly the two ContextShunt tools; the reader's boundary is the only
+    // launch of its own.
+    assert.equal(run.tools.size, 2);
     assert.deepEqual([...run.tools.keys()].sort(), [
-      "advisor_ask",
       "context_shunt_delegate",
       "context_shunt_recover",
     ]);

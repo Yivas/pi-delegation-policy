@@ -6,11 +6,11 @@ This project is a local Pi extension. It stores delegation policy data, model id
 
 ContextShunt is not a sandbox or a worker bridge. It preserves permissions and backends, does not inspect files before tool authorization, and leaves errors, structured/mixed results, images, binaries, invalid inputs, and unknown contracts unchanged. One-time exceptions are user-authorized, short-lived, bound to one call and immutable input snapshot, and capped by declared lines plus real returned UTF-8 bytes. The policy guides the main agent. It cannot guarantee that another system will follow a configured role or thinking choice. Review local configuration before using it.
 
-## Advisor requests
+## Advisor consultation
 
-The optional Advisor role is off by default, and `advisor_ask` is the only way to consult it. When you configure an advisor and the main agent calls that tool, the request leaves the process through the host-authorized external executor. It carries a bounded window of the conversation, the advisor thread rebuilt from the session history, the question, and any extra context the agent wrote, capped at 12288 UTF-8 bytes in total. The window holds text from your messages and from the agent, and one line per tool call: for `read`, `grep`, `find`, and `ls` the tool name plus the declared path or pattern, capped at 256 bytes, and for every other tool the tool name alone, never its arguments. An image in one of your messages becomes the marker `[image omitted]`; its content is never sent. Tool results, shell executions, messages injected by extensions, compaction and branch summaries, non-message session entries, and the agent's thinking are excluded.
+The optional Advisor role is off by default. The extension registers no tool, executor, or lifecycle work for it: it only injects policy guidance. When you configure an advisor and the main agent decides to consult it, the main agent launches the packaged `pi-delegation-policy.advisor` profile as a normal subagent through Pi's subagent mechanism and the host-authorized external executor. The extension no longer sends conversation on its own initiative: what leaves the process is what the main agent writes into that task, and the main agent decides what that text contains.
 
-The request and its reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and no absence of cost. The advisor cannot read files, run commands, or delegate, and its answer is bounded plain text.
+The task text and the reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and no absence of cost. The advisor cannot read files, run commands, delegate, or use tools, and its reply is plain text.
 
 ## Reporting
 

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** the Advisor is no longer a tool. `advisor_ask`, `src/advisor-executor.ts`, `src/advisor-context.ts`, its six error codes, its automatic conversation window, its aggregate cap, its exclusion rules, and its busy guard are all removed. The advisor is now a role: when `advisor` is configured, the injected policy states when consulting it is worth it — an ambiguous decision, one that is hard to undo, or a risk the main agent cannot resolve alone — and the main agent launches the packaged `pi-delegation-policy.advisor` profile as a normal subagent with the exact configured model and that role's thinking policy. The bundled profile declares no tools and no extensions and now answers a task the main agent writes. The reason: the extension goes back to launching exactly one thing, the ContextShunt reader, and the advisor becomes a normal, visible subagent instead of a second private launch path with its own hermetic contract.
+- The extension no longer sends conversation on its own initiative. What reaches the advisor's provider is what the main agent writes into the task, through the same host-authorized external executor, with the same retention statement and no promise of deletion. The bounded window, its 12288-byte cap, its exclusions, and `advisor-busy` no longer exist, and public documentation no longer describes them.
+
+### Removed
+
+- Remove the `advisor_ask` tool registration, its authorization, counters, and lifecycle cleanup from `src/index.ts`, together with its tests and its package-content and boundary-scan entries. A configured advisor whose model is invalid still produces `D:ERR` and injects no policy, and that shared check still leaves the ContextShunt reader unauthorized.
+
 ## 0.12.0 - 2026-09-16
 
 ### Added
