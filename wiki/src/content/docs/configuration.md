@@ -7,17 +7,18 @@ description: Set valid global defaults, session-branch overrides, and optional t
 
 The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply the draft. In an active policy, every ordinary role needs an explicit decision: an exact, authenticated reference or `disabled`; at least one ordinary role must be enabled. Visual Design is optional and does not satisfy that minimum.
 
-Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 6:
+Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 7:
 
 ```json
 {
-  "schemaVersion": 6,
+  "schemaVersion": 7,
   "intensity": "normal",
   "preference": "standard",
   "small": { "provider": "example-provider", "model": "example-small" },
   "medium": { "provider": "example-provider", "model": "example-medium" },
   "large": null,
   "uiDesign": { "provider": "example-provider", "model": "example-ui-design" },
+  "advisor": { "provider": "example-provider", "model": "example-advisor" },
   "thinking": {
     "small": { "level": "high" },
     "medium": { "min": "low", "max": "high" }
@@ -26,19 +27,19 @@ Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema vers
 }
 ```
 
-The references are fictional. An absent setting inherits in a session or is **not configured** without a global value; an exact `{ "provider", "model" }` reference enables an ordinary role; `null` explicitly disables it. Global `uiDesign`, when present, remains an exact reference; only a session override may use `null` to disable Visual Design.
+The references are fictional. An absent setting inherits in a session or is **not configured** without a global value; an exact `{ "provider", "model" }` reference enables an ordinary role; `null` explicitly disables it. Global `uiDesign` and `advisor`, when present, remain exact references; only a session override may use `null` to disable that optional role.
 
 `thinking` is optional and holds at most one policy per role. Omitting it, or omitting a role inside it, changes nothing: the main agent chooses that role's level for each launch, as before. See [Thinking](#thinking) for the three states and their validation.
 
 ## Global defaults and session inheritance
 
-Global defaults may contain intensity, preference, tri-state ordinary roles, the compatible `uiDesign` key, and one thinking policy per role. If global intensity is absent, the built-in default is `off`. A branch inherits a global value until it records an override. **Use global default** removes that branch override. A session `null` wins over a global model; a session model wins over a global `null`. A session thinking `null` keeps no policy for that role in the branch even when global defaults set one. Sources are `default`, `global`, or `session`.
+Global defaults may contain intensity, preference, tri-state ordinary roles, the compatible `uiDesign` and `advisor` keys, and one thinking policy per role. If global intensity is absent, the built-in default is `off`. A branch inherits a global value until it records an override. **Use global default** removes that branch override. A session `null` wins over a global model; a session model wins over a global `null`. A session thinking `null` keeps no policy for that role in the branch even when global defaults set one. Sources are `default`, `global`, or `session`.
 
 **Save effective configuration as defaults** copies the effective configuration to the global file, including ordinary `null` values, the effective thinking policies, and the configured ContextShunt mode even when delegation currently suspends it, but does not apply the current session draft or change its branch. A role with no effective policy is written without one, never as `null`. `/delegate reset` writes `off` for the branch and returns other fields to global inheritance. In the panel, **Reset draft to off** is only a draft until Apply.
 
-Schema 2 through 5 defaults and session entries remain supported as input and are migrated in memory to schema 6 without a write. A schema 2 through 5 document has no thinking policy, so every level stays a per-launch choice for it. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
+Schema 2 through 6 defaults and session entries remain supported as input and are migrated in memory to schema 7 without a write: a schema 2 through 5 document has no thinking policy, and any document below schema 7 carries no `advisor`. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
 
-Each session Apply, quick intensity command, ContextShunt mode command, and reset first append a schema 2 `off` guard and then the schema 6 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
+Each session Apply, quick intensity command, ContextShunt mode command, and reset first append a schema 2 `off` guard and then the schema 7 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
 
 Published `0.9.0` includes `orchestrator`. Before downgrading:
 
@@ -46,7 +47,7 @@ Published `0.9.0` includes `orchestrator`. Before downgrading:
 2. Run `/delegate off` in every active branch before installing the older package.
 3. For `0.6.0`, keep schema 3 and the existing role settings. For `<=0.5.0`, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references.
 
-A package that cannot read schema 6 treats the document as invalid: global defaults fall back to empty defaults with `off` and no injection, and a branch falls back to `off` with a sanitized notice. The guarded branch write already presents schema 2 `off` to older versions.
+A package that cannot read schema 7 treats the document as invalid: global defaults fall back to empty defaults with `off` and no injection, and a branch falls back to `off` with a sanitized notice. The guarded branch write already presents schema 2 `off` to older versions.
 
 Schema 2 never accepts `orchestrator`. Saving defaults alone does not update branch overrides; changing a branch alone does not repair unsupported global defaults.
 

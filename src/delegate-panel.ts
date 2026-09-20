@@ -51,6 +51,8 @@ const FIELD_IDS = [
   "thinkingMedium",
   "thinkingLarge",
   "thinkingUiDesign",
+  "advisor",
+  "thinkingAdvisor",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
 const THINKING_FIELDS = [
@@ -58,6 +60,7 @@ const THINKING_FIELDS = [
   "thinkingMedium",
   "thinkingLarge",
   "thinkingUiDesign",
+  "thinkingAdvisor",
 ] as const;
 type ThinkingField = (typeof THINKING_FIELDS)[number];
 const THINKING_FIELD_KEYS: Record<ThinkingField, ModelConfigKey> = {
@@ -65,6 +68,7 @@ const THINKING_FIELD_KEYS: Record<ThinkingField, ModelConfigKey> = {
   thinkingMedium: "medium",
   thinkingLarge: "large",
   thinkingUiDesign: "uiDesign",
+  thinkingAdvisor: "advisor",
 };
 function isThinkingField(field: string): field is ThinkingField {
   return (THINKING_FIELDS as readonly string[]).includes(field);
@@ -173,6 +177,8 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   thinkingMedium: "Medium thinking",
   thinkingLarge: "Large thinking",
   thinkingUiDesign: "Visual Design thinking",
+  advisor: "Advisor",
+  thinkingAdvisor: "Advisor thinking",
 };
 
 /** One alignment column for every field value, wide enough for the longest label. */
@@ -198,6 +204,9 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
   thinkingLarge:
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
   thinkingUiDesign:
+    "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
+  advisor: "Optional advice model consulted on demand; it executes no work.",
+  thinkingAdvisor:
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
 };
 
@@ -251,6 +260,7 @@ export function sameSessionState(left: SessionDelegateState, right: SessionDeleg
     sameModel(left.medium, right.medium) &&
     sameModel(left.large, right.large) &&
     sameModel(left.uiDesign, right.uiDesign) &&
+    sameModel(left.advisor, right.advisor) &&
     sameThinking(left.thinking, right.thinking) &&
     JSON.stringify(left.contextShunt ?? {}) === JSON.stringify(right.contextShunt ?? {})
   );
@@ -600,8 +610,8 @@ export class DelegatePanel implements Component, Focusable {
         : effective.contextShunt.mode;
     if (field === "contextAdvanced")
       return `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`;
-    if (field === "uiDesign")
-      return effective.uiDesign ? modelText(effective.uiDesign) : "disabled";
+    if (field === "uiDesign" || field === "advisor")
+      return effective[field] ? modelText(effective[field]) : "disabled";
     return rawModelText(effective[field], "not configured");
   }
 
@@ -661,8 +671,10 @@ export class DelegatePanel implements Component, Focusable {
   ): { levels: ThinkingLevelName[] } | { reason: string } {
     const key = THINKING_FIELD_KEYS[field];
     const state = resolveDelegateState(this.global, this.draft);
-    if (key === "uiDesign" && this.draft.uiDesign === null)
-      return { reason: "Visual Design is disabled for this session; levels cannot be listed." };
+    if ((key === "uiDesign" || key === "advisor") && this.draft[key] === null)
+      return {
+        reason: `${ROLE_LABELS[key]} is disabled for this session; levels cannot be listed.`,
+      };
     const reference = key === "uiDesign" ? state.uiDesign : state[key];
     if (reference === null)
       return { reason: `${ROLE_LABELS[key]} is disabled; levels cannot be listed.` };
@@ -836,11 +848,11 @@ export class DelegatePanel implements Component, Focusable {
         `session ${this.draft.preference ?? "inherit"}`,
       ];
     }
-    if (field === "uiDesign") {
+    if (field === "uiDesign" || field === "advisor") {
       return [
         "built-in disabled",
-        `global ${rawModelText(this.global.uiDesign, "—")}`,
-        `session ${rawModelText(this.draft.uiDesign, "inherit")}`,
+        `global ${rawModelText(this.global[field], "—")}`,
+        `session ${rawModelText(this.draft[field], "inherit")}`,
       ];
     }
     if (isThinkingField(field)) {
@@ -1209,7 +1221,13 @@ export class DelegatePanel implements Component, Focusable {
       };
       return;
     }
-    if (item === "small" || item === "medium" || item === "large" || item === "uiDesign") {
+    if (
+      item === "small" ||
+      item === "medium" ||
+      item === "large" ||
+      item === "uiDesign" ||
+      item === "advisor"
+    ) {
       this.openModelSelector(item);
       return;
     }
@@ -1650,7 +1668,7 @@ export class DelegatePanel implements Component, Focusable {
   private modelChoices(field: ModelConfigKey, query: string): ModelChoice[] {
     const global = this.global[field];
     const globalDescription =
-      field === "uiDesign"
+      field === "uiDesign" || field === "advisor"
         ? global
           ? modelText(global)
           : "disabled"

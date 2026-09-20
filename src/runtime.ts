@@ -193,6 +193,7 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
   }
   if (state.effective.uiDesign)
     validateEnabledRole(ctx, state, "uiDesign", state.effective.uiDesign);
+  if (state.effective.advisor) validateEnabledRole(ctx, state, "advisor", state.effective.advisor);
 
   const readerDiagnostic = readerRoleDiagnostic(state);
   if (readerDiagnostic) state.runtimeErrors.push(readerDiagnostic);

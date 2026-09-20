@@ -17,6 +17,7 @@ import {
   type ModelConfigKey,
   type ModelRef,
   type ModelRole,
+  type OptionalRoleKey,
   type OrdinaryRoleSetting,
   type Preference,
   type SessionDelegateState,
@@ -50,6 +51,7 @@ const SCHEMA3_KEYS = SCHEMA2_KEYS;
 const SCHEMA4_KEYS = [...SCHEMA2_KEYS, "contextShunt"] as const;
 const SCHEMA5_KEYS = SCHEMA4_KEYS;
 const SCHEMA6_KEYS = [...SCHEMA5_KEYS, "thinking"] as const;
+const SCHEMA7_KEYS = [...SCHEMA6_KEYS, "advisor"] as const;
 const DEFAULT_LIMITS = {
   fullReadLines: 350,
   fullReadBytes: 16384,
@@ -144,10 +146,14 @@ function thinkingPolicy(value: unknown): ThinkingPolicy | undefined {
 function parseThinking(
   value: unknown,
   session: boolean,
+  schema: 6 | 7,
 ): ThinkingSettings | SessionThinkingSettings | undefined {
-  if (!isRecord(value) || !only(value, THINKING_ROLE_KEYS)) return undefined;
+  // `advisor` arrived with schema 7: a document that claims an older version must not carry it.
+  const keys =
+    schema === 7 ? THINKING_ROLE_KEYS : THINKING_ROLE_KEYS.filter((key) => key !== "advisor");
+  if (!isRecord(value) || !only(value, keys)) return undefined;
   const thinking: SessionThinkingSettings = {};
-  for (const key of THINKING_ROLE_KEYS) {
+  for (const key of keys) {
     if (!Object.hasOwn(value, key)) continue;
     const raw = value[key];
     if (session && raw === null) {
@@ -190,7 +196,7 @@ function validAnswerMaxBytes(value: unknown): value is number {
     (value as number) <= MAX_ANSWER_MAX_BYTES
   );
 }
-function parseShunt(value: unknown, schema: 4 | 5 | 6): ContextShuntSettings | undefined {
+function parseShunt(value: unknown, schema: 4 | 5 | 6 | 7): ContextShuntSettings | undefined {
   const keys = [
     "mode",
     "readerRole",
@@ -245,7 +251,7 @@ function parseShunt(value: unknown, schema: 4 | 5 | 6): ContextShuntSettings | u
 }
 function envelope(
   value: unknown,
-  schema: 2 | 3 | 4 | 5 | 6,
+  schema: 2 | 3 | 4 | 5 | 6 | 7,
   keys: readonly string[],
   intensityValidator: (value: unknown) => boolean,
 ): value is Record<string, unknown> {
@@ -291,7 +297,7 @@ export function parseSchema2Config(value: unknown): Schema2Config | undefined {
 }
 function parseModern(
   value: unknown,
-  schema: 3 | 4 | 5 | 6,
+  schema: 3 | 4 | 5 | 6 | 7,
   session: boolean,
 ): GlobalDefaults | SessionDelegateState | undefined {
   const keys =
@@ -301,7 +307,9 @@ function parseModern(
         ? SCHEMA4_KEYS
         : schema === 5
           ? SCHEMA5_KEYS
-          : SCHEMA6_KEYS;
+          : schema === 6
+            ? SCHEMA6_KEYS
+            : SCHEMA7_KEYS;
   if (!envelope(value, schema, keys, isIntensity)) return undefined;
   const small = value.small === undefined ? undefined : ordinary(value.small);
   const medium = value.medium === undefined ? undefined : ordinary(value.medium);
@@ -310,23 +318,28 @@ function parseModern(
     value.uiDesign === undefined || (session && value.uiDesign === null)
       ? value.uiDesign
       : model(value.uiDesign);
+  const advisor =
+    value.advisor === undefined || (session && value.advisor === null)
+      ? value.advisor
+      : model(value.advisor);
   if (
     (value.small !== undefined && small === undefined) ||
     (value.medium !== undefined && medium === undefined) ||
     (value.large !== undefined && large === undefined) ||
-    (value.uiDesign !== undefined && uiDesign === undefined)
+    (value.uiDesign !== undefined && uiDesign === undefined) ||
+    (value.advisor !== undefined && advisor === undefined)
   )
     return undefined;
-  const supportsContextShunt = schema === 4 || schema === 5 || schema === 6;
+  const supportsContextShunt = schema === 4 || schema === 5 || schema === 6 || schema === 7;
   const contextShunt =
     supportsContextShunt && value.contextShunt !== undefined
-      ? parseShunt(value.contextShunt, schema as 4 | 5 | 6)
+      ? parseShunt(value.contextShunt, schema as 4 | 5 | 6 | 7)
       : undefined;
   if (supportsContextShunt && value.contextShunt !== undefined && !contextShunt) return undefined;
-  const supportsThinking = schema === 6;
+  const supportsThinking = schema === 6 || schema === 7;
   const thinking =
     supportsThinking && value.thinking !== undefined
-      ? parseThinking(value.thinking, session)
+      ? parseThinking(value.thinking, session, schema as 6 | 7)
       : undefined;
   if (supportsThinking && value.thinking !== undefined && !thinking) return undefined;
   return {
@@ -341,6 +354,7 @@ function parseModern(
       : uiDesign
         ? { uiDesign: uiDesign as ModelRef }
         : {}),
+    ...(advisor === null ? { advisor: null } : advisor ? { advisor: advisor as ModelRef } : {}),
     ...(thinking && Object.keys(thinking).length
       ? { thinking: thinking as SessionThinkingSettings }
       : {}),
@@ -359,6 +373,9 @@ export function parseSchema5Config(value: unknown): GlobalDefaults | undefined {
 export function parseSchema6Config(value: unknown): GlobalDefaults | undefined {
   return parseModern(value, 6, false) as GlobalDefaults | undefined;
 }
+export function parseSchema7Config(value: unknown): GlobalDefaults | undefined {
+  return parseModern(value, 7, false) as GlobalDefaults | undefined;
+}
 function migrate2(value: Schema2Config | Schema2Session): SessionDelegateState {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -376,6 +393,7 @@ function migrate2(value: Schema2Config | Schema2Session): SessionDelegateState {
 }
 export function parseConfig(value: unknown): GlobalDefaults | undefined {
   return (
+    parseSchema7Config(value) ??
     parseSchema6Config(value) ??
     parseSchema5Config(value) ??
     parseSchema4Config(value) ??
@@ -404,6 +422,7 @@ function parseSchema2Session(value: unknown): Schema2Session | undefined {
 }
 export function parseSessionState(value: unknown): SessionDelegateState | undefined {
   return (
+    (parseModern(value, 7, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 6, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 5, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 4, true) as SessionDelegateState | undefined) ??
@@ -456,7 +475,7 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
   }
 }
 export async function writeConfig(path: string, defaults: GlobalDefaults): Promise<void> {
-  const parsed = parseSchema6Config(defaults);
+  const parsed = parseSchema7Config(defaults);
   if (!parsed) throw new Error("Refusing to write invalid delegation policy defaults.");
   await atomicWrite(path, parsed);
 }
@@ -564,19 +583,27 @@ function resolveShunt(
     },
   };
 }
+/**
+ * An optional specialist role resolves like an ordinary one, except that only a session override may
+ * disable it and an absent global key stays unconfigured.
+ */
+function resolveOptionalRole(
+  defaults: GlobalDefaults,
+  session: SessionDelegateState,
+  key: OptionalRoleKey,
+): ModelRef | undefined {
+  const local = session[key];
+  if (local !== undefined) return local === null ? undefined : { ...local };
+  const global = defaults[key];
+  return global ? { ...global } : undefined;
+}
 export function resolveDelegateState(
   defaults: GlobalDefaults,
   session: SessionDelegateState,
 ): EffectiveDelegateState {
   const intensity = session.intensity ?? defaults.intensity ?? "off";
-  const uiDesign =
-    session.uiDesign === undefined
-      ? defaults.uiDesign
-        ? { ...defaults.uiDesign }
-        : undefined
-      : session.uiDesign === null
-        ? undefined
-        : { ...session.uiDesign };
+  const uiDesign = resolveOptionalRole(defaults, session, "uiDesign");
+  const advisor = resolveOptionalRole(defaults, session, "advisor");
   const role = (name: ModelRole) =>
     copyRole(Object.hasOwn(session, name) ? session[name] : defaults[name]);
   const small = role("small");
@@ -590,6 +617,7 @@ export function resolveDelegateState(
     ...(medium !== undefined ? { medium } : {}),
     ...(large !== undefined ? { large } : {}),
     ...(uiDesign ? { uiDesign } : {}),
+    ...(advisor ? { advisor } : {}),
     thinking,
     contextShunt: resolveShunt(defaults, session, intensity),
     source: {
@@ -599,6 +627,7 @@ export function resolveDelegateState(
       medium: source(session, defaults.medium, "medium"),
       large: source(session, defaults.large, "large"),
       uiDesign: source(session, defaults.uiDesign, "uiDesign"),
+      advisor: source(session, defaults.advisor, "advisor"),
       thinking: thinkingSource,
     },
   };
@@ -618,6 +647,7 @@ export function defaultsFromEffectiveState(state: EffectiveDelegateState): Globa
     ...("value" in role(state.medium) ? { medium: role(state.medium).value } : {}),
     ...("value" in role(state.large) ? { large: role(state.large).value } : {}),
     ...(state.uiDesign ? { uiDesign: { ...state.uiDesign } } : {}),
+    ...(state.advisor ? { advisor: { ...state.advisor } } : {}),
     ...(Object.keys(state.thinking).length ? { thinking: copyThinking(state.thinking) } : {}),
     ...(hasConfiguredContext
       ? {

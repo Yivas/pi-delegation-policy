@@ -184,6 +184,7 @@ export function statusText(state: RuntimeState): string {
     `medium=${formatModelRef(effective.medium)} (${effective.source.medium})`,
     `large=${formatModelRef(effective.large)} (${effective.source.large})`,
     `ui-design=${effective.uiDesign ? formatModelRef(effective.uiDesign) : "disabled"} (${effective.source.uiDesign})`,
+    `advisor=${effective.advisor ? formatModelRef(effective.advisor) : "disabled"} (${effective.source.advisor})`,
     ...THINKING_ROLE_KEYS.map(
       (role) =>
         `thinking-${role === "uiDesign" ? "ui-design" : role}=${thinkingToken(effective.thinking[role])} (${effective.source.thinking[role]})`,

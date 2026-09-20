@@ -333,6 +333,12 @@ test("denies inactive, invalid, busy, and expired calls before external executio
       "output-unavailable",
       true,
     ],
+    [
+      "invalid advisor pauses the reader too",
+      { ...defaults, advisor: { provider: "missing", model: "advisor" } },
+      "output-unavailable",
+      true,
+    ],
   ];
   for (const [name, value, expected, initialize] of cases) {
     const directory = await mkdtemp(join(tmpdir(), "pi-delegation-policy-tool-"));

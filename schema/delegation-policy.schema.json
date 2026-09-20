@@ -5,13 +5,14 @@
   "type": "object",
   "required": ["schemaVersion"],
   "properties": {
-    "schemaVersion": { "const": 6 },
+    "schemaVersion": { "const": 7 },
     "intensity": { "enum": ["off", "normal", "aggressive", "orchestrator"] },
     "preference": { "enum": ["efficient", "standard", "intensive"] },
     "small": { "$ref": "#/$defs/ordinaryRole" },
     "medium": { "$ref": "#/$defs/ordinaryRole" },
     "large": { "$ref": "#/$defs/ordinaryRole" },
     "uiDesign": { "$ref": "#/$defs/modelRef" },
+    "advisor": { "$ref": "#/$defs/modelRef" },
     "thinking": { "$ref": "#/$defs/thinking" },
     "contextShunt": { "$ref": "#/$defs/contextShunt" }
   },
@@ -54,7 +55,8 @@
         "small": { "$ref": "#/$defs/roleThinking" },
         "medium": { "$ref": "#/$defs/roleThinking" },
         "large": { "$ref": "#/$defs/roleThinking" },
-        "uiDesign": { "$ref": "#/$defs/roleThinking" }
+        "uiDesign": { "$ref": "#/$defs/roleThinking" },
+        "advisor": { "$ref": "#/$defs/roleThinking" }
       },
       "additionalProperties": false
     },
