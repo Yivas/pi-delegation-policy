@@ -2003,6 +2003,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "examples/global.json",
     "package.json",
     "schema/delegation-policy.schema.json",
+    "src/agent-launch.ts",
     "src/config.ts",
     "src/context-shunt-adapter.ts",
     "src/context-shunt-executor.ts",
