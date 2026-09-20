@@ -194,6 +194,10 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
     effective.intensity === "orchestrator"
       ? `${VISUAL_DESIGN_POLICY}\n\n${ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY}`
       : `${VISUAL_DESIGN_POLICY}\n\n${LEGACY_VISUAL_DESIGN_ROUTING_POLICY}`;
+  const advisorThinking = roleThinking(effective.thinking.advisor);
+  const advisor = effective.advisor
+    ? `\n- Advisor (optional): ${formatReference(effective.advisor)}; exact model base: ${formatLaunchModel(effective.advisor)}; pi-subagents form: ${formatThinkingLaunchModel(effective.advisor, advisorThinking)}; thinking policy: ${thinkingPolicyText(advisorThinking)}. The advisor_ask tool is available for one bounded piece of advice; the advisor executes no work, consulting it is optional, and no rule in this block requires it.`
+    : "";
   const roleLines = enabled
     .map((role) => {
       const reference = effective[role] as ModelRef;
@@ -236,10 +240,14 @@ Launch requirements:
 Before every delegated launch, name the selected role and take its exact combined provider/model base below. Choose thinking dynamically for that run from task demand, difficulty, quantity, risk, review cost, and the selected model's capabilities when the role's thinking policy is unset. A role with a fixed policy uses exactly that level for every launch and the main agent must not change it. A role with a range policy allows only a level inside its inclusive bounds. A fixed or range policy is binding: it is not an ambient launcher default and is not inherited by another role or by the main agent. Then transmit both through the launcher's per-run mechanism without changing the provider/model base. When the launcher encodes thinking as a model suffix, pass model: "provider/model:LEVEL", replacing LEVEL with that launch's level, or pass the literal level already shown in the role line. Do not omit the model or thinking choice, inherit an ambient launcher default for either, substitute an unlisted model, persist a per-run thinking choice, launch a disabled or unconfigured role, invent a role, or use a level that a bound policy or the selected model does not support.
 
 Roles:
-${roleLines}${uiDesign}
+${roleLines}${uiDesign}${advisor}
 
 Limits:
 These instructions state the main agent's obligations in this session. The extension cannot enforce
-them at runtime, and it does not create, execute, route, supervise, or block delegated work.
+them at runtime and it performs no delegated work of its own: it does not route, supervise, or accept
+subagent results. Its only launches belong to two explicit tools, context_shunt_delegate and
+advisor_ask, and each asks the host-authorized external executor for one bounded answer or one piece
+of advice. Neither tool is ever invoked from a hook, and neither replaces delegation, the launcher, or
+the roles above.
 </delegation_policy>`;
 }

@@ -2191,6 +2191,8 @@ test("the interactive editor reports its TUI requirement in RPC mode", async () 
 
 test("source code keeps ContextShunt bounded to public hooks without a runner, model control, or network client", async () => {
   const sourceFiles = [
+    "advisor-context.ts",
+    "advisor-executor.ts",
     "config.ts",
     "context-shunt.ts",
     "context-shunt-adapter.ts",
@@ -2265,6 +2267,8 @@ test("public package contents exclude private planning, tests, archives, and old
     "examples/global.json",
     "package.json",
     "schema/delegation-policy.schema.json",
+    "src/advisor-context.ts",
+    "src/advisor-executor.ts",
     "src/agent-launch.ts",
     "src/config.ts",
     "src/context-shunt-adapter.ts",
@@ -2946,6 +2950,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // any obligation, condition, exception, or threshold of the ff15c0d text. They were regenerated
   // again for the optional per-role thinking policy, which appends the explicit state of each role
   // line and rewrites the launch requirement so a bound policy is not read as an ambient default.
+  // They were regenerated once more for the Advisor front, which replaces the closing sentence that
+  // denied the extension any launch: two explicit tools do ask the authorized executor.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -2954,8 +2960,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "0a424b5c05b919eaab0cf349808c32204a8124966461696a5a7b992b56f7050f",
-    aggressive: "d21227a28e65f6c9616fa38164b9d1622d6b816e0a12eb4165e7efdbb0a29fe1",
+    normal: "4ff3ed8fa3b73ef33451c5c1a9f091974c521cb1a6e308a7f5feaa0ccb155ce0",
+    aggressive: "c6ea336c7d1fd22dc682a03cad807793b96017e3bc09ddb5ec3babeb9b00250f",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
