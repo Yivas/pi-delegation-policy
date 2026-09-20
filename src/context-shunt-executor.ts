@@ -19,7 +19,7 @@ import type { SourceSnapshot } from "./context-shunt.ts";
 import type { ReaderAnswer, ReaderThinking } from "./context-shunt-reader.ts";
 
 export const CONTEXT_SHUNT_READER_AGENT_NAME = "pi-delegation-policy.context-shunt-inline-reader";
-export const CONTEXT_SHUNT_READER_PROTOCOL_VERSION = "0.70.0";
+export const CONTEXT_SHUNT_READER_PROTOCOL_VERSION = "0.69.0";
 export const READER_PREFLIGHT_TIMEOUT_MS = LAUNCH_PREFLIGHT_TIMEOUT_MS;
 export const READER_TERMINAL_TIMEOUT_MS = LAUNCH_TERMINAL_TIMEOUT_MS;
 

@@ -5,6 +5,9 @@ export const LAUNCH_PREFLIGHT_TIMEOUT_MS = 5_000;
 export const LAUNCH_TERMINAL_TIMEOUT_MS = 120_000;
 
 const PACKAGE_NAME = "pi-delegation-policy";
+/** `pi-subagents` 0.69.0 `src/api/preflight.ts` and `src/shared/launch-contract.ts`. */
+const LAUNCH_CONTRACT_VERSION = 3;
+const DEFINITION_PROJECTION_VERSION = 2;
 const SHA256_LOWER_HEX = /^[0-9a-f]{64}$/;
 const DIAGNOSTIC_SEVERITIES = new Set(["warning", "host-required"]);
 const DELEGATION_EVENTS = {
@@ -228,7 +231,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
     if (!isRecord(value) || value.ok !== true || !isRecord(value.contract)) return false;
     const contract = value.contract;
     if (
-      contract.version !== 2 ||
+      contract.version !== LAUNCH_CONTRACT_VERSION ||
       !isRecord(contract.protocol) ||
       contract.protocol.lifecycleArtifactVersion !== 3 ||
       contract.protocol.packageVersion !== definition.protocolVersion ||
@@ -243,7 +246,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       contract.agent.localName !== definition.agentName ||
       contract.agent.source !== "package" ||
       (contract.agent.packageName !== undefined && contract.agent.packageName !== PACKAGE_NAME) ||
-      contract.agent.definitionProjectionVersion !== 1 ||
+      contract.agent.definitionProjectionVersion !== DEFINITION_PROJECTION_VERSION ||
       contract.agent.filePath !== definition.agentPath ||
       !exactStrings(contract.agent.shadowedCandidates, []) ||
       !isLowerHexDigest(contract.agent.definitionDigest)
@@ -254,8 +257,14 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
     if (
       !isLowerHexDigest(contract.launchContractDigest) ||
       contract.context !== "fresh" ||
+      // The contract used to carry `modelCandidates`, pinned here as exactly `[resolvedModel]`.
+      // `pi-subagents` 0.68.0 removed it along with `fallbackModels` and every same-launch model
+      // switch ("each launch uses one resolved model instead of switching models automatically"),
+      // so the contract no longer offers a candidate list, a fallback or any second model to
+      // compare against. This exact `model` equality is the whole survival of that intent: a
+      // substituted, aliased or downgraded model still fails here, and a build that reintroduces a
+      // second model must be rejected here rather than accepted with a permissive branch.
       contract.model !== resolvedModel ||
-      !exactStrings(contract.modelCandidates, [resolvedModel]) ||
       contract.thinking !== request.model.thinking ||
       contract.systemPromptMode !== "replace" ||
       contract.inheritProjectContext !== false ||

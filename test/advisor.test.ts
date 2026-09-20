@@ -556,7 +556,7 @@ function contract(
   mutate?: (contract: Record<string, unknown>) => void,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {
-    version: 2,
+    version: 3,
     protocol: { lifecycleArtifactVersion: 3, packageVersion: ADVISOR_PROTOCOL_VERSION },
     runId: requestId,
     digest,
@@ -565,7 +565,7 @@ function contract(
       localName: ADVISOR_AGENT_NAME,
       source: "package",
       packageName: "pi-delegation-policy",
-      definitionProjectionVersion: 1,
+      definitionProjectionVersion: 2,
       filePath: advisorAgentPath,
       definitionDigest: digest,
       shadowedCandidates: [],
@@ -573,7 +573,6 @@ function contract(
     launchContractDigest: digest,
     context: "fresh",
     model: modelName(value),
-    modelCandidates: [modelName(value)],
     thinking: value.model.thinking,
     systemPromptMode: "replace",
     inheritProjectContext: false,

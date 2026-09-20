@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
   CONTEXT_SHUNT_READER_AGENT_NAME,
+  CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
   ContextShuntExecutor,
   createDefaultReaderExecutorLoader,
   READER_PREFLIGHT_TIMEOUT_MS,
@@ -81,8 +82,11 @@ function contract(
   mutate?: (contract: Record<string, unknown>) => void,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {
-    version: 2,
-    protocol: { lifecycleArtifactVersion: 3, packageVersion: "0.70.0" },
+    version: 3,
+    protocol: {
+      lifecycleArtifactVersion: 3,
+      packageVersion: CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
+    },
     runId: requestId,
     digest,
     agent: {
@@ -90,7 +94,7 @@ function contract(
       localName: CONTEXT_SHUNT_READER_AGENT_NAME,
       source: "package",
       packageName: "pi-delegation-policy",
-      definitionProjectionVersion: 1,
+      definitionProjectionVersion: 2,
       filePath: agentPath,
       definitionDigest: digest,
       shadowedCandidates: [],
@@ -98,7 +102,6 @@ function contract(
     launchContractDigest: digest,
     context: "fresh",
     model: modelName(value),
-    modelCandidates: [modelName(value)],
     thinking: value.model.thinking,
     systemPromptMode: "replace",
     inheritProjectContext: false,
@@ -423,7 +426,7 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
     ["digest", (value) => (value.digest = "A".repeat(64))],
     [
       "projection",
-      (value) => ((value.agent as Record<string, unknown>).definitionProjectionVersion = 2),
+      (value) => ((value.agent as Record<string, unknown>).definitionProjectionVersion = 1),
     ],
     [
       "definition digest",
@@ -432,7 +435,10 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
     ["launch digest", (value) => (value.launchContractDigest = "short")],
     ["context", (value) => (value.context = "shared")],
     ["model", (value) => (value.model = "example/reader")],
-    ["model candidates", (value) => (value.modelCandidates = ["example/reader:low", "other"])],
+    // `pi-subagents` 0.68.0 dropped `modelCandidates` with same-launch model switching, so a
+    // second model can only reach us as a different resolved `model`. This is the surviving
+    // form of the removed candidates equality: a same-id downgrade of the thinking suffix.
+    ["model thinking suffix", (value) => (value.model = "example/reader:off")],
     ["thinking", (value) => (value.thinking = "off")],
     ["prompt", (value) => (value.systemPromptMode = "append")],
     ["project inheritance", (value) => (value.inheritProjectContext = true)],
