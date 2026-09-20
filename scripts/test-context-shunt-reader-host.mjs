@@ -891,10 +891,21 @@ async function hostFrom(root, expectedVersion) {
   );
   return { version: manifest.version, root, cli };
 }
+/** The extension file Pi itself loads for a package, as that package's manifest declares it. */
+async function manifestExtensionEntry(root) {
+  const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const entry = manifest.pi?.extensions?.[0];
+  assert.ok(
+    typeof entry === "string" && entry.length > 0 && !isAbsolute(entry) && !entry.startsWith(".."),
+    "packaged executor declares one relative extension entry",
+  );
+  return entry;
+}
 async function coinstall(root, tarball, host, externalRoot, includeBridge) {
   const agentDirectory = join(root, "agent");
   const nodeModules = join(agentDirectory, "npm", "node_modules");
   const product = join(nodeModules, "pi-delegation-policy");
+  const subagents = join(nodeModules, "pi-subagents");
   await mkdir(nodeModules, { recursive: true });
   await run(
     "tar",
@@ -908,7 +919,7 @@ async function coinstall(root, tarball, host, externalRoot, includeBridge) {
   );
   await cp(join(nodeModules, "package"), product, { recursive: true });
   await rm(join(nodeModules, "package"), { recursive: true, force: true });
-  await cp(externalRoot, join(nodeModules, "pi-subagents"), { recursive: true });
+  await cp(externalRoot, subagents, { recursive: true });
   const externalModules = dirname(externalRoot);
   for (const dependency of ["jiti", "typebox", "yaml"])
     await symlink(join(externalModules, dependency), join(nodeModules, dependency), "junction");
@@ -920,7 +931,9 @@ async function coinstall(root, tarball, host, externalRoot, includeBridge) {
   return {
     agentDirectory,
     extension: join(product, "src", "index.ts"),
-    subagentsExtension: includeBridge ? join(nodeModules, "pi-subagents", "index.ts") : undefined,
+    subagentsExtension: includeBridge
+      ? join(subagents, await manifestExtensionEntry(subagents))
+      : undefined,
   };
 }
 function config(baseUrl, caseId) {
@@ -1271,7 +1284,7 @@ try {
   const temporary = await mkdtemp(join(tmpdir(), "context-shunt-b17-reader-host-"));
   try {
     const externalManifest = JSON.parse(await readFile(join(externalRoot, "package.json"), "utf8"));
-    assert.equal(externalManifest.version, "0.66.0", "external pi-subagents is exactly 0.66.0");
+    assert.equal(externalManifest.version, "0.70.0", "external pi-subagents is exactly 0.70.0");
     const hosts = [
       await hostFrom(
         join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent"),

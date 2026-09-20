@@ -18,7 +18,7 @@ import { THINKING_LEVEL_NAMES, type ThinkingLevelName, type ThinkingPolicy } fro
 
 export const ADVISOR_TOOL_NAME = "advisor_ask";
 export const ADVISOR_AGENT_NAME = "pi-delegation-policy.advisor";
-export const ADVISOR_PROTOCOL_VERSION = "0.66.0";
+export const ADVISOR_PROTOCOL_VERSION = "0.70.0";
 export const ADVISOR_PREFLIGHT_TIMEOUT_MS = LAUNCH_PREFLIGHT_TIMEOUT_MS;
 export const ADVISOR_TERMINAL_TIMEOUT_MS = LAUNCH_TERMINAL_TIMEOUT_MS;
 

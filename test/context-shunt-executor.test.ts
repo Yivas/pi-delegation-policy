@@ -82,7 +82,7 @@ function contract(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {
     version: 2,
-    protocol: { lifecycleArtifactVersion: 3, packageVersion: "0.66.0" },
+    protocol: { lifecycleArtifactVersion: 3, packageVersion: "0.70.0" },
     runId: requestId,
     digest,
     agent: {

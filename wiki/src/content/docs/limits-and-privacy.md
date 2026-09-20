@@ -52,7 +52,7 @@ Failures use six bounded codes that carry no paths, content, or secrets:
 
 One request per explicit tool may be in flight at a time. A busy `advisor_ask` neither cancels nor disturbs a ContextShunt reader request already in flight, and the reverse holds too.
 
-In this release the advisor's end-to-end path through the external executor is not verified. It waits for the same executor re-verification as the ContextShunt reader: the package pins protocol version `0.66.0`, so a different executor build fails the preflight and `advisor_ask` reports `advisor-unavailable`, with no advice and no partial output. Until that check runs, the launch contract is covered only against a simulated preflight, never a real executor response.
+In this release the advisor's end-to-end path through the external executor is not verified. It waits for the same executor re-verification as the ContextShunt reader: the package pins protocol version `0.70.0`, so a different executor build fails the preflight and `advisor_ask` reports `advisor-unavailable`, with no advice and no partial output. Until that check runs, the launch contract is covered only against a simulated preflight, never a real executor response.
 
 ### What one request contains
 
