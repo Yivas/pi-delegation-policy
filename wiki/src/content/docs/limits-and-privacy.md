@@ -5,7 +5,7 @@ description: Understand the product boundary, fail-closed behavior, local data, 
 
 ## Product boundary
 
-`pi-delegation-policy` guides the main agent by adding one policy block through Pi's public `before_agent_start` event when an active configuration is valid. It does not route, supervise, or accept subagent results, and it never launches anything from a hook. Its only launches belong to two explicit tools that ask the host-authorized external executor for one bounded answer: a ContextShunt delegate call for an already-preserved text artifact, and `advisor_ask` for one piece of advice. Neither replaces delegation, the launcher, tool permissions, or a remote backend. It does not change Pi's main model or thinking level.
+`pi-delegation-policy` guides the main agent by adding one policy block through Pi's public `before_agent_start` event when an active configuration is valid. It does not route, supervise, or accept subagent results, and it never launches anything from a hook. Its only launches belong to two explicit tools that ask the host-authorized external executor for one bounded answer: `context_shunt_delegate` for one question about an already-preserved text artifact, and `advisor_ask` for one piece of advice. Neither replaces delegation, the launcher, tool permissions, or a remote backend. It does not change Pi's main model or thinking level.
 
 The policy evaluates task fit before preference from demand, difficulty, quantity, risk, and error and review cost. In published `0.9.0` `orchestrator`, the main agent must delegate all transferable execution before it begins whenever an enabled capable role and authorized launcher are available, regardless of size: small lookups, code reading, detailed planning, implementation, testing, writing, detailed review, and integration mechanics. Bootstrap is only mandatory instructions, tool discovery, and narrow assignment scope. It must not take over or duplicate pending work; it coordinates only disjoint work, waits through the host, and consumes results before dependent work or finalizing. The main agent retains critical decisions, coordination, safety, evidence evaluation, final acceptance, and concise synthesis, not permission to perform transferable review or integration. It reinspects only a concrete gap, risk, or contradiction and delegates transferable fixes or rechecks. Direct execution requires a briefly stated concrete exception: genuinely non-transferable work, no enabled capable role, a confirmed unavailable authorized launcher, or an explicit user or higher-priority requirement. A final-review or integration label, size, triviality, convenience, economics, transfer cost, or familiarity is not an exception. Published `0.7.0` retains its original policy. It considers only enabled ordinary roles, chooses the least costly enabled role that can satisfy task acceptance and evidence, and keeps work with the main agent when none can. `efficient` and `intensive` break credible Small/Medium ties only while both are enabled; `standard` adds no extra bias.
 
@@ -13,7 +13,7 @@ Thinking has three per-role states and one default. With no configured policy, t
 
 For every delegated launch, the policy names the selected exact `provider/model` base and that role's thinking policy. `pi-subagents` uses `model: "provider/model:LEVEL"`, with a fixed policy shown as its literal level; another launcher may expose a separate field. The extension never supplies a model fallback or enforces that another system follows the guidance.
 
-It has no presets, project configuration, external skill loading, telemetry, credential storage, or network request of its own; the external executor performs the advisor call. It is not a subagent runner and cannot make another system perform delegation. ContextShunt is its separate, opt-in protection layer; it uses only Pi's public tool hooks and does not replace tools, permission checks, remote backends, or an executor.
+It has no presets, project configuration, external skill loading, telemetry, credential storage, or network request of its own; the external executor performs the advisor and reader calls. It is not a subagent runner and cannot make another system perform delegation. ContextShunt is its separate, opt-in protection layer; it uses only Pi's public tool hooks and does not replace tools, permission checks, remote backends, or an executor.
 
 Visual Design is an optional specialist for a bounded presentation patch only when behavior and data contracts remain unchanged, the surface is identifiable, and visual quality or user experience is the primary acceptance criterion. It may edit scoped presentation code and assets and run relevant existing checks. When configured, the main agent evaluates those four conditions before ordinary-role selection for every task or phase. If an eligible visual portion is being delegated by the main agent's decision or the active intensity requires delegation, Visual Design takes priority over Small, Medium, and Large; it is reevaluated when the task or phase changes. The priority does not force delegation in `normal` or `aggressive`. In published `0.7.0` and `normal` or `aggressive`, the main agent retains cross-system integration and final acceptance. In published `0.9.0` `orchestrator`, it retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies. Visual Design does not own product behavior, logic, data, APIs, routes, architecture, tooling, interaction, semantic or behavioral accessibility, test infrastructure, or integration mechanics.
 
@@ -25,7 +25,49 @@ After an authorized tool runs, enforcement considers only one-block successful t
 
 Artifacts have opaque random IDs and live in a private process temporary directory, capped at eight artifacts and 512 KiB per session. Each artifact expires 30 minutes after creation; scheduled cleanup runs while the process is active, recovery does not renew the expiry, and shutdown cancels cleanup and removes the temporary directory. A crash or operating-system suspension can delay cleanup until the process resumes or the OS removes its temporary data, so this is not a guarantee of deletion after the process stops. Recovery accepts exactly one bounded line or byte range. It does not expose source paths or corpus in status or metrics. These bounds are not a sandbox, an access-control system, or protection against every prompt-injection or output route.
 
-An oversized recognized call can be narrowed or granted once only through an explicit user command tied to the matching input, tool call, requested range, and a one-minute expiry. The line limit applies to the declared range and the byte limit to the real returned result. At most eight consumed authorizations are retained; an evicted, changed, expired, cancelled, agent-ended, branch-changed, or terminal result uses the ordinary post-result limits. Pending user-authorized tokens survive a normal agent end until their expiry. This fixed safety bound has no configuration setting. Content from a model cannot create an exception. The package has no automatic hook-to-reader bridge. It ships a profile limited to `read`, `grep`, `find`, and `ls`, but only an executor that can load the package asset by path can enforce that profile. This package does not copy it into user directories, disable extensions, or claim isolation it cannot verify.
+An oversized recognized call can be narrowed or granted once only through an explicit user command tied to the matching input, tool call, requested range, and a one-minute expiry. The line limit applies to the declared range and the byte limit to the real returned result. At most eight consumed authorizations are retained; an evicted, changed, expired, cancelled, agent-ended, branch-changed, or terminal result uses the ordinary post-result limits. Pending user-authorized tokens survive a normal agent end until their expiry. This fixed safety bound has no configuration setting. Content from a model cannot create an exception. Nothing starts the reader from a hook: it runs only when the agent explicitly calls `context_shunt_delegate`. The package ships a profile limited to `read`, `grep`, `find`, and `ls`, but only an executor that can load the package asset by path can enforce that profile. This package does not copy it into user directories, disable extensions, or claim isolation it cannot verify.
+
+## ContextShunt reader
+
+The inline reader is opt-in and off by default: `contextShunt.readerEnabled` resolves to `false`. A call is authorized only with an effective mode of `enforce`, an active delegation intensity, a valid configuration, and the ordinary role named by `contextShunt.readerRole` enabled with an available model. In any other state `context_shunt_delegate` returns a bounded error and no answer, and nothing is launched.
+
+Input is validated before anything is launched:
+
+- `artifactId` — the opaque ID of a live preserved artifact.
+- `question` — required, not empty, at most 2048 UTF-8 bytes.
+- `thinking` — required; one level the reader role's resolved model supports.
+
+The answer comes only from the preserved snapshot of that one artifact. It carries a status, a short answer, and at most 16 citations to exact line ranges of that snapshot. `answered` requires at least one citation, and `insufficient-evidence` carries none. A citation to another source, an out-of-range or repeated range, a blank answer, or any other JSON shape is rejected as `invalid-answer` and never reaches the agent.
+
+The serialized tool result — answer, citations, and envelope — stays within `contextShunt.answerMaxBytes` (1024 to 16384, 8192 by default). A validated answer over that cap is preserved as a separate artifact and returned as a receipt carrying its ID, which `context_shunt_recover` reads back with one bounded line range (`lineOffset`, `lineLimit`) or byte range (`byteOffset`, `maxBytes`). The extension does not truncate JSON or citations and never returns a raw executor response. If the answer cannot be preserved, the result is `output-unavailable` and the source artifact stays as it was.
+
+Failures use bounded codes that carry no paths, content, or secrets:
+
+| Code                 | Meaning                                                                                                                           |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid-request`    | The input is missing, empty, over a cap, or uses a level the reader role's model does not support.                                |
+| `evidence-expired`   | The preserved source is gone, so no answer is returned without recoverable evidence.                                              |
+| `invalid-answer`     | The reader result failed the approved contract, the source ID, the line ranges, or the citation cardinality.                      |
+| `output-unavailable` | The call is not authorized, or the validated answer cannot be preserved within the cap.                                           |
+| `reader-unavailable` | The external executor is absent, or its build does not match the pinned protocol.                                                 |
+| `reader-busy`        | Another `context_shunt_delegate` call is in flight.                                                                               |
+| `reader-cancelled`   | The request was revoked by a branch change, by applying or discarding a panel draft, by `off` or `reset`, or by session shutdown. |
+| `reader-timed-out`   | The request used its whole local time budget.                                                                                     |
+| `reader-failed`      | The executor failed, or its launch contract did not match.                                                                        |
+
+One `context_shunt_delegate` request may be in flight at a time, independently of `advisor_ask`.
+
+### What one request sends
+
+The reader task carries the preserved snapshot text, its opaque source ID, its line count, and the question. It carries no conversation, no other tool call or result, and no other artifact. The launch payload that the external executor receives also carries the working directory, the reader profile's name, the model and the thinking level for that call, and opaque request, run, and node identifiers that correlate the launch with its result. The snapshot is sent during the preflight that resolves the launch contract as well, before any launch.
+
+Both the snapshot and the answer are untrusted data rather than instructions. The extension never follows text inside them and never executes it.
+
+The reader needs a compatible external executor. Protocol version `0.69.0` is the verified one; a different executor build fails the contract check and returns `reader-unavailable`, with no answer and no fallback model, provider, or retry.
+
+### Retention
+
+The preserved snapshot and the answer may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and no absence of cost. A failed reader call leaves no answer artifact.
 
 ## Advisor limits
 
@@ -94,9 +136,11 @@ A configured thinking policy is validated locally against that role's resolved m
 
 ## Local data and privacy
 
-The extension stores intensity, preference, explicit disabled markers, provider/model identifiers, and each role's thinking policy in local global defaults and Pi session entries. It never stores credentials, prompts, panel catalog metadata, or the thinking level chosen for an individual run. It sends no telemetry and makes no network request of its own; the external executor performs the advisor call.
+The extension stores intensity, preference, explicit disabled markers, provider/model identifiers, and each role's thinking policy in local global defaults and Pi session entries. It never stores credentials, prompts, panel catalog metadata, or the thinking level chosen for an individual run. It sends no telemetry and makes no network request of its own; the external executor performs the advisor and reader calls.
 
-Using `advisor_ask` is the deliberate exception to what stays local. With an advisor configured, that tool sends the advisor's model, through the host-authorized external executor: the bounded window described in [Advisor limits](#advisor-limits), the advisor thread so far, your question, and any extra context the agent wrote, capped at 12288 UTF-8 bytes together. Images are replaced by a marker; tool results, shell executions, extension messages, both summary kinds, tool arguments outside the four-tool allowlist, and the agent's thinking are never included.
+Using `advisor_ask` is a deliberate exception to what stays local. With an advisor configured, that tool sends the advisor's model, through the host-authorized external executor: the bounded window described in [Advisor limits](#advisor-limits), the advisor thread so far, your question, and any extra context the agent wrote, capped at 12288 UTF-8 bytes together. Images are replaced by a marker; tool results, shell executions, extension messages, both summary kinds, tool arguments outside the four-tool allowlist, and the agent's thinking are never included.
+
+With the reader enabled, `context_shunt_delegate` is the other exception: it sends its model, through the same executor, the preserved snapshot described in [ContextShunt reader](#contextshunt-reader) together with the question and the launch payload above. Neither tool runs unless the agent calls it, and neither can read a path or the conversation on its own.
 
 Review local configuration before sharing diagnostics. Remove credentials, prompts, personal paths, session files, and unredacted logs. Model identifiers and provider names can still reveal information about your environment.
 

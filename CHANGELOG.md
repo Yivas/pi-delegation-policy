@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0 - 2026-09-16
+
 ### Added
 
 - Add an optional `Advisor` role with its own model reference and thinking policy. It is off by default, does not count as an ordinary role, and configures like Visual Design: an exact reference in global defaults and `null` only as a session override. Configuring no advisor changes nothing: no extra policy text and no new requirement.
@@ -20,6 +22,10 @@
 
 - Extend the privacy boundary to conversation extracts: the advisor request and its reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. No deletion or external TTL is promised.
 - An older package that cannot read schema 7 treats the document as invalid and falls back to `off` with a diagnostic. That is a fail-closed stop, not a smooth downgrade; the new role and tool simply do not exist there.
+
+### Documentation
+
+- Document the ContextShunt reader in the README and the documentation site: its two tools, the settings that enable it, what one request sends, the bounded answer with citations, and its limits. The reader requires a compatible external executor; protocol version `0.69.0` is the verified one, and another build fails closed with `reader-unavailable`, with no answer and no fallback.
 
 ## 0.11.1 - 2026-09-16
 

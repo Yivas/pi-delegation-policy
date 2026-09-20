@@ -55,7 +55,29 @@ Schema 2 never accepts `orchestrator`. Saving defaults alone does not update bra
 
 `contextShunt.mode` is independent from delegation intensity: `off` is the default and does no classification, metrics, archive I/O, or interception; `observe` records decisions without changing calls or results; `enforce` covers only recognized native reads, conservative bounded PowerShell reads, and known successful textual results. Delegation `off` suspends the effective mode without deleting the saved preference.
 
-Optional `readerRole`, limits, and patterns inherit per field between global defaults and the session branch. Preflight limits use declared lines; post-result limits use actual UTF-8 bytes and returned lines. `exceptionPatterns` exempt matching paths only from this optimization; they never grant filesystem access. `delegationHintPatterns` label an already blocked declared excess as a delegation hint; they do not expand coverage or force a bounded read to block. `readerRole` is a requested ordinary role, not an added model configuration; the effective worker model is reported as unknown because this package does not launch or inspect a runner. **Context advanced** in the panel edits the reader role, each limit, and comma-separated patterns. Each value can return to global inheritance by clearing it, and **Reset ContextShunt draft** clears all branch ContextShunt values. The panel calls out a disabled or unconfigured requested role and that the bridge is unavailable. Enforcement provides guided redirection rather than an automatic bridge.
+Optional `readerRole`, limits, and patterns inherit per field between global defaults and the session branch. Preflight limits use declared lines; post-result limits use actual UTF-8 bytes and returned lines. `exceptionPatterns` exempt matching paths only from this optimization; they never grant filesystem access. `delegationHintPatterns` label an already blocked declared excess as a delegation hint; they do not expand coverage or force a bounded read to block. `readerRole` is a requested ordinary role rather than an added model configuration: no separate reader model is stored, and the reader uses that role's exact resolved model when it is invoked. **Context advanced** in the panel edits reader enablement, the reader role, the answer cap, each limit, and comma-separated patterns. Each value can return to global inheritance by clearing it, and **Reset ContextShunt draft** clears all branch ContextShunt values. The hint block reports whether the reader is on and, when it is, whether the selected ordinary role is enabled, still **not configured**, or has a model the local validation rejected. Enforcement provides guided redirection rather than an automatic bridge.
+
+Three further keys control the opt-in inline reader, which stays off by default:
+
+- `readerEnabled` (boolean, built-in `false`) — allow `context_shunt_delegate` to answer from a preserved artifact. A false value changes nothing else.
+- `readerRole` (`small`, `medium`, or `large`, default `small`) — the existing ordinary role whose exact model answers the question. The role must be enabled and its model available.
+- `answerMaxBytes` (integer, 1024 to 16384, default 8192) — the cap on the serialized result the reader returns to the main agent, including its citations and envelope.
+
+All three inherit per field and are editable under **Reader enabled**, **Reader role**, and **Reader answer max bytes**. The reader also needs an effective mode of `enforce`, an active delegation intensity, and a valid configuration. It requires a compatible external executor: protocol version `0.69.0` is the verified one, and another build fails closed with `reader-unavailable`. A valid reader configuration looks like this:
+
+```json
+{
+  "schemaVersion": 7,
+  "contextShunt": {
+    "mode": "enforce",
+    "readerEnabled": true,
+    "readerRole": "medium",
+    "answerMaxBytes": 8192
+  }
+}
+```
+
+Read [limits and privacy](/pi-delegation-policy/limits-and-privacy/#contextshunt-reader) for the request, the answer contract, and retention.
 
 Schema 4 still accepts a positive `limits.readerOutputBytes` from older saved files, but ignores it and never writes it again. Schema 4 writes a guarded schema 2 `off` entry before session state. Before installing a package that cannot read schema 4, set the global and branch ContextShunt mode to `off`; no schema rewrite happens automatically.
 
