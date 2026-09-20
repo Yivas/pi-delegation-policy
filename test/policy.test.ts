@@ -2193,6 +2193,7 @@ test("source code keeps ContextShunt bounded to public hooks without a runner, m
   const sourceFiles = [
     "advisor-context.ts",
     "advisor-executor.ts",
+    "agent-launch.ts",
     "config.ts",
     "context-shunt.ts",
     "context-shunt-adapter.ts",

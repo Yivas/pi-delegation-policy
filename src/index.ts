@@ -286,6 +286,7 @@ export type PiDelegationPolicyOptions = {
 };
 
 type AdvisorAuthorization = Readonly<{
+  fingerprint: string;
   model: { provider: string; id: string };
   availableModels: readonly [AdvisorAvailableModel];
   supportedThinking: ReadonlySet<AdvisorThinking>;
@@ -293,12 +294,17 @@ type AdvisorAuthorization = Readonly<{
 }>;
 
 /**
- * Availability is decided on invocation: an unconfigured advisor, a runtime error
- * or a model that is not available all leave the tool registered but idle.
+ * Availability is decided on invocation: an unconfigured advisor, delegation
+ * `off`, a runtime error or a model that is not available all leave the tool
+ * registered but idle.
  */
 function advisorAuthorization(state: RuntimeState | undefined): AdvisorAuthorization | undefined {
   const reference = state?.effective.advisor;
-  if (!state || !reference || hasRuntimeError(state)) return undefined;
+  // Delegation `off` is checked here on purpose instead of being inferred: `validateRuntime`
+  // returns before it populates `modelStatuses`, so without this condition the documented
+  // `off` behaviour would silently depend on that early return.
+  if (!state || !reference || state.effective.intensity === "off" || hasRuntimeError(state))
+    return undefined;
   const status = state.modelStatuses.get("advisor");
   if (status?.kind !== "available") return undefined;
 
@@ -308,6 +314,11 @@ function advisorAuthorization(state: RuntimeState | undefined): AdvisorAuthoriza
     ),
   );
   return {
+    fingerprint: JSON.stringify([
+      status.model.provider,
+      status.model.id,
+      [...supportedThinking].sort(),
+    ]),
     model: { provider: status.model.provider, id: status.model.id },
     availableModels: [
       {
@@ -329,17 +340,26 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const advisorExecutor = options.advisor ?? new AdvisorExecutor();
     let latestRuntime: RuntimeState | undefined;
     let readerEpoch = 0;
+    let advisorEpoch = 0;
     const invalidateReaderAuthorization = (): void => {
       readerEpoch += 1;
       executor.cancel();
     };
     // One pending request per tool: revoking the advisor never cancels the reader, and the reverse.
-    const invalidateAdvisorAuthorization = (): void => advisorExecutor.cancel();
+    const invalidateAdvisorAuthorization = (): void => {
+      advisorEpoch += 1;
+      advisorExecutor.cancel();
+    };
     const rememberRuntime = (state: RuntimeState): RuntimeState => {
       if (
         readerAuthorization(latestRuntime)?.fingerprint !== readerAuthorization(state)?.fingerprint
       )
         readerEpoch += 1;
+      if (
+        advisorAuthorization(latestRuntime)?.fingerprint !==
+        advisorAuthorization(state)?.fingerprint
+      )
+        advisorEpoch += 1;
       latestRuntime = state;
       return state;
     };
@@ -480,6 +500,17 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         if (!parsed.ok) return advisorToolError(parsed.code);
         if (typeof ctx.cwd !== "string") return advisorToolError("advisor-unavailable");
 
+        const authorizationEpoch = advisorEpoch;
+        const isAuthorized = (): boolean => {
+          const currentAuthorization = advisorAuthorization(latestRuntime);
+          return (
+            authorizationEpoch === advisorEpoch &&
+            currentAuthorization !== undefined &&
+            currentAuthorization.fingerprint === authorization.fingerprint &&
+            currentAuthorization.supportedThinking.has(parsed.value.thinking)
+          );
+        };
+
         // Read-only window and thread: the session history is never modified here.
         const task = buildAdvisorTask(
           ctx.sessionManager.buildContextEntries(),
@@ -495,6 +526,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           signal,
         );
         if (run.kind !== "completed") return advisorToolError(run.kind);
+        // A revocation that landed while the launch settled discards the advice.
+        if (!isAuthorized()) return advisorToolError("advisor-cancelled");
         return finalizeAdvisorAdvice(run.value, model);
       },
     });
@@ -610,6 +643,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     });
     pi.on("session_tree", async (_event, ctx) => {
       readerEpoch += 1;
+      advisorEpoch += 1;
       executor.rotate();
       advisorExecutor.rotate();
       shunt.clearPending();
@@ -641,6 +675,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     });
     pi.on("session_shutdown", async (_event, ctx) => {
       readerEpoch += 1;
+      advisorEpoch += 1;
       latestRuntime = undefined;
       executor.close();
       advisorExecutor.close();

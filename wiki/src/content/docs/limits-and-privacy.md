@@ -52,6 +52,8 @@ Failures use six bounded codes that carry no paths, content, or secrets:
 
 One request per explicit tool may be in flight at a time. A busy `advisor_ask` neither cancels nor disturbs a ContextShunt reader request already in flight, and the reverse holds too.
 
+In this release the advisor's end-to-end path through the external executor is not verified. It waits for the same executor re-verification as the ContextShunt reader: the package pins protocol version `0.66.0`, so a different executor build fails the preflight and `advisor_ask` reports `advisor-unavailable`, with no advice and no partial output. Until that check runs, the launch contract is covered only against a simulated preflight, never a real executor response.
+
 ### What one request contains
 
 The request is the question, the extra context, the advisor thread rebuilt from the session history (at most the six newest exchanges), and a bounded window of the current conversation. The four parts share one hard cap of 12288 UTF-8 bytes. The thread keeps its newest exchanges first; the window is trimmed from its oldest entry, and when the newest entry alone no longer fits only its head is kept. If the question and the extra context cannot fit at all, the tool reports `advisor-invalid-request` rather than sending a partial request.
@@ -63,6 +65,8 @@ The window includes:
 - the marker `[image omitted]` where one of your messages contained an image, instead of its content.
 
 The window excludes tool results, shell executions, messages injected by extensions, compaction and branch summaries, every session entry that is not a message, and the agent's thinking.
+
+Two further details of the request are worth naming. A thread exchange rebuilt from the history is truncated with an ellipsis when its stored text exceeds its own cap — 2048 UTF-8 bytes for a question, 8192 for an advice — although a history this extension produced never reaches that, because both values were already capped when they were written. Separately, the launch payload that the external executor receives also carries the working directory, the advisor profile's name, the model and the thinking level for that call, and opaque request, run, and node identifiers that correlate the launch with its result. None of those entries is conversation content.
 
 ### Retention
 

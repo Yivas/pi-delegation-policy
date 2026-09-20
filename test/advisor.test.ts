@@ -781,6 +781,76 @@ test("requires an empty internal tool allowlist and maps every terminal outcome"
   );
 });
 
+function advisorErrorOf(result: AdvisorExecutorResult): AdvisorErrorCode {
+  if (result.kind === "completed") throw new Error("expected a bounded error, not advice");
+  return result.kind;
+}
+
+test("produces each of the six advisor error codes from its own outcome", async () => {
+  const produced = new Set<AdvisorErrorCode>();
+
+  // advisor-invalid-request: the real request parser rejects the input before anything runs.
+  const invalid = parseAdvisorRequest(
+    { question: "", thinking: "low" },
+    {
+      supportedThinking: new Set<AdvisorThinking>(["off", "low", "medium", "high"]),
+      thinkingPolicy: undefined,
+    },
+  );
+  assert.equal(invalid.ok, false);
+  if (!invalid.ok) produced.add(invalid.code);
+
+  // advisor-unavailable: the launch core cannot load the external executor.
+  produced.add(
+    advisorErrorOf(
+      await new AdvisorExecutor({ loader: async () => undefined }).execute(launchRequest, {
+        cwd: "/workspace",
+        events: new FakeEventBus(),
+      }),
+    ),
+  );
+
+  // advisor-failed: the launch settles with a reply that carries no usable advice.
+  const failedBus = new FakeEventBus();
+  const failedExecutor = new AdvisorExecutor({ loader: async () => modules() });
+  const failing = failedExecutor.execute(launchRequest, { cwd: "/workspace", events: failedBus });
+  const failedRequest = await waitForRequest(failedBus);
+  failedBus.emit(events.startedEvent, tuple(failedRequest));
+  failedBus.emit(events.responseEvent, completed(failedRequest, "   "));
+  produced.add(advisorErrorOf(await failing));
+
+  // advisor-busy: a second call while the first is still in flight.
+  const busyBus = new FakeEventBus();
+  const busyExecutor = new AdvisorExecutor({ loader: async () => modules() });
+  const inFlight = busyExecutor.execute(launchRequest, { cwd: "/workspace", events: busyBus });
+  await waitForRequest(busyBus);
+  produced.add(
+    advisorErrorOf(
+      await busyExecutor.execute(launchRequest, { cwd: "/workspace", events: busyBus }),
+    ),
+  );
+  busyExecutor.close();
+  // The closed launch settles the first call as cancelled through the same mapping.
+  produced.add(advisorErrorOf(await inFlight));
+  // advisor-cancelled and advisor-timed-out: terminal statuses of the launch core.
+  for (const [status, expected] of [
+    ["cancelled", "advisor-cancelled"],
+    ["timed_out", "advisor-timed-out"],
+  ] as const) {
+    const bus = new FakeEventBus();
+    const executor = new AdvisorExecutor({ loader: async () => modules() });
+    const pending = executor.execute(launchRequest, { cwd: "/workspace", events: bus });
+    const request = await waitForRequest(bus);
+    bus.emit(events.startedEvent, tuple(request));
+    bus.emit(events.responseEvent, { ...tuple(request), status });
+    assert.equal(advisorErrorOf(await pending), expected, status);
+    produced.add(expected);
+  }
+
+  assert.equal(produced.size, ADVISOR_ERROR_CODES.length, "every documented code was produced");
+  assert.deepEqual([...produced].sort(), [...ADVISOR_ERROR_CODES].sort());
+});
+
 type Handler = (event: unknown, context: unknown) => unknown;
 type Tool = {
   name: string;
@@ -1224,13 +1294,70 @@ test("lifecycle rotates, closes and revokes the advisor without touching the rea
   });
 });
 
+test("a revocation while an advisor request is in flight returns advisor-cancelled, not the advice", async () => {
+  const adviceText = "ADVICE-MUST-NOT-LEAK";
+  const revocations: Array<{
+    name: string;
+    revoke: (run: ReturnType<typeof install>, ctx: ReturnType<typeof context>) => Promise<unknown>;
+  }> = [
+    {
+      name: "/delegate off",
+      revoke: (run, ctx) => run.commands.get("delegate")!.handler("off", ctx),
+    },
+    {
+      name: "/delegate reset",
+      revoke: (run, ctx) => run.commands.get("delegate")!.handler("reset", ctx),
+    },
+    {
+      name: "session tree",
+      revoke: (run, ctx) => run.handlers.get("session_tree")!({}, ctx) as Promise<unknown>,
+    },
+    {
+      name: "session shutdown",
+      revoke: (run, ctx) => run.handlers.get("session_shutdown")!({}, ctx) as Promise<unknown>,
+    },
+    {
+      name: "runtime refresh after the advisor model changes",
+      revoke: async (run, ctx) => {
+        await writeConfig(getGlobalConfigPath(), { ...defaults, advisor: reader });
+        await run.commands.get("delegate")!.handler("status", ctx);
+      },
+    },
+  ];
+
+  for (const scenario of revocations) {
+    await withRuntime(defaults, async (run, ctx) => {
+      await start(run, ctx);
+      run.advisorExecutor.next = { kind: "completed", value: adviceText };
+      let release: (() => void) | undefined;
+      run.advisorExecutor.gate = new Promise<void>((resolveGate) => {
+        release = resolveGate;
+      });
+      const pending = ask(run, context([messageEntry("user", "Task message")]), {
+        question: "Should we ship it?",
+        thinking: "low",
+      });
+      await waitFor(
+        () => run.advisorExecutor.calls.length === 1,
+        `${scenario.name}: the advisor request did not reach the executor`,
+      );
+      await scenario.revoke(run, ctx);
+      release?.();
+      const result = await pending;
+      assert.deepEqual(
+        payload(result),
+        { status: "error", code: "advisor-cancelled" },
+        scenario.name,
+      );
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(adviceText), scenario.name);
+    });
+  }
+});
+
 test("no source of the advisor writes a file, spawns a process, or reaches the network", async () => {
   const source = await readFile(join(process.cwd(), "src", "advisor-executor.ts"), "utf8");
   const window = await readFile(join(process.cwd(), "src", "advisor-context.ts"), "utf8");
   const joined = `${source}\n${window}`;
   assert.doesNotMatch(joined, /node:fs|node:os|node:child_process|tmpdir|archiveDerived/);
   assert.doesNotMatch(joined, /\bfetch\s*\(|https?:\/\//);
-  assert.match(joined, /ADVISOR_ERROR_CODES/);
-  assert.equal(ADVISOR_ERROR_CODES.length, 6);
-  for (const code of ADVISOR_ERROR_CODES) assert.match(source, new RegExp(`"${code}"`));
 });
