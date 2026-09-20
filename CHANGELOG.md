@@ -2,16 +2,24 @@
 
 ## Unreleased
 
+## 0.13.0 - 2026-09-20
+
+### Added
+
+- Add the Advisor as a full policy role, configured in `/delegate` like the others: one exact `provider/model` reference in global defaults, or `null` in a session override to turn it off, plus its own optional `thinking.advisor` policy. When `advisor` is configured and valid, the injected policy states when consulting it is worth it — an ambiguous decision, one that is hard to undo, a risk the main agent cannot resolve alone, or a substantial doubt about architecture, plan, tooling or approach — and, when a decision belongs to the user, to consult the advisor first for options, trade-offs and a recommendation to bring together with the question. Those are triggers with clear conditions, not a quota: routine decisions need no call, and nothing forces one.
+- Require a self-sufficient brief. The advisor cannot see the conversation, read files, or use tools, so every brief carries the objective and the decision, the constraints, the current state and the relevant evidence, the options and their consequences, what was tried or is proposed and why, and the open uncertainty. It is a conversation rather than a single ruling: the main agent continues the same thread through the host's resume mechanism to clarify, challenge or go deeper, and does not restart it for the same matter.
+- Ship that advisor as the packaged profile `pi-delegation-policy.advisor`, with no tools and no extensions. It cannot read files, run commands, delegate, or reach the network, and it returns plain text for the task the main agent writes. Pi's subagent mechanism discovers it and launches it as a normal subagent with the exact configured model and that role's thinking policy, so the advisor appears in the roster and fleet like any other subagent.
+
 ### Changed
 
-- **Breaking:** the Advisor is no longer a tool. `advisor_ask`, `src/advisor-executor.ts`, `src/advisor-context.ts`, its six error codes, its automatic conversation window, its aggregate cap, its exclusion rules, and its busy guard are all removed. The advisor is now a role: when `advisor` is configured, the injected policy states when consulting it is worth it — an ambiguous decision, one that is hard to undo, or a risk the main agent cannot resolve alone — and the main agent launches the packaged `pi-delegation-policy.advisor` profile as a normal subagent with the exact configured model and that role's thinking policy. The bundled profile declares no tools and no extensions and now answers a task the main agent writes. The reason: the extension goes back to launching exactly one thing, the ContextShunt reader, and the advisor becomes a normal, visible subagent instead of a second private launch path with its own hermetic contract.
+- **Breaking:** the Advisor is no longer a tool. `advisor_ask` and its automatic conversation window are removed, hours after `0.12.0` published them. `src/advisor-executor.ts`, `src/advisor-context.ts`, its six error codes, its 12288-byte aggregate cap, its exclusion rules, and its busy guard are gone with it. The reason: the advisor becomes a normal, visible and resumable subagent instead of a second private launch path with its own hermetic contract, and the extension goes back to launching exactly one thing, the ContextShunt reader.
 - The extension no longer sends conversation on its own initiative. What reaches the advisor's provider is what the main agent writes into the task, through the same host-authorized external executor, with the same retention statement and no promise of deletion. The bounded window, its 12288-byte cap, its exclusions, and `advisor-busy` no longer exist, and public documentation no longer describes them.
 
 ### Removed
 
 - Remove the `advisor_ask` tool registration, its authorization, counters, and lifecycle cleanup from `src/index.ts`, together with its tests and its package-content and boundary-scan entries. A configured advisor whose model is invalid still produces `D:ERR` and injects no policy, and that shared check still leaves the ContextShunt reader unauthorized.
 
-## 0.12.0 - 2026-09-16
+## 0.12.0 - 2026-09-20
 
 ### Added
 

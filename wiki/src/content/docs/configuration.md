@@ -128,7 +128,26 @@ Visual Design is an optional specialist, not a fourth execution tier. Use it onl
 
 Advisor is an optional consultation role, not an execution role. It is off by default, does not count toward the ordinary-role minimum, and configures exactly like Visual Design: an exact `{ "provider", "model" }` reference in global defaults, where only a session override may use `null` to turn it off. `thinking.advisor` accepts the same three states as any other role.
 
-When the advisor is configured and valid, the injected policy states when consulting it is worth it — an ambiguous decision, one that is hard to undo, or a risk the main agent cannot resolve alone — and tells the main agent to launch `pi-delegation-policy.advisor`, the profile that ships in this package, as a normal subagent through Pi's subagent mechanism, with the exact configured model and `thinking.advisor` policy. Those are triggers, not a threshold that forces a call. The profile executes no work: it has no tools, no extensions, and no filesystem, network, or conversation access beyond the task text it receives. Configuring nothing here changes nothing about the policy: the injected block adds no advisor section.
+When the advisor is configured and valid, the injected policy states when consulting it is worth it — an ambiguous decision, one that is hard to undo, a risk the main agent cannot resolve alone, or a substantial doubt about architecture, plan, tooling or approach — and tells the main agent to launch `pi-delegation-policy.advisor`, the profile that ships in this package, as a normal subagent through Pi's subagent mechanism, with the exact configured model and `thinking.advisor` policy. When a decision belongs to the user, the main agent consults the advisor first and brings options, trade-offs and a recommendation together with the question. Those are triggers, not a threshold that forces a call: routine decisions need none, and the policy promises no obedience. With no advisor configured, no advisor section is injected and nothing else changes.
+
+The profile executes no work. It has no tools, no extensions, and no filesystem, network or conversation access beyond the task text it receives, so the brief has to stand on its own: the objective and the decision, the constraints, the current state and the relevant evidence, the options and their consequences, what was tried or is proposed and why, and the open uncertainty. The advisor is a conversation, not a single answer: the main agent continues the same thread through the host's resume mechanism to clarify, challenge or go deeper, instead of restarting it for the same matter.
+
+A trimmed example of that brief and of a follow-up on the same thread:
+
+```text
+Decision: keep the retry loop in the client or move it behind the queue.
+Constraints: the public response format cannot change; no new dependency.
+State: the client retries three times with a fixed delay; the queue already records failures.
+Evidence: the failing integration test, and the queue's failure record for the same request.
+Options: (a) keep the client retries and add jitter; (b) drop them and let the queue own
+         retries. Consequence of (b): callers stop seeing transient failures at all, and
+         some of them depend on that.
+Tried: raising the retry count, which turned one timeout into three.
+Open question: does any caller depend on seeing a transient failure before the queue
+         succeeds?
+```
+
+A follow-up continues that same thread rather than opening a new one: `I kept the client retries and added jitter. Does that change your answer about the queue owning retries?`
 
 A configured advisor whose model is missing, unavailable, out of scope, or unauthenticated produces `D:ERR` and injects no policy, exactly like Visual Design. That validation is shared: the same error also leaves the ContextShunt reader unauthorized until the configuration is corrected. This coupling is deliberate and documented rather than incidental. Read [limits and privacy](/pi-delegation-policy/limits-and-privacy/#advisor-role) for the role, the triggers, and retention.
 
