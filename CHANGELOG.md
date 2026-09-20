@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add an optional `Advisor` role with its own model reference and thinking policy. It is off by default, does not count as an ordinary role, and configures like Visual Design: an exact reference in global defaults and `null` only as a session override. Configuring no advisor changes nothing: no extra policy text and no new requirement.
+- Add the explicit `advisor_ask` tool: a required `question`, optional `context`, and the `thinking` level for that call, answered with at most 8 KiB of plain-text advice plus the model and the level that produced it. Advice over the cap becomes a bounded error with no artifact or recovery surface. Failures use six bounded codes — `advisor-unavailable`, `advisor-invalid-request`, `advisor-busy`, `advisor-failed`, `advisor-timed-out`, and `advisor-cancelled` — that carry no paths, content, or secrets. One request per explicit tool may be in flight, so a busy advisor neither cancels nor disturbs an in-flight ContextShunt reader request.
+- Add the Advisor model and thinking rows at the end of the `/delegate` panel and the `advisor=` and `thinking-advisor=` tokens to `/delegate status`, without renaming or renumbering existing tokens.
+
+### Changed
+
+- Raise the written schema to version 7 for the top-level `advisor` key. Defaults and session entries from schemas 2 through 6 are still read and normalized in memory without rewriting them, and a document that declares an older version is rejected if it carries `advisor` or `thinking.advisor`.
+- State what `advisor_ask` sends. The request is a bounded window of message text — your messages and the agent's own text, with images replaced by `[image omitted]` — one line per tool call, and the advisor thread rebuilt from the history, capped at 12288 UTF-8 bytes together with the question and extra context. A tool line names the declared path or pattern for `read`, `grep`, `find`, and `ls` only, capped at 256 bytes; every other tool contributes its name alone, never its arguments. Tool results, shell executions, extension-injected messages, compaction and branch summaries, non-message entries, and the agent's thinking are excluded.
+- Document that a configured advisor whose model is missing, out of scope, or unauthenticated produces `D:ERR` and injects no policy, and that the shared validation also leaves the ContextShunt reader unauthorized until the configuration is corrected. The coupling is a deliberate, documented consequence.
+
+### Security
+
+- Extend the privacy boundary to conversation extracts: the advisor request and its reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. No deletion or external TTL is promised.
+- An older package that cannot read schema 7 treats the document as invalid and falls back to `off` with a diagnostic. That is a fail-closed stop, not a smooth downgrade; the new role and tool simply do not exist there.
+
 ## 0.11.1 - 2026-09-16
 
 ### Changed

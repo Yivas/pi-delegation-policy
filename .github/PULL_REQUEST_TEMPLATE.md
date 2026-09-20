@@ -6,7 +6,7 @@
 
 - [ ] I ran the formatter, lint, typecheck, tests, and build.
 - [ ] Examples contain no private configuration or credentials.
-- [ ] This change does not create, launch, route, or manage subagents.
+- [ ] This change adds no launch of its own beyond the explicit `context_shunt_delegate` and `advisor_ask` tools, and never starts one from a hook.
 - [ ] Documentation and schema changes are included when needed.
 
 ## Privacy

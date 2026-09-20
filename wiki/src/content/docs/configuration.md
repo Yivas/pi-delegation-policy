@@ -5,7 +5,7 @@ description: Set valid global defaults, session-branch overrides, and optional t
 
 ## Quick valid configuration
 
-The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply the draft. In an active policy, every ordinary role needs an explicit decision: an exact, authenticated reference or `disabled`; at least one ordinary role must be enabled. Visual Design is optional and does not satisfy that minimum.
+The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply the draft. In an active policy, every ordinary role needs an explicit decision: an exact, authenticated reference or `disabled`; at least one ordinary role must be enabled. Visual Design, and Advisor, are optional and do not satisfy that minimum.
 
 Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 7:
 
@@ -101,5 +101,13 @@ With `pi-subagents`, the selected base and level are sent as `model: "provider/m
 ## Visual Design
 
 Visual Design is an optional specialist, not a fourth execution tier. Use it only when the primary acceptance criterion is visual or user experience, behavior and data contracts remain unchanged, the patch is bounded, and it needs no logic, data flow, APIs, routes, architecture, tooling, or cross-system coordination. When it is configured, evaluate those four conditions before ordinary-role selection for every task or phase. If they hold and the visual portion is being delegated by the main agent's decision or required by the active intensity, Visual Design takes priority over Small, Medium, and Large. Reevaluate eligibility when the task or phase changes. This priority does not require delegation in `normal` or `aggressive`. It may design, create, implement, and review scoped presentation code and assets, including visual accessibility, and run its relevant checks. In published `0.7.0` and `normal` or `aggressive`, the main agent retains integration and final acceptance. In published `0.9.0` `orchestrator`, it retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies. Visual Design does not replace ordinary roles or own interaction behavior, state, validation, semantic accessibility, persistence, test infrastructure, or integration mechanics. When disabled, an enabled ordinary role handles eligible visual work by task fit.
+
+## Advisor
+
+Advisor is an optional consultation model, not an execution role. It is off by default, does not count toward the ordinary-role minimum, and configures exactly like Visual Design: an exact `{ "provider", "model" }` reference in global defaults, where only a session override may use `null` to turn it off. `thinking.advisor` accepts the same three states as any other role.
+
+When the advisor is configured and valid, the main agent may consult it with the explicit `advisor_ask` tool, which takes a question, optional extra context, and the thinking level for that call. The advisor answers briefly from a bounded window of the conversation, and it executes no work: it cannot read files, run commands, or delegate. Configuring nothing here changes nothing about the policy: the tool answers `advisor-unavailable` and the agent continues, and the injected block adds no advisor line.
+
+A configured advisor whose model is missing, unavailable, out of scope, or unauthenticated produces `D:ERR` and injects no policy, exactly like Visual Design. That validation is shared: the same error also leaves the ContextShunt reader unauthorized until the configuration is corrected. This coupling is deliberate and documented rather than incidental. Read [limits and privacy](/pi-delegation-policy/limits-and-privacy/#advisor-limits) for the tool contract, the bounded window, and retention.
 
 For fail-closed behavior, privacy, and reporting guidance, read [limits and privacy](/pi-delegation-policy/limits-and-privacy/).

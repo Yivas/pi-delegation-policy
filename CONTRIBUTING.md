@@ -18,7 +18,7 @@ Pull requests should:
 - keep the public package English-only;
 - use fictional examples and provider-agnostic documentation;
 - preserve exact role references and the absence of model fallbacks;
-- preserve the boundary: this package does not create, launch, route, or supervise subagents; ContextShunt can only redirect the main agent and never starts a worker from a hook;
+- preserve the boundary: this package performs no delegated work of its own and never starts a worker from a hook; its only two launches belong to the explicit tools `context_shunt_delegate` and `advisor_ask`, each asking the host-authorized external executor for one bounded answer or one piece of advice;
 - preserve ContextShunt defaults and controls: `off` performs no classification, metrics, I/O, or interception; declared preflight limits count lines, post-result limits use returned UTF-8 bytes and lines, and rejected requests do not consume the admitted-request window;
 - preserve originals when an artifact, permission, or recognized contract is unavailable; keep one-time exceptions user-authorized, short-lived, and bound to the exact tool call and input, with byte limits checked against the returned result;
 - avoid project configuration, credential handling, telemetry, and network requests;
