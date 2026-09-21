@@ -53,13 +53,25 @@ const LEGACY_VISUAL_DESIGN_ROUTING_POLICY =
 const ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY =
   "In orchestrator, route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration responsibility, coordination, and final acceptance, but MUST delegate transferable integration mechanics and detailed review to a capable enabled ordinary role unless a named direct-work exception applies.";
 
-const ADVISOR_POLICY = `Advisor is an optional consultation role; it never executes work. Consult it before acting when a decision is ambiguous, when undoing it would be costly, when a risk remains you cannot resolve alone, or when you have a substantial doubt about architecture, plan, tooling or approach. If a second opinion could change the decision, ask for one. Routine decisions need none. Launch it as a normal subagent with the bundled profile "pi-delegation-policy.advisor" and the exact model and thinking of its role line; do not substitute either.
+const ADVISOR_STEP =
+  "Before committing to an approach, evaluate whether an advisor's second opinion could change the choice. Use the consultation signals below; a routine decision needs no call.";
+
+const DELEGATION_DECISION_STEPS = [
+  "Decide under the active intensity whether this work should be delegated at all.",
+  "Classify the work and determine its acceptance criteria and the evidence it needs.",
+  "If Visual Design is configured, evaluate its four eligibility conditions before any ordinary role. When all four hold and that visual portion is being delegated, Visual Design is selected first.",
+  "Otherwise select the role by task fit among enabled roles only, following the rules below.",
+  "If no enabled role can satisfy the acceptance criteria and evidence, keep the work with the main agent.",
+  "Before every delegated launch, apply the launch requirements below without omitting the model or the thinking choice.",
+];
+
+const ADVISOR_POLICY = `Advisor is a consultation role; it never executes work. Consider consulting before committing when viable approaches trade off explicit requirements; when evidence supports conflicting explanations that call for different actions; or when a proposed change involves destructive data operations, difficult rollback, or compatibility changes for existing consumers. Those are consultation signals, not thresholds that require a call. If a second opinion could change the decision, ask for one. Routine decisions need none. Launch it as a normal subagent with the bundled profile "pi-delegation-policy.advisor" and the exact model and thinking of its role line; do not substitute either.
 
 The advisor knows only what you send: it cannot see this conversation, read files or use tools. Every brief must stand on its own: the objective and the decision, the constraints, the current state and the relevant evidence, including code, errors or results where they matter, the options and their consequences, what you tried or propose and why, and the uncertainty you need resolved. Separate facts from assumptions. Do not omit what it needs, and do not dump what it cannot use.
 
 Treat it as a conversation, not a single ruling. Continue the same thread with the host's resume mechanism to clarify, challenge or go deeper: send what changed and the open question, and never restart the thread for the same matter.
 
-Decisions that belong to the user stay with the user, but consult the advisor first for options, trade-offs and a recommendation you can bring together with the question. Weigh its advice against the evidence and check verifiable claims before relying on them, and never hand it implementation, tool-dependent checks or your own responsibility to decide. Do not seek approval for a decision already taken, and do not keep asking until it agrees: its value is spotting weak assumptions, comparing options and challenging reasoning, not acting as an authority or a formality.`;
+Decisions that belong to the user stay with the user; consider consulting the advisor before asking the user when its advice could improve the options, trade-offs or recommendation you present. Weigh its advice against the evidence and check verifiable claims before relying on them, and never hand it implementation, tool-dependent checks or your own responsibility to decide. Do not seek approval for a decision already taken, and do not keep asking until it agrees: its value is spotting weak assumptions, comparing options and challenging reasoning, not acting as an authority or a formality.`;
 
 function hasSmallMedium(enabled: readonly ModelRole[]): boolean {
   return enabled.includes("small") && enabled.includes("medium");
@@ -203,9 +215,15 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
       ? `${VISUAL_DESIGN_POLICY}\n\n${ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY}`
       : `${VISUAL_DESIGN_POLICY}\n\n${LEGACY_VISUAL_DESIGN_ROUTING_POLICY}`;
   const advisorThinking = roleThinking(effective.thinking.advisor);
-  const advisor = effective.advisor
+  const advisorRoleLine = effective.advisor
     ? `\n- Advisor (optional): ${formatReference(effective.advisor)}; exact model base: ${formatLaunchModel(effective.advisor)}; pi-subagents form: ${formatThinkingLaunchModel(effective.advisor, advisorThinking)}; thinking policy: ${thinkingPolicyText(advisorThinking)}`
     : "";
+  // The consultation rule belongs to the decision procedure, not to the intensity paragraph.
+  const advisorSection = effective.advisor ? `\n\nAdvisor consultation:\n${ADVISOR_POLICY}` : "";
+  const decisionSteps = effective.advisor
+    ? [ADVISOR_STEP, ...DELEGATION_DECISION_STEPS]
+    : DELEGATION_DECISION_STEPS;
+  const decisionOrder = decisionSteps.map((step, index) => `${index + 1}. ${step}`).join("\n");
   const roleLines = enabled
     .map((role) => {
       const reference = effective[role] as ModelRef;
@@ -220,19 +238,10 @@ in the order below. This block states each rule's obligation and its exceptions;
 acting.
 
 Intensity: ${effective.intensity}.
-Intensity rule: ${intensityPolicy}${effective.uiDesign ? `\n\nVisual Design obligation:\n${visualDesignPolicy}` : ""}${effective.advisor ? `\n\nAdvisor consultation:\n${ADVISOR_POLICY}` : ""}
+Intensity rule: ${intensityPolicy}${effective.uiDesign ? `\n\nVisual Design obligation:\n${visualDesignPolicy}` : ""}
 
 Decision order:
-1. Decide under the active intensity whether this work should be delegated at all.
-2. Classify the work and determine its acceptance criteria and the evidence it needs.
-3. If Visual Design is configured, evaluate its four eligibility conditions before any ordinary
-   role. When all four hold and that visual portion is being delegated, Visual Design is selected
-   first.
-4. Otherwise select the role by task fit among enabled roles only, following the rules below.
-5. If no enabled role can satisfy the acceptance criteria and evidence, keep the work with the main
-   agent.
-6. Before every delegated launch, apply the launch requirements below without omitting the model or
-   the thinking choice.
+${decisionOrder}${advisorSection}
 
 Role selection:
 ${ROLE_SELECTION_POLICY}
@@ -248,7 +257,7 @@ Launch requirements:
 Before every delegated launch, name the selected role and take its exact combined provider/model base below. Choose thinking dynamically for that run from task demand, difficulty, quantity, risk, review cost, and the selected model's capabilities when the role's thinking policy is unset. A role with a fixed policy uses exactly that level for every launch and the main agent must not change it. A role with a range policy allows only a level inside its inclusive bounds. A fixed or range policy is binding: it is not an ambient launcher default and is not inherited by another role or by the main agent. Then transmit both through the launcher's per-run mechanism without changing the provider/model base. When the launcher encodes thinking as a model suffix, pass model: "provider/model:LEVEL", replacing LEVEL with that launch's level, or pass the literal level already shown in the role line. Do not omit the model or thinking choice, inherit an ambient launcher default for either, substitute an unlisted model, persist a per-run thinking choice, launch a disabled or unconfigured role, invent a role, or use a level that a bound policy or the selected model does not support.
 
 Roles:
-${roleLines}${uiDesign}${advisor}
+${roleLines}${uiDesign}${advisorRoleLine}
 
 Limits:
 These instructions state the main agent's obligations in this session. The extension cannot enforce

@@ -703,12 +703,13 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   assert.match(policy, /\\u0026/);
 });
 
-test("Advisor is a configured consultation role whose triggers never force a call", () => {
+test("Advisor guidance names observable consultation signals without requiring a call", () => {
   const bare = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
   validateRuntime(context(), bare);
   const withoutAdvisor = buildDelegationPolicy(bare) ?? "";
   assert.doesNotMatch(withoutAdvisor, /Advisor consultation:/);
   assert.doesNotMatch(withoutAdvisor, /pi-delegation-policy\.advisor/);
+  assert.match(withoutAdvisor, /Decision order:\n1\. Decide under the active intensity/);
 
   const disabled = runtime(
     { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal", advisor: null },
@@ -730,14 +731,30 @@ test("Advisor is a configured consultation role whose triggers never force a cal
   );
   assert.equal(statusLabel(configured), "D:NORM");
   const policy = buildDelegationPolicy(configured) ?? "";
+
+  // Consulting is step 1 of the decision procedure, not a paragraph beside the intensity rule.
+  assert.match(
+    policy,
+    /Decision order:\n1\. Before committing to an approach, evaluate whether an advisor's second opinion could change the choice\./,
+  );
+  assert.match(policy, /\n2\. Decide under the active intensity/);
+  const intensityStart = policy.indexOf("Intensity rule:");
+  const decisionStart = policy.indexOf("Decision order:");
+  const advisorStart = policy.indexOf("Advisor consultation:");
+  const roleStart = policy.indexOf("Role selection:");
+  assert.ok(advisorStart > decisionStart && roleStart > advisorStart);
+  assert.ok(!policy.slice(intensityStart, decisionStart).includes("Advisor"));
+
+  const advisorSection = policy.slice(advisorStart, roleStart);
+  assert.doesNotMatch(advisorSection, /MUST/);
+  assert.match(advisorSection, /Advisor is a consultation role/);
   for (const expected of [
-    "Advisor consultation:",
-    "Advisor is an optional consultation role",
-    "a decision is ambiguous",
-    "undoing it would be costly",
-    "a risk remains you cannot resolve alone",
-    "a substantial doubt about architecture, plan, tooling or approach",
+    "viable approaches trade off explicit requirements",
+    "evidence supports conflicting explanations that call for different actions",
+    "destructive data operations, difficult rollback, or compatibility changes for existing consumers",
+    "Those are consultation signals, not thresholds that require a call",
     "If a second opinion could change the decision, ask for one",
+    "Routine decisions need none",
     'the bundled profile "pi-delegation-policy.advisor"',
     "do not substitute either",
     "Every brief must stand on its own",
@@ -750,12 +767,20 @@ test("Advisor is a configured consultation role whose triggers never force a cal
     "Continue the same thread with the host's resume mechanism",
     "never restart the thread for the same matter",
     "Decisions that belong to the user stay with the user",
-    "consult the advisor first for options, trade-offs and a recommendation",
+    "consider consulting the advisor before asking the user when its advice could improve the options",
     "Weigh its advice against the evidence",
     "never hand it implementation, tool-dependent checks or your own responsibility to decide",
     "Do not seek approval for a decision already taken",
   ]) {
     assert.ok(policy.includes(expected), `Missing advisor guarantee: ${expected}`);
+  }
+  for (const removed of [
+    /a decision is ambiguous/,
+    /undoing it would be costly/,
+    /a risk remains you cannot resolve alone/,
+    /a substantial doubt about architecture/,
+  ]) {
+    assert.doesNotMatch(advisorSection, removed);
   }
   assert.ok(
     policy.includes(
@@ -3013,6 +3038,9 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // denied the extension any launch: one explicit tool does ask the authorized executor. Front 25
   // regenerated them again: the advisor became a role the main agent launches itself, so the
   // closing sentence describes that single launch and a configured advisor adds its own section.
+  // Front 26 regenerated them for the advisor consultation revision, which moved that rule into the
+  // decision procedure and reflowed the numbered steps into single lines: the obligations, conditions
+  // and exceptions of these two configurations are unchanged.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3021,8 +3049,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "24fdf9f6b4c7811a2e944576d3150661956094ae204e7c65946dbb504ffa9816",
-    aggressive: "2b37d6f8f731fe79ecffe4c02fb70c673aab5bd94a462a8b480a04f1e7dbc5f2",
+    normal: "ea2227a8d53857342d4e2d6a9f501304587cb071d7dd63fb481558d242551ffa",
+    aggressive: "7f6d778821a8672c84024e0d5fd5a95dcf1c01be52ab8353fec58c9dc4cdadf4",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
