@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.14.1 - 2026-09-21
+
+### Changed
+
+- Say that the advisor consultation comes before investing effort, not after finding results. The step 1 added in `0.14.0` asked the main agent to evaluate a second opinion before committing to an approach, but the first real session after that release read it as permission to save the consultation for later: it decided to "keep the question for when I have findings" and used the advisor as a validator of finished work. By the time it consulted, the advisor corrected its main conclusion. The step now names that deferral as the mistake to avoid. No new obligation: a routine decision still needs no call.
+
 ## 0.14.0 - 2026-09-21
 
 ### Changed
