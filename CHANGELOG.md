@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.14.0 - 2026-09-21
+
+### Changed
+
+- Put the advisor consultation rule where the main agent reads procedure. It is now step 1 of the numbered `Decision order` and has its own `Advisor consultation:` section, instead of a paragraph inside the intensity rule that the decision steps never mentioned. Consulting is still a signal, not a quota.
+- Replace the advisor's self-assessed triggers with observable ones. "An ambiguous decision", "one that is hard to undo", "a risk the main agent cannot resolve alone" and "a substantial doubt about architecture, plan, tooling or approach" all asked the main agent to notice its own doubt, and the same paragraph offered "routine decisions need none" as the way out. The signals are now features of the work: viable approaches trade off explicit requirements; evidence supports conflicting explanations that call for different actions; or a proposed change involves destructive data operations, difficult rollback, or compatibility changes for existing consumers. Public delivery surface is deliberately not one of them, because ordinary public changes are routine.
+- Soften the rule for decisions that belong to the user. The main agent now considers the advisor before asking when its advice could improve the options, trade-offs or recommendation it presents, rather than consulting the advisor first.
+
 ## 0.13.0 - 2026-09-20
 
 ### Added
