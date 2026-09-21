@@ -54,7 +54,7 @@ const ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY =
   "In orchestrator, route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration responsibility, coordination, and final acceptance, but MUST delegate transferable integration mechanics and detailed review to a capable enabled ordinary role unless a named direct-work exception applies.";
 
 const ADVISOR_STEP =
-  "Before committing to an approach, evaluate whether an advisor's second opinion could change the choice. Use the consultation signals below; a routine decision needs no call.";
+  "Before committing to an approach, evaluate whether an advisor's second opinion could change the choice. Consult before investing effort, not to validate finished work, and do not postpone it until you have findings. Use the consultation signals below; a routine decision needs no call.";
 
 const DELEGATION_DECISION_STEPS = [
   "Decide under the active intensity whether this work should be delegated at all.",

@@ -737,6 +737,12 @@ test("Advisor guidance names observable consultation signals without requiring a
     policy,
     /Decision order:\n1\. Before committing to an approach, evaluate whether an advisor's second opinion could change the choice\./,
   );
+  const firstStep = policy.slice(
+    policy.indexOf("Decision order:"),
+    policy.indexOf("\n2. Decide under the active intensity"),
+  );
+  assert.match(firstStep, /Consult before investing effort, not to validate finished work/);
+  assert.match(firstStep, /do not postpone it until you have findings/);
   assert.match(policy, /\n2\. Decide under the active intensity/);
   const intensityStart = policy.indexOf("Intensity rule:");
   const decisionStart = policy.indexOf("Decision order:");
