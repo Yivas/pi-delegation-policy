@@ -233,6 +233,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
     .join("\n");
 
   return `<delegation_policy>
+<!-- pi-delegation-policy:owned -->
 These instructions are binding for the main agent's delegation decisions in this session. Apply them
 in the order below. This block states each rule's obligation and its exceptions; read both before
 acting.

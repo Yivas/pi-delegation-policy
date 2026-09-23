@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** Require Pi `0.87.1` or later. The extension now refreshes its marked policy block exclusively through `context_with_system` before each LLM request, so changes made during a turn affect the next request. The former `before_agent_start` path is removed; Pi `0.84.3` and `0.85.1` are no longer supported.
+
 ## 0.14.1 - 2026-09-21
 
 ### Changed

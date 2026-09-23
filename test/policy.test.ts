@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ContextWithSystemEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import piDelegationPolicy, {
   getArgumentCompletions,
@@ -1049,6 +1049,176 @@ test("commands expose only the supported quick actions and completions", () => {
   );
 });
 
+test("context_with_system applies current branch policy to the next LLM request only", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeConfig(getGlobalConfigPath(directory), { ...defaults, intensity: "normal" });
+    const branch: Array<Record<string, unknown>> = [];
+    const handlers = new Map<
+      string,
+      (event: Record<string, unknown>, ctx: ExtensionContext) => unknown
+    >();
+    const commands = new Map<
+      string,
+      { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+    >();
+    const pi = {
+      on: (
+        name: string,
+        handler: (event: Record<string, unknown>, ctx: ExtensionContext) => unknown,
+      ) => handlers.set(name, handler),
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      appendEntry: (customType: string, data?: unknown) =>
+        branch.push({ type: "custom", customType, data }),
+    };
+    const current = context({ branch });
+    piDelegationPolicy(pi as never);
+
+    const original: ContextWithSystemEvent["messages"] = [
+      {
+        role: "system",
+        content:
+          "Host prompt\n\nAvailable tools:\n- read(path): Read a file.\n\n" +
+          "<delegation_policy>\nForeign extension instructions.\n</delegation_policy>\n\n" +
+          "<delegation_policy>\n<!-- pi-delegation-policy:owned -->\n" +
+          "Intensity: normal.\n</delegation_policy>",
+        sections: {
+          addendum:
+            "Other addendum instructions.\n\n<delegation_policy>\n" +
+            "<!-- pi-delegation-policy:owned -->\nIntensity: normal.\n</delegation_policy>",
+          tools: "Preserve this independent section.",
+        },
+        timestamp: 1,
+      },
+      { role: "user", content: "Inspect this repository.", timestamp: 2 },
+    ];
+    const readCurrentContext = async () => {
+      const result = await handlers.get("context_with_system")?.(
+        { type: "context_with_system", messages: structuredClone(original) },
+        current,
+      );
+      return (result as { messages?: typeof original } | undefined)?.messages;
+    };
+    const firstSystemMessage = (messages: typeof original) => {
+      const first = messages[0];
+      if (!first || first.role !== "system" || typeof first.content !== "string") {
+        throw new Error("The host request does not start with a text system message.");
+      }
+      return first as typeof first & { content: string };
+    };
+    const firstSystemContent = (messages: typeof original): string =>
+      firstSystemMessage(messages).content;
+    const effectiveSystemPrompt = (messages: typeof original): string => {
+      const system = firstSystemMessage(messages);
+      return `${system.content}\n${Object.values(system.sections ?? {}).join("\n")}`;
+    };
+    const policyIn = (messages: typeof original | undefined): string => {
+      if (!messages) throw new Error("The hook returns the complete request transcript.");
+      assert.equal(messages.length, original.length);
+      const system = firstSystemMessage(messages);
+      const content = `${system.content}\n${system.sections?.addendum ?? ""}`;
+      assert.equal(content.includes("Available tools:\n- read(path)"), true);
+      assert.equal(system.sections?.tools, "Preserve this independent section.");
+      assert.ok(content.includes("Other addendum instructions."));
+      assert.ok(content.includes("Foreign extension instructions."));
+      assert.deepEqual(messages.slice(1), original.slice(1));
+      return (
+        content.match(
+          /<delegation_policy>\n<!-- pi-delegation-policy:owned -->[\s\S]*?<\/delegation_policy>/,
+        )?.[0] ?? ""
+      );
+    };
+    const foreignBlock =
+      "<delegation_policy>\nForeign extension instructions.\n</delegation_policy>";
+
+    const first = await readCurrentContext();
+    if (!first) throw new Error("The hook returns the complete request transcript.");
+    assert.match(policyIn(first), /Intensity: normal/);
+    assert.ok(firstSystemContent(first).includes(foreignBlock));
+
+    await commands.get("delegate")?.handler("orchestrator", current);
+    const second = await handlers.get("context_with_system")?.(
+      { type: "context_with_system", messages: first },
+      current,
+    );
+    const orchestratorMessages = (second as { messages: typeof original }).messages;
+    assert.match(policyIn(orchestratorMessages), /Intensity: orchestrator/);
+    assert.equal(
+      (effectiveSystemPrompt(orchestratorMessages).match(/<delegation_policy>/g) ?? []).length,
+      2,
+    );
+    assert.equal(current.model, undefined, "the request hook does not select a principal model");
+
+    await commands.get("delegate")?.handler("aggressive", current);
+    const third = await handlers.get("context_with_system")?.(
+      { type: "context_with_system", messages: orchestratorMessages },
+      current,
+    );
+    const aggressiveMessages = (third as { messages: typeof original }).messages;
+    assert.match(policyIn(aggressiveMessages), /Intensity: aggressive/);
+    assert.equal(
+      (effectiveSystemPrompt(aggressiveMessages).match(/<delegation_policy>/g) ?? []).length,
+      2,
+    );
+
+    branch.splice(0, branch.length, {
+      type: "custom",
+      customType: SESSION_ENTRY_TYPE,
+      data: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    });
+    await handlers.get("session_tree")?.({ type: "session_tree" }, current);
+    const branchResult = await handlers.get("context_with_system")?.(
+      { type: "context_with_system", messages: aggressiveMessages },
+      current,
+    );
+    const branchMessages = (branchResult as { messages: typeof original }).messages;
+    assert.match(policyIn(branchMessages), /Intensity: normal/);
+
+    await commands.get("delegate")?.handler("off", current);
+    const fourth = await handlers.get("context_with_system")?.(
+      { type: "context_with_system", messages: branchMessages },
+      current,
+    );
+    const offMessages = (fourth as { messages: typeof original }).messages;
+    assert.ok(firstSystemContent(offMessages).includes(foreignBlock));
+    assert.equal(firstSystemContent(offMessages).includes("pi-delegation-policy:owned"), false);
+    assert.equal(
+      firstSystemMessage(offMessages).sections?.addendum,
+      "Other addendum instructions.",
+    );
+    assert.deepEqual(offMessages.slice(1), original.slice(1));
+    assert.equal(
+      (effectiveSystemPrompt(offMessages).match(/<delegation_policy>/g) ?? []).length,
+      1,
+    );
+
+    await commands.get("delegate")?.handler("normal", current);
+    const fifth = await handlers.get("context_with_system")?.(
+      { type: "context_with_system", messages: offMessages },
+      current,
+    );
+    const normalMessages = (fifth as { messages: typeof original }).messages;
+    assert.match(policyIn(normalMessages), /Intensity: normal/);
+    assert.equal(
+      (effectiveSystemPrompt(normalMessages).match(/<delegation_policy>/g) ?? []).length,
+      2,
+    );
+    assert.ok(firstSystemContent(normalMessages).includes(foreignBlock));
+    assert.deepEqual(normalMessages.slice(1), original.slice(1));
+
+    const missingSystem = await handlers.get("context_with_system")?.(
+      { type: "context_with_system", messages: [] },
+      current,
+    );
+    assert.equal(missingSystem, undefined, "a missing system message is left untouched");
+  });
+});
+
 test("the extension uses only the approved lifecycle events and never accumulates policy", async () => {
   await withAgentDirectory(async (directory) => {
     await writeConfig(getGlobalConfigPath(directory), defaults);
@@ -1088,7 +1258,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
     piDelegationPolicy(pi as never);
     assert.deepEqual([...handlers.keys()].sort(), [
       "agent_end",
-      "before_agent_start",
+      "context_with_system",
       "session_shutdown",
       "session_start",
       "session_tree",
@@ -1102,9 +1272,6 @@ test("the extension uses only the approved lifecycle events and never accumulate
 
     await handlers.get("session_start")?.({ type: "session_start" }, current);
     assert.equal(statuses.at(-1), "D:OFF");
-
-    const event = { type: "before_agent_start", systemPrompt: "BASE", prompt: "work" };
-    assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
 
     runEditor = (component) => {
       component.handleInput?.("\r");
@@ -1143,27 +1310,11 @@ test("the extension uses only the approved lifecycle events and never accumulate
     }
     await handlers.get("session_tree")?.({ type: "session_tree" }, current);
     assert.equal(statuses.at(-1), "D:ORCH");
-    const orchestratorRun = (await handlers.get("before_agent_start")?.(event, current)) as {
-      systemPrompt?: string;
-    };
-    assert.match(orchestratorRun.systemPrompt ?? "", /Intensity: orchestrator/);
-    assert.match(orchestratorRun.systemPrompt ?? "", /final acceptance/);
-
-    const first = (await handlers.get("before_agent_start")?.(event, current)) as {
-      systemPrompt?: string;
-    };
-    const second = (await handlers.get("before_agent_start")?.(event, current)) as {
-      systemPrompt?: string;
-    };
-    assert.equal(first.systemPrompt, second.systemPrompt);
-    assert.equal((first.systemPrompt?.match(/<delegation_policy>/g) ?? []).length, 1);
-
     await commands.get("delegate")?.handler("off", current);
     assert.deepEqual(branch.at(-1)?.data, {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "off",
     });
-    assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
 
     await commands.get("delegate")?.handler("normal", current);
     await commands.get("delegate")?.handler("reset", current);
@@ -1171,7 +1322,6 @@ test("the extension uses only the approved lifecycle events and never accumulate
       schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "off",
     });
-    assert.equal(await handlers.get("before_agent_start")?.(event, current), undefined);
     await handlers.get("session_tree")?.({ type: "session_tree" }, current);
     assert.equal(statuses.at(-1), "D:OFF");
 
@@ -2306,20 +2456,39 @@ test("source code keeps ContextShunt bounded to public hooks without a runner, m
   assert.doesNotMatch(joined, /\bfetch\s*\(|https?:\/\//);
 });
 
-test("public documentation matches the declared Pi baseline", async () => {
+test("public documentation distinguishes the published package and current source Pi baselines", async () => {
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
   const peer = packageJson.peerDependencies["@earendil-works/pi-coding-agent"] as string;
   const baseline = /^>=(\d+\.\d+\.\d+)$/.exec(peer)?.[1];
   assert.ok(baseline, `Expected an exact minimum Pi peer, received ${peer}`);
 
+  const readme = await readFile(join(process.cwd(), "README.md"), "utf8");
+  assert.ok(
+    readme.includes(`Pi \`${baseline}\``),
+    "README.md must include the current source baseline",
+  );
+  assert.ok(
+    readme.includes(`>=${baseline}`),
+    "README.md must include the current source peer minimum",
+  );
+  assert.match(
+    readme,
+    /Version \*\*0\.14\.1\*\* is the latest published package[\s\S]*?published version supports Pi `0\.84\.3` or later \(`@earendil-works\/pi-coding-agent >=0\.84\.3`\)/,
+    "README.md must distinguish the published package baseline from the current source baseline",
+  );
+
   for (const path of [
-    "README.md",
     "wiki/src/content/docs/index.mdx",
     "wiki/src/content/docs/getting-started.md",
   ]) {
     const contents = await readFile(join(process.cwd(), path), "utf8");
     assert.ok(contents.includes(`Pi \`${baseline}\``), `${path} must include the Pi baseline`);
     assert.ok(contents.includes(`>=${baseline}`), `${path} must include the Pi peer minimum`);
+    assert.match(
+      contents,
+      /unreleased source on `main`[\s\S]*?latest published package,? `0\.14\.1`[\s\S]*?supports Pi `0\.84\.3` or later/,
+      `${path} must distinguish the published package baseline from the current source baseline`,
+    );
   }
 });
 
@@ -3001,7 +3170,10 @@ test("generated guidance states obligations, conditions, and exceptions in a fix
       runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "aggressive" }),
     ) ?? "";
 
-  assert.match(policy, /^<delegation_policy>\nThese instructions are binding/);
+  assert.match(
+    policy,
+    /^<delegation_policy>\n<!-- pi-delegation-policy:owned -->\nThese instructions are binding/,
+  );
   for (const expected of [
     "Intensity: aggressive.\nIntensity rule:",
     "Decision order:\n1. Decide under the active intensity",
@@ -3046,7 +3218,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // closing sentence describes that single launch and a configured advisor adds its own section.
   // Front 26 regenerated them for the advisor consultation revision, which moved that rule into the
   // decision procedure and reflowed the numbered steps into single lines: the obligations, conditions
-  // and exceptions of these two configurations are unchanged.
+  // and exceptions of these two configurations are unchanged. The owned-block marker below is part
+  // of the literal policy text so request-local updates can identify only this extension's section.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3055,8 +3228,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "ea2227a8d53857342d4e2d6a9f501304587cb071d7dd63fb481558d242551ffa",
-    aggressive: "7f6d778821a8672c84024e0d5fd5a95dcf1c01be52ab8353fec58c9dc4cdadf4",
+    normal: "fe006e9ce30ea8971ed62260a81a8c780a286f40725a0ca8c76995321b6508d1",
+    aggressive: "59681ee01d4ca5aebb7db09e3a1f57a0edd56c07f971c4c6f3a0d256aaec5a54",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);

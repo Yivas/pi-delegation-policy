@@ -168,9 +168,6 @@ test(
       assert.match(report.tarball.sha256, /^[a-f0-9]{64}$/);
       assert.equal(report.tarball.excludesPiSubagents, true);
       const expectedCells = [
-        ["0.84.3", "success"],
-        ["0.84.3", "cancel"],
-        ["0.84.3", "unavailable"],
         [currentVersion!, "success"],
         [currentVersion!, "cancel"],
         [currentVersion!, "unavailable"],
@@ -181,8 +178,8 @@ test(
       );
       assert.equal(
         new Set(report.hosts.map((entry) => `${entry.hostVersion}/${entry.case}`)).size,
-        6,
-        "report has exactly six unique host/case cells",
+        3,
+        "report has exactly three unique host/case cells",
       );
       assert.doesNotMatch(
         JSON.stringify(report),

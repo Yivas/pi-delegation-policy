@@ -5,9 +5,8 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 ## Requirements
 
-- Pi `>=0.84.3` satisfies the package peer requirement.
-- Pi `0.84.3` is the minimum supported version; Pi `0.85.1` is the explicitly checked baseline. Other Pi versions within the peer range are not claimed as tested.
-- Access to npm to install the latest published package, `0.14.1`.
+- The unreleased source on `main` requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`); Pi `0.87.1` is the verified baseline for its per-request policy updates. The latest published package, `0.14.1`, supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`).
+- The npm command below installs published package `0.14.1`, not the unreleased source on `main`.
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design and Advisor are optional.
 
 ## Safe first-use path
@@ -58,9 +57,9 @@ Global defaults and new session entries use schema version 7. Schemas 2 through 
 
 A package that cannot read schema 7 treats the document as invalid: global defaults fall back to empty defaults with `off` and no injection, and the branch falls back to `off` with a sanitized notice. Saving effective defaults changes only the global file and does not apply the current session draft or create that guard. Before downgrading to a package that cannot read schema 4, set global and branch ContextShunt to `off`. Before downgrading to `0.6.0`, also change intensity to `off`, `normal`, or `aggressive` and run `/delegate off` in every active branch. For `<=0.5.0`, change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references. Complete these steps before installing the older package; see [configuration](/pi-delegation-policy/configuration/#global-defaults-and-session-inheritance).
 
-### 6. Start the next agent run
+### 6. When applied changes take effect
 
-The applied configuration is read when Pi prepares the next agent run. It does not rewrite an agent that is already running. Turning the policy off removes it from subsequent runs; Pi rebuilds the system prompt for each run.
+With the published package `0.14.1`, changes take effect on the next agent run. The unreleased source on `main` instead refreshes policy before each LLM request on Pi `0.87.1+`; a change during a turn therefore affects its next request, but not a request already in progress or a subagent already launched. In either version, turning the policy off removes the block when that version next applies its policy.
 
 ## Local checkout (secondary)
 

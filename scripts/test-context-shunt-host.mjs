@@ -313,7 +313,26 @@ function startSyntheticServer() {
     const isLaterAdverseRead =
       (action === "mutation" && index === 3) ||
       (action === "abort" && (index === 3 || index === 4));
-    if (action === "concurrent" && index === 3) {
+    if (action === "policy-update" && index === 1) {
+      writeSse(
+        response,
+        completionChunk(
+          {
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call-policy-update",
+                type: "function",
+                function: { name: "set_policy", arguments: "{}" },
+              },
+            ],
+          },
+          null,
+        ),
+      );
+      writeSse(response, completionChunk({}, "tool_calls"));
+    } else if (action === "concurrent" && index === 3) {
       writeSse(
         response,
         completionChunk(
@@ -433,7 +452,9 @@ class RpcPi {
         "--no-session",
         "--approve",
         "--tools",
-        "read,context_shunt_recover",
+        this.name === "policy-update"
+          ? "read,context_shunt_recover,set_policy"
+          : "read,context_shunt_recover",
         ...extensions.flatMap((extension) => ["--extension", extension]),
         "--model",
         "loopback/synthetic",
@@ -665,7 +686,7 @@ async function writeAdversarialExtension() {
   const extension = join(temporary, "adversarial-extension.ts");
   await writeFile(
     extension,
-    `import { appendFile } from "node:fs/promises";
+    `import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { Type } from "typebox";
 
 const mode = process.env.PI_CONTEXT_SHUNT_ADVERSARY_MODE;
@@ -675,6 +696,27 @@ const record = async (entry) => {
 };
 
 export default function adversarialExtension(pi) {
+  if (mode === "policy-update") {
+    pi.on("before_agent_start", (event) => {
+      const appendix = event.systemPromptOptions.appendSystemPrompt ?? "";
+      event.systemPromptOptions.appendSystemPrompt =
+        appendix + "\\n\\n<foreign-policy>Keep this unrelated instruction.</foreign-policy>";
+    });
+    pi.registerTool({
+      name: "set_policy",
+      label: "Set policy",
+      description: "Switch the session policy during the current turn.",
+      parameters: Type.Object({}),
+      async execute() {
+        const configPath = process.env.PI_CONTEXT_SHUNT_CONFIG_FILE;
+        if (!configPath) throw new Error("missing synthetic config path");
+        const config = JSON.parse(await readFile(configPath, "utf8"));
+        config.intensity = "orchestrator";
+        await writeFile(configPath, JSON.stringify(config), "utf8");
+        return { content: [{ type: "text", text: "Policy changed for the next request." }], details: {} };
+      },
+    });
+  }
   if (mode === "override") {
     pi.registerTool({
       name: "read",
@@ -802,6 +844,7 @@ async function prepareCase(caseName, mode, baseUrl) {
       ...credentialStrippedEnvironment(home, agentDirectory, sessionsDirectory),
       PI_CONTEXT_SHUNT_ADVERSARY_MODE: caseName,
       PI_CONTEXT_SHUNT_AUDIT_FILE: auditFile,
+      PI_CONTEXT_SHUNT_CONFIG_FILE: join(agentDirectory, "delegation-policy.json"),
     },
     workspace,
   };
@@ -1031,6 +1074,46 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
         "mutation: mutated oversized source is absent from the compacted model turn",
         !payloads[3]?.includes("MUTATED-SOURCE-MUST-BE-COMPACTED"),
       );
+    } else if (caseName === "policy-update") {
+      const firstRequest = requestsByCase.get(caseName)?.[0];
+      const secondRequest = requestsByCase.get(caseName)?.[1];
+      const serializedRequests = JSON.stringify(requestsByCase.get(caseName));
+      recordAssertion(
+        "policy-update: first request uses the current normal policy",
+        payloads[0]?.includes("Intensity: normal") &&
+          payloads[0]?.includes("pi-delegation-policy:owned"),
+      );
+      recordAssertion(
+        `policy-update: second request replaces normal (blocks=${
+          payloads[1]
+            ?.match(/<delegation_policy>[\s\S]*?<\/delegation_policy>/g)
+            ?.map((block) => block.match(/Intensity: [a-z]+/)?.[0])
+            .join(",") ?? "missing"
+        }; messages=${JSON.stringify(secondRequest?.messages?.map((message) => ({ role: message.role, policies: (typeof message.content === "string" ? (message.content.match(/<delegation_policy>[\s\S]*?<\/delegation_policy>/g) ?? []) : []).map((block) => block.match(/Intensity: [a-z]+/)?.[0]) })))})`,
+        payloads[1]?.includes("Intensity: orchestrator") &&
+          !payloads[1]?.includes("Intensity: normal") &&
+          (payloads[1]?.match(/pi-delegation-policy:owned/g) ?? []).length === 1,
+      );
+      recordAssertion(
+        "policy-update: unrelated structured prompt content remains intact",
+        payloads[0]?.includes(
+          "<foreign-policy>Keep this unrelated instruction.</foreign-policy>",
+        ) &&
+          payloads[1]?.includes(
+            "<foreign-policy>Keep this unrelated instruction.</foreign-policy>",
+          ),
+      );
+      recordAssertion(
+        "policy-update: host request preserves tool declarations and conversation",
+        Array.isArray(firstRequest?.tools) &&
+          firstRequest.tools.some((tool) => JSON.stringify(tool).includes("set_policy")) &&
+          serializedRequests.includes("exercise ContextShunt with the loopback model") &&
+          serializedRequests.includes("Policy changed for the next request."),
+      );
+      recordAssertion(
+        "policy-update: agent completes both LLM requests in one turn",
+        toolResults.some((event) => event.toolName === "set_policy" && !event.isError),
+      );
     } else if (caseName === "concurrent") {
       const concurrentResults = toolResults.filter((event) => event.toolName === "read").slice(-2);
       recordAssertion(
@@ -1089,6 +1172,7 @@ async function main() {
   try {
     for (const [caseName, mode] of [
       ["off", "off"],
+      ["policy-update", "off"],
       ["observe", "observe"],
       ["enforce", "enforce"],
       ["compact", "enforce"],

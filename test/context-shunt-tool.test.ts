@@ -648,10 +648,15 @@ test("revocation after derived archival discards the answer and retains the sour
 test("lifecycle rotates, closes, cancels on disabling commands, and hooks never launch work", async () => {
   await withRuntime(defaults, async (run, ctx) => {
     await start(run, ctx);
-    const hookNames = ["before_agent_start", "tool_call", "tool_result", "agent_end"];
+    const hookNames = ["tool_call", "tool_result", "agent_end"];
     for (const name of hookNames)
       await run.handlers.get(name)?.(
-        { toolName: "read", input: { path: "x", limit: 1 }, content: [] },
+        {
+          toolName: "read",
+          input: { path: "x", limit: 1 },
+          content: [],
+          systemPromptOptions: { cwd: "." },
+        },
         ctx,
       );
     assert.deepEqual(

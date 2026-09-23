@@ -496,10 +496,52 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       shunt.clearPending();
       await refreshRuntime(ctx);
     });
-    pi.on("before_agent_start", async (event, ctx) => {
+    pi.on("context_with_system", async (event, ctx) => {
       const state = await refreshRuntime(ctx);
       const policy = buildDelegationPolicy(state);
-      return policy ? { systemPrompt: `${event.systemPrompt}\n\n${policy}` } : undefined;
+      const systemMessage = event.messages[0];
+      if (
+        !systemMessage ||
+        systemMessage.role !== "system" ||
+        typeof systemMessage.content !== "string"
+      )
+        return undefined;
+
+      const ownedPolicyBlock =
+        /(?:\n\n)?<delegation_policy>\n<!-- pi-delegation-policy:owned -->[\s\S]*?<\/delegation_policy>/g;
+      let replacedPolicy = false;
+      const updateOwnedPolicy = (text: string): string =>
+        text.replace(ownedPolicyBlock, (_ownedBlock, offset) => {
+          if (!policy || replacedPolicy) return "";
+          replacedPolicy = true;
+          return `${offset > 0 ? "\n\n" : ""}${policy}`;
+        });
+
+      const content = updateOwnedPolicy(systemMessage.content);
+      let sections = systemMessage.sections ? { ...systemMessage.sections } : undefined;
+      const previousAddendum = sections?.addendum;
+      let addendum =
+        typeof previousAddendum === "string" ? updateOwnedPolicy(previousAddendum) : "";
+      if (policy && !replacedPolicy) {
+        addendum = addendum ? `${addendum}\n\n${policy}` : policy;
+      }
+      if (previousAddendum !== undefined) {
+        if (addendum) sections!.addendum = addendum;
+        else delete sections!.addendum;
+      } else if (addendum) {
+        (sections ??= {}).addendum = addendum;
+      }
+
+      return {
+        messages: [
+          {
+            ...systemMessage,
+            content,
+            ...(sections && Object.keys(sections).length > 0 ? { sections } : {}),
+          },
+          ...event.messages.slice(1),
+        ],
+      };
     });
     pi.on("agent_end", async () => {
       shunt.clearConsumed();

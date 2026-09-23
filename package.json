@@ -38,13 +38,13 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.84.3",
-    "@earendil-works/pi-coding-agent": ">=0.84.3",
+    "@earendil-works/pi-coding-agent": ">=0.87.1",
     "@earendil-works/pi-tui": ">=0.84.3"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
-    "@earendil-works/pi-tui": "0.85.1",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-tui": "0.87.1",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.1",
     "ajv": "^8.20.0",

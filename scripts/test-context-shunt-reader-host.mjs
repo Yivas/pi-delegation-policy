@@ -1281,20 +1281,11 @@ try {
   const externalRoot = resolve(requiredEnvironment("PI_CONTEXT_SHUNT_SUBAGENTS_ROOT"));
   const currentRoot = resolve(requiredEnvironment("PI_CONTEXT_SHUNT_CURRENT_PI_ROOT"));
   const currentVersion = requiredEnvironment("PI_CONTEXT_SHUNT_CURRENT_PI_VERSION");
-  // The minimum supported Pi host may live outside this checkout; the default keeps the
-  // original devDependency layout so an unconfigured run behaves as before.
-  const minimumRoot = resolve(
-    process.env.PI_CONTEXT_SHUNT_MINIMUM_PI_ROOT?.trim() ||
-      join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent"),
-  );
   const temporary = await mkdtemp(join(tmpdir(), "context-shunt-b17-reader-host-"));
   try {
     const externalManifest = JSON.parse(await readFile(join(externalRoot, "package.json"), "utf8"));
     assert.equal(externalManifest.version, "0.69.0", "external pi-subagents is exactly 0.69.0");
-    const hosts = [
-      await hostFrom(minimumRoot, "0.84.3"),
-      await hostFrom(currentRoot, currentVersion),
-    ];
+    const hosts = [await hostFrom(currentRoot, currentVersion)];
     reportPhase = "pack";
     const tarball = await packProduct(temporary);
     report.tarball = { sha256: tarball.sha256, excludesPiSubagents: true };

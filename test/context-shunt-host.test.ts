@@ -234,7 +234,18 @@ async function assertHost(
   assert.match(result.tarball.sha256, /^[a-f0-9]{64}$/);
   assert.deepEqual(
     result.cases.map((entry) => entry.case),
-    ["off", "observe", "enforce", "compact", "deny", "mutation", "override", "abort", "concurrent"],
+    [
+      "off",
+      "policy-update",
+      "observe",
+      "enforce",
+      "compact",
+      "deny",
+      "mutation",
+      "override",
+      "abort",
+      "concurrent",
+    ],
   );
   assert.ok(
     result.cases.every((entry) => entry.status === "passed" && entry.providerRequests <= 8),
@@ -300,7 +311,7 @@ const npmExecPath = process.env.npm_execpath?.trim();
 test("loads the packed extension through the selected npm CLI", async () => {
   const baselinePiRoot = join(process.cwd(), "node_modules/@earendil-works/pi-coding-agent");
   if (process.env.npm_execpath === undefined) {
-    await assertHost(baselinePiRoot, "0.85.1");
+    await assertHost(baselinePiRoot, "0.87.1");
     return;
   }
 
@@ -324,7 +335,7 @@ test("loads the packed extension through the selected npm CLI", async () => {
     );
     await assertHost(
       baselinePiRoot,
-      "0.85.1",
+      "0.87.1",
       { ...process.env, npm_execpath: npmExecPath },
       isolatedNode,
     );
