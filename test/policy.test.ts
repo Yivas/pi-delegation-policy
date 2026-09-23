@@ -2456,39 +2456,40 @@ test("source code keeps ContextShunt bounded to public hooks without a runner, m
   assert.doesNotMatch(joined, /\bfetch\s*\(|https?:\/\//);
 });
 
-test("public documentation distinguishes the published package and current source Pi baselines", async () => {
+test("public documentation states the versioned Pi requirements without release-state claims", async () => {
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
+  const version = packageJson.version as string;
   const peer = packageJson.peerDependencies["@earendil-works/pi-coding-agent"] as string;
   const baseline = /^>=(\d+\.\d+\.\d+)$/.exec(peer)?.[1];
   assert.ok(baseline, `Expected an exact minimum Pi peer, received ${peer}`);
 
+  const versionedRequirements = (contents: string, path: string) => {
+    assert.ok(
+      contents.includes(`Version **${version}**`) || contents.includes(`Version \`${version}\``),
+      `${path} must identify package version ${version}`,
+    );
+    assert.ok(contents.includes(`Pi \`${baseline}\``), `${path} must include the Pi baseline`);
+    assert.ok(contents.includes(`>=${baseline}`), `${path} must include the Pi peer minimum`);
+    assert.match(
+      contents,
+      /Version [`*]?0\.14\.1[`*]? supports Pi [`*]?0\.84\.3[`*]? or later/,
+      `${path} must retain the historical 0.14.1 Pi requirement`,
+    );
+    assert.doesNotMatch(
+      contents,
+      /latest published package|unreleased source on `main`/i,
+      `${path} must not describe temporary release state`,
+    );
+  };
+
   const readme = await readFile(join(process.cwd(), "README.md"), "utf8");
-  assert.ok(
-    readme.includes(`Pi \`${baseline}\``),
-    "README.md must include the current source baseline",
-  );
-  assert.ok(
-    readme.includes(`>=${baseline}`),
-    "README.md must include the current source peer minimum",
-  );
-  assert.match(
-    readme,
-    /Version \*\*0\.14\.1\*\* is the latest published package[\s\S]*?published version supports Pi `0\.84\.3` or later \(`@earendil-works\/pi-coding-agent >=0\.84\.3`\)/,
-    "README.md must distinguish the published package baseline from the current source baseline",
-  );
+  versionedRequirements(readme, "README.md");
 
   for (const path of [
     "wiki/src/content/docs/index.mdx",
     "wiki/src/content/docs/getting-started.md",
   ]) {
-    const contents = await readFile(join(process.cwd(), path), "utf8");
-    assert.ok(contents.includes(`Pi \`${baseline}\``), `${path} must include the Pi baseline`);
-    assert.ok(contents.includes(`>=${baseline}`), `${path} must include the Pi peer minimum`);
-    assert.match(
-      contents,
-      /unreleased source on `main`[\s\S]*?latest published package,? `0\.14\.1`[\s\S]*?supports Pi `0\.84\.3` or later/,
-      `${path} must distinguish the published package baseline from the current source baseline`,
-    );
+    versionedRequirements(await readFile(join(process.cwd(), path), "utf8"), path);
   }
 });
 

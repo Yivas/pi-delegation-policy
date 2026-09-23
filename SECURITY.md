@@ -20,4 +20,4 @@ Include the affected version or commit, operating system, Pi version, reproducti
 
 ## Supported versions
 
-Only the latest published version is supported. Version 0.14.1 is the current supported release.
+Only the latest published version is supported. Version 0.14.1 requires Pi 0.84.3 or later; version 0.15.0 requires Pi 0.87.1 or later.

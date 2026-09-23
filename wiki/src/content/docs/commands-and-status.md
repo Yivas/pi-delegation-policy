@@ -58,7 +58,7 @@ At or above that size, both pinned actions and at least one model row remain vis
 
 ## 4. Apply changes
 
-The published package `0.14.1` applies changes on the next agent run. The unreleased source on `main` requires Pi `0.87.1` or later and refreshes policy before each LLM request, so changes affect the next request in the active turn as well. A request already in progress and subagents already launched keep their existing state; turning the policy off removes the block when that version next applies its policy.
+Version `0.14.1` applies changes on the next agent run. Version `0.15.0` requires Pi `0.87.1` or later and refreshes policy before each LLM request, so changes affect the next request in the active turn as well. A request already in progress and subagents already launched keep their existing state; turning the policy off removes the block when that version next applies its policy.
 
 An active policy requires each ordinary role to be explicitly enabled with a valid exact reference or disabled, plus at least one enabled ordinary role. Configured Visual Design and Advisor references are also validated. Before every delegated launch, use the selected exact `provider/model` base and that role's thinking policy. With no policy, choose the level for that task from demand, difficulty, quantity, risk, review cost, and the selected model's capabilities. With a fixed policy, use exactly that level and do not change it. With a range policy, use a level inside its inclusive bounds. A bound policy is not an ambient launcher default and is never inherited by another role or by the main agent. With `pi-subagents`, append the chosen or fixed level as `model: "provider/model:LEVEL"`; a fixed policy shows its literal level in the role line instead of the `LEVEL` placeholder. Use a separate per-run thinking field when another launcher provides one.
 
@@ -103,7 +103,7 @@ A blocked call can be narrowed, or a real user can approve its matching next cal
 2. Check that every ordinary role has an exact current-scope model or is explicitly disabled. Check Visual Design and Advisor if configured.
 3. Confirm each enabled model is authenticated, available, and in scope; the extension has no model fallback.
 4. Read the `thinking-<role>` token of the role in the detail. A `fixed:<level>` or `range:<min>..<max>` policy that names a level the role's model does not support produces this error; change the policy or the model.
-5. Apply the corrected draft and run `/delegate status` again. With published `0.14.1`, wait for the next agent run; with unreleased `main` on Pi `0.87.1+`, wait for the next LLM request.
+5. Apply the corrected draft and run `/delegate status` again. With version `0.14.1`, wait for the next agent run; with version `0.15.0` on Pi `0.87.1+`, wait for the next LLM request.
 
 A malformed `thinking` entry is not part of this list: it invalidates the whole document, so no policy is injected at all and the sanitized warning in section 5 applies instead.
 

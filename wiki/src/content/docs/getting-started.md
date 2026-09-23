@@ -5,8 +5,8 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 ## Requirements
 
-- The unreleased source on `main` requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`); Pi `0.87.1` is the verified baseline for its per-request policy updates. The latest published package, `0.14.1`, supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`).
-- The npm command below installs published package `0.14.1`, not the unreleased source on `main`.
+- Version `0.15.0` requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`); Pi `0.87.1` is the verified baseline for its per-request policy updates. Version `0.14.1` supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`).
+- The npm command below installs the package selected by npm's `latest` dist-tag; the package version available through that tag depends on the release channel's current state.
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design and Advisor are optional.
 
 ## Safe first-use path
@@ -59,7 +59,7 @@ A package that cannot read schema 7 treats the document as invalid: global defau
 
 ### 6. When applied changes take effect
 
-With the published package `0.14.1`, changes take effect on the next agent run. The unreleased source on `main` instead refreshes policy before each LLM request on Pi `0.87.1+`; a change during a turn therefore affects its next request, but not a request already in progress or a subagent already launched. In either version, turning the policy off removes the block when that version next applies its policy.
+With version `0.14.1`, changes take effect on the next agent run. Version `0.15.0` refreshes policy before each LLM request on Pi `0.87.1+`; a change during a turn therefore affects its next request, but not a request already in progress or a subagent already launched. In either version, turning the policy off removes the block when that version next applies its policy.
 
 ## Local checkout (secondary)
 
