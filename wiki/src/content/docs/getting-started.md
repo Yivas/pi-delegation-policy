@@ -5,7 +5,7 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 ## Requirements
 
-- Version `0.15.0` requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`); Pi `0.87.1` is the verified baseline for its per-request policy updates. Version `0.14.1` supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`).
+- Version `0.15.1` requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`); Pi `0.87.1` is the verified baseline for its per-request policy updates. It also re-applies the marked policy block in the final provider payload. Version `0.14.1` supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`).
 - The npm command below installs the package selected by npm's `latest` dist-tag; the package version available through that tag depends on the release channel's current state.
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design and Advisor are optional.
 

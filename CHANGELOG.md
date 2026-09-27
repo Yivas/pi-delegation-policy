@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.15.1 - 2026-09-27
+
+### Fixed
+
+- Re-apply the marked policy block in the final provider payload. Pi `0.87.1` projects a forced system prompt after `context_with_system`, so an extension that returns `systemPrompt` from `before_agent_start` could drop the block before the request left. The `before_provider_request` hook now rebuilds the current effective policy on every final invocation and rewrites only the owned block inside the instruction fields of the provider shapes the adapters use. A payload whose shape is not recognized is left untouched.
+- Read the effective policy on the final request instead of reusing the state loaded by the previous context hook, so a change to global defaults or to the session branch between requests applies without a new context hook.
+- Remove only the instruction containers this extension's own removal emptied. `off` no longer leaves an empty system block behind, a foreign empty container stays, and no instruction role is synthesized.
+- Restore the paragraph break the owned-block pattern consumes when the block sat after other text, so foreign instructions keep their layout.
+
+### Changed
+
+- Refresh the effective state once per provider request. If that reload fails, the last loaded state is used so the repair is not lost.
+
 ## 0.15.0
 
 ### Changed
