@@ -1219,6 +1219,75 @@ test("context_with_system applies current branch policy to the next LLM request 
   });
 });
 
+test("before_provider_request reloads the current policy with no context hook in between", async () => {
+  await withAgentDirectory(async (directory) => {
+    const configPath = getGlobalConfigPath(directory);
+    await writeConfig(configPath, { ...defaults, intensity: "normal" });
+    const branch: Array<Record<string, unknown>> = [];
+    const handlers = new Map<
+      string,
+      (event: Record<string, unknown>, ctx: ExtensionContext) => unknown
+    >();
+    const pi = {
+      on: (
+        name: string,
+        handler: (event: Record<string, unknown>, ctx: ExtensionContext) => unknown,
+      ) => handlers.set(name, handler),
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: () => undefined,
+      registerShortcut: () => undefined,
+      appendEntry: (customType: string, data?: unknown) =>
+        branch.push({ type: "custom", customType, data }),
+    };
+    const current = context({ branch });
+    piDelegationPolicy(pi as never);
+
+    const requestPayload = () => ({
+      model: "synthetic",
+      stream: true,
+      messages: [
+        { role: "system", content: "<foreign>Keep me.</foreign>" },
+        { role: "user", content: "Inspect this repository." },
+      ],
+      tools: [{ type: "function", function: { name: "read" } }],
+    });
+    // No session_start and no context hook: the provider hook alone must load the effective state.
+    const request = async () => {
+      const payload = requestPayload();
+      const result = (await handlers.get("before_provider_request")?.(
+        { type: "before_provider_request", payload },
+        current,
+      )) as typeof payload;
+      return result;
+    };
+    const firstSystemContent = (payload: ReturnType<typeof requestPayload>): string => {
+      const first = payload.messages[0];
+      assert.equal(typeof first.content, "string");
+      return first.content;
+    };
+    const ownedMarkerCount = (content: string) =>
+      (content.match(/pi-delegation-policy:owned/g) ?? []).length;
+
+    const first = await request();
+    assert.match(firstSystemContent(first), /Intensity: normal/);
+    assert.match(firstSystemContent(first), /<foreign>Keep me.<\/foreign>/);
+    assert.equal(ownedMarkerCount(firstSystemContent(first)), 1);
+
+    await writeConfig(configPath, { ...defaults, intensity: "orchestrator" });
+    const second = await request();
+    assert.match(firstSystemContent(second), /Intensity: orchestrator/);
+    assert.equal(firstSystemContent(second).includes("Intensity: normal"), false);
+    assert.equal(ownedMarkerCount(firstSystemContent(second)), 1);
+    assert.deepEqual(second.tools, requestPayload().tools);
+
+    await writeConfig(configPath, { ...defaults, intensity: "off" });
+    const third = await request();
+    assert.equal(firstSystemContent(third), "<foreign>Keep me.</foreign>");
+    assert.deepEqual(third.tools, requestPayload().tools);
+  });
+});
+
 test("the extension uses only the approved lifecycle events and never accumulates policy", async () => {
   await withAgentDirectory(async (directory) => {
     await writeConfig(getGlobalConfigPath(directory), defaults);
@@ -1258,6 +1327,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
     piDelegationPolicy(pi as never);
     assert.deepEqual([...handlers.keys()].sort(), [
       "agent_end",
+      "before_provider_request",
       "context_with_system",
       "session_shutdown",
       "session_start",
@@ -2537,6 +2607,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/delegate-panel.ts",
     "src/index.ts",
     "src/prompt.ts",
+    "src/provider-policy.ts",
     "src/runtime.ts",
     "src/types.ts",
     "src/ui.ts",

@@ -238,6 +238,7 @@ async function assertHost(
       "off",
       "policy-update",
       "observe",
+      "forced-prompt",
       "enforce",
       "compact",
       "deny",
@@ -258,6 +259,14 @@ async function assertHost(
     result.assertions.includes(
       "harness: RPC line, event, and output cap terminates a synthetic flood",
     ),
+  );
+  assert.ok(
+    result.assertions.includes(
+      "forced-prompt: provider instruction fields contain exactly one current owned policy",
+    ),
+  );
+  assert.ok(
+    result.assertions.includes("forced-prompt: foreign instruction and tool result are preserved"),
   );
   assert.ok(result.assertions.includes("enforce: declared excess read is blocked"));
   assert.ok(result.assertions.includes("compact: recovery tool executes through the host"));

@@ -696,6 +696,11 @@ const record = async (entry) => {
 };
 
 export default function adversarialExtension(pi) {
+  if (mode === "forced-prompt") {
+    pi.on("before_agent_start", (event) => ({
+      systemPrompt: event.systemPrompt + "\\n\\n<foreign-policy>Keep this unrelated instruction.</foreign-policy>",
+    }));
+  }
   if (mode === "policy-update") {
     pi.on("before_agent_start", (event) => {
       const appendix = event.systemPromptOptions.appendSystemPrompt ?? "";
@@ -997,6 +1002,44 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
         "observe: read result remains unchanged",
         payloads[1]?.includes("SYNTHETIC-READ-MARKER"),
       );
+    } else if (caseName === "forced-prompt") {
+      const requests = requestsByCase.get(caseName) ?? [];
+      const instructionContents = (request) =>
+        (request?.messages ?? [])
+          .filter((message) => message.role === "system" || message.role === "developer")
+          .map((message) => message.content)
+          .filter((content) => typeof content === "string");
+      const markerCount = (contents) =>
+        contents.reduce(
+          (count, content) => count + (content.match(/pi-delegation-policy:owned/g) ?? []).length,
+          0,
+        );
+      // The forced projection collapses the system prompt on every request, so each one must carry
+      // exactly one repaired policy block rather than only the first request of the turn.
+      const perRequest = requests.map(instructionContents);
+      recordAssertion(
+        "forced-prompt: provider instruction fields contain exactly one current owned policy",
+        requests.length === 2 &&
+          perRequest.every(
+            (contents) =>
+              markerCount(contents) === 1 &&
+              contents.some((content) => content.includes("Intensity: normal")),
+          ),
+      );
+      recordAssertion(
+        "forced-prompt: foreign instruction and tool result are preserved",
+        perRequest.every((contents) =>
+          contents.some((content) => content.includes("Keep this unrelated instruction.")),
+        ) &&
+          (requests[1]?.messages ?? []).some(
+            (message) =>
+              message.role === "tool" && message.content.includes("SYNTHETIC-READ-MARKER"),
+          ),
+      );
+      recordAssertion(
+        "forced-prompt: excessive declared read completes",
+        toolResults.some((event) => event.toolName === "read" && !event.isError),
+      );
     } else if (caseName === "enforce") {
       recordAssertion(
         "enforce: declared excess read is blocked",
@@ -1174,6 +1217,7 @@ async function main() {
       ["off", "off"],
       ["policy-update", "off"],
       ["observe", "observe"],
+      ["forced-prompt", "observe"],
       ["enforce", "enforce"],
       ["compact", "enforce"],
       ["deny", "enforce"],

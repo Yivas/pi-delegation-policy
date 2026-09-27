@@ -18,6 +18,7 @@ import {
   type ReaderThinking,
 } from "./context-shunt-reader.ts";
 import { buildDelegationPolicy } from "./prompt.ts";
+import { updateProviderPolicy } from "./provider-policy.ts";
 import {
   formatModelRef,
   hasRuntimeError,
@@ -293,6 +294,20 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       updateStatus(ctx, state);
       return state;
     };
+    // The provider hook runs last, so it reloads the effective state instead of trusting the
+    // previous context hook: global defaults or the session branch can change between requests
+    // without a new one, and the cache warmer reaches this hook with no context hook at all. A
+    // failed reload (unreadable config, or a UI that rejects the status update) falls back to the
+    // last loaded state so the payload repair still happens.
+    const refreshProviderRuntime = async (
+      ctx: ExtensionContext,
+    ): Promise<RuntimeState | undefined> => {
+      try {
+        return await refreshRuntime(ctx);
+      } catch {
+        return latestRuntime;
+      }
+    };
     pi.registerTool({
       name: "context_shunt_delegate",
       label: "ContextShunt Delegate",
@@ -542,6 +557,11 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           ...event.messages.slice(1),
         ],
       };
+    });
+    pi.on("before_provider_request", async (event, ctx) => {
+      const state = await refreshProviderRuntime(ctx);
+      if (!state) return event.payload;
+      return updateProviderPolicy(event.payload, buildDelegationPolicy(state));
     });
     pi.on("agent_end", async () => {
       shunt.clearConsumed();
