@@ -2,7 +2,7 @@
 
 A local Pi extension that helps the main agent decide **when delegation is worth it** and which exact models to use for Small, Medium, Large, and the optional Visual Design and Advisor roles. It provides guidance; it is not a subagent runner.
 
-> **Status:** Version **0.15.1** supports `off`, `normal`, `aggressive`, and `orchestrator` and requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`). It also re-applies the marked policy block in the final provider payload, so another extension that replaces the system prompt afterwards cannot drop it. Version `0.14.1` supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`). Pi `0.87.1` is the verified baseline for per-request policy updates.
+> **Status:** Version **0.16.0** supports `off`, `normal`, `aggressive`, and `orchestrator` and requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`). It also re-applies the marked policy block in the final provider payload, so another extension that replaces the system prompt afterwards cannot drop it. Version `0.14.1` supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`). Pi `0.87.1` is the verified baseline for per-request policy updates.
 >
 > **Docs:** [Read the documentation site](https://yivas.github.io/pi-delegation-policy/).
 
