@@ -703,7 +703,7 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   assert.match(policy, /\\u0026/);
 });
 
-test("Advisor guidance names observable consultation signals without requiring a call", () => {
+test("Advisor guidance favors a brief contrast on substantive choices without requiring a call", () => {
   const bare = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
   validateRuntime(context(), bare);
   const withoutAdvisor = buildDelegationPolicy(bare) ?? "";
@@ -733,15 +733,15 @@ test("Advisor guidance names observable consultation signals without requiring a
   const policy = buildDelegationPolicy(configured) ?? "";
 
   // Consulting is step 1 of the decision procedure, not a paragraph beside the intensity rule.
-  assert.match(
-    policy,
-    /Decision order:\n1\. Before committing to an approach, evaluate whether an advisor's second opinion could change the choice\./,
-  );
+  assert.match(policy, /Decision order:\n1\. Before shaping or reconsidering a substantive choice/);
   const firstStep = policy.slice(
     policy.indexOf("Decision order:"),
     policy.indexOf("\n2. Decide under the active intensity"),
   );
-  assert.match(firstStep, /Consult before investing effort, not to validate finished work/);
+  assert.match(firstStep, /favor a brief second opinion from the advisor/);
+  assert.match(firstStep, /you do not need to recognize doubt, a proposal, or alternatives first/);
+  assert.match(firstStep, /you do not need to predict whether the answer will change the decision/);
+  assert.match(firstStep, /Consult before the choice hardens, not to validate finished work/);
   assert.match(firstStep, /do not postpone it until you have findings/);
   assert.match(policy, /\n2\. Decide under the active intensity/);
   const intensityStart = policy.indexOf("Intensity rule:");
@@ -754,39 +754,56 @@ test("Advisor guidance names observable consultation signals without requiring a
   const advisorSection = policy.slice(advisorStart, roleStart);
   assert.doesNotMatch(advisorSection, /MUST/);
   assert.match(advisorSection, /Advisor is a consultation role/);
+  // The obligation is addressed to the main agent, not written as a description of the policy.
+  assert.match(advisorSection, /When Advisor is configured, favor a brief contrast/);
+  assert.doesNotMatch(advisorSection, /When it is configured, it favors/);
+  // The consultation must still cover comparing options and deciding, not just "advice".
+  assert.match(firstStep, /a comparison between options, or the decision itself/);
+  assert.match(advisorSection, /a comparison between options, or a decision/);
+  // Load-bearing guarantees, not the section's wording: covering a substantive choice without a
+  // prior doubt or a prediction, verifying a deciding fact through the intensity rules, the brief
+  // and its order, the tool-less resumable advisor, and the decision that stays with the main agent.
   for (const expected of [
-    "viable approaches trade off explicit requirements",
-    "evidence supports conflicting explanations that call for different actions",
-    "destructive data operations, difficult rollback, or compatibility changes for existing consumers",
-    "Those are consultation signals, not thresholds that require a call",
-    "If a second opinion could change the decision, ask for one",
-    "Routine decisions need none",
-    'the bundled profile "pi-delegation-policy.advisor"',
-    "do not substitute either",
+    "your own confidence does not make the consultation unnecessary",
+    "are examples, not a closed list",
+    "verified under the active intensity's rules",
+    "not a threshold that requires a call and not a quota",
+    "a local detail with no effect on an approach or a solution that is already fixed does not need a call",
+    "Do not hide decisive data",
+    "Ask for an approach, criteria, or critical assumptions",
+    "not approval and not a forced list of defects",
+    "A short reply can be enough",
     "Every brief must stand on its own",
-    "the objective and the decision",
-    "the current state and the relevant evidence",
-    "the options and their consequences",
     "Separate facts from assumptions",
     "Do not omit what it needs, and do not dump what it cannot use",
-    "Treat it as a conversation, not a single ruling",
+    "Reuse the advice while the decision and its assumptions stay valid",
     "Continue the same thread with the host's resume mechanism",
-    "never restart the thread for the same matter",
+    "do not restart the thread for the same matter",
+    "no obligation to keep a dialogue",
+    "Reopen the consultation when new relevant evidence appears",
+    "Distinguish what you are deciding",
+    "The advisor helps you compare, recommend and decide; the decision and the responsibility stay with you",
     "Decisions that belong to the user stay with the user",
-    "consider consulting the advisor before asking the user when its advice could improve the options",
     "Weigh its advice against the evidence",
     "never hand it implementation, tool-dependent checks or your own responsibility to decide",
     "Do not seek approval for a decision already taken",
+    'the bundled profile "pi-delegation-policy.advisor"',
+    "do not substitute either",
   ]) {
     assert.ok(policy.includes(expected), `Missing advisor guarantee: ${expected}`);
   }
+  // The generic escape hatch and the subjective triggers it replaced must not come back.
   for (const removed of [
     /a decision is ambiguous/,
     /undoing it would be costly/,
     /a risk remains you cannot resolve alone/,
     /a substantial doubt about architecture/,
+    /Routine decisions need none/,
+    /a routine decision needs no call/,
+    /a second opinion could change the/,
+    /Treat it as a conversation, not a single ruling/,
   ]) {
-    assert.doesNotMatch(advisorSection, removed);
+    assert.doesNotMatch(policy, removed);
   }
   assert.ok(
     policy.includes(

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Favor a brief consultation whenever the work presents a substantive choice, not only when the main agent notices doubt. With an advisor configured, step 1 of the `Decision order` and the `Advisor consultation:` section now cover an approach, a scope, the acceptance criteria, a comparison between options, or a decision. The policy no longer asks the main agent to recognize a doubt, a proposal or alternatives first, and no longer asks it to predict whether the second opinion would change the decision; its own confidence is not a reason to skip the call.
+- Remove the generic escape hatch "routine decisions need none" and replace it with one concrete limit: a local detail with no effect on an approach or a solution already fixed needs no call. The existing examples — viable approaches trading off explicit requirements, evidence supporting conflicting explanations that call for different actions, and changes with destructive data operations, difficult rollback or compatibility breaks — stay as examples, not a closed list.
+- Say how to brief and reuse the advisor. The brief puts the objective, the constraints, the facts and the open choice first and the proposal and reasons after, without hiding decisive data; a decisive local fact is verified instead of guessed; the agent asks for an approach, criteria or critical assumptions rather than approval or a forced list of defects, and a short reply can be enough. A follow-up continues the same thread through the host's resume mechanism on a material discrepancy or gap, the advice is reused while the decision and its assumptions hold, and it is reopened only on new relevant evidence rather than on every turn, phase or tool call.
+- Distinguish choosing a solution, executing a decision already fixed, checking a verifiable fact, and the preferences or authorizations reserved to the user. The advisor helps compare, recommend and decide; the decision and its responsibility stay with the main agent, and the user keeps their own preferences and authorizations.
+
+No configuration, schema, model, thinking or permission change. The packaged profile, the exact references and the retention statements are unchanged.
+
 ## 0.15.1 - 2026-09-27
 
 ### Fixed
