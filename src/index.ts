@@ -20,6 +20,9 @@ import {
 import { buildDelegationPolicy } from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
+  advisorStatusLabel,
+  hasAdvisorError,
+  isAdvisorEnabled,
   formatModelRef,
   hasRuntimeError,
   loadRuntime,
@@ -27,6 +30,8 @@ import {
   statusLabel,
 } from "./runtime.ts";
 import {
+  ADVISOR_MODES,
+  type AdvisorMode,
   CONTEXT_SHUNT_MODES,
   type ContextShuntMode,
   CURRENT_SCHEMA_VERSION,
@@ -41,6 +46,7 @@ const STATUS_KEY = "pi-delegation-policy";
 export type CommandAction =
   | { kind: "open" }
   | { kind: "intensity"; intensity: Intensity }
+  | { kind: "advisor-mode"; mode: AdvisorMode }
   | { kind: "status" }
   | { kind: "reset" }
   | { kind: "context-mode"; mode: ContextShuntMode }
@@ -50,6 +56,11 @@ export type CommandAction =
 export function parseCommand(args: string): CommandAction {
   const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!parts.length) return { kind: "open" };
+  if (parts[0] === "advisor") {
+    return parts.length === 2 && ADVISOR_MODES.includes(parts[1] as AdvisorMode)
+      ? { kind: "advisor-mode", mode: parts[1] as AdvisorMode }
+      : { kind: "invalid" };
+  }
   if (parts[0] === "context") {
     if (parts[1] === "status" && parts.length === 2) return { kind: "context-status" };
     if (CONTEXT_SHUNT_MODES.includes(parts[1] as ContextShuntMode) && parts.length === 2)
@@ -81,6 +92,7 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
     ...INTENSITIES,
     "status",
     "reset",
+    ...ADVISOR_MODES.map((mode) => `advisor ${mode}`),
     "context off",
     "context observe",
     "context enforce",
@@ -90,7 +102,10 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
   return matches.length ? matches.map((value) => ({ value, label: value })) : null;
 }
 function updateStatus(ctx: ExtensionContext, state: RuntimeState): void {
-  ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", statusLabel(state)));
+  ctx.ui.setStatus(
+    STATUS_KEY,
+    ctx.ui.theme.fg("dim", `${statusLabel(state)} ${advisorStatusLabel(state)}`),
+  );
 }
 
 function contextStatusText(state: RuntimeState, shunt: ContextShuntAdapter): string {
@@ -185,6 +200,7 @@ export function statusText(state: RuntimeState): string {
     `medium=${formatModelRef(effective.medium)} (${effective.source.medium})`,
     `large=${formatModelRef(effective.large)} (${effective.source.large})`,
     `ui-design=${effective.uiDesign ? formatModelRef(effective.uiDesign) : "disabled"} (${effective.source.uiDesign})`,
+    `advisor-mode=${effective.advisorMode} (${effective.source.advisorMode}); ${advisorStatusLabel(state)}`,
     `advisor=${effective.advisor ? formatModelRef(effective.advisor) : "disabled"} (${effective.source.advisor})`,
     ...THINKING_ROLE_KEYS.map(
       (role) =>
@@ -197,11 +213,13 @@ export function statusText(state: RuntimeState): string {
   ];
   const diagnosticMessages = state.diagnostics.map(({ message }) => message);
   const errors =
-    effective.intensity === "off"
+    effective.intensity === "off" && !isAdvisorEnabled(effective)
       ? state.diagnostics.filter(({ reportWhenOff }) => reportWhenOff).map(({ message }) => message)
       : [
           ...diagnosticMessages,
-          ...state.runtimeErrors.filter((message) => !diagnosticMessages.includes(message)),
+          ...[...state.runtimeErrors, ...(state.advisorErrors ?? [])].filter(
+            (message) => !diagnosticMessages.includes(message),
+          ),
         ];
   if (errors.length) details.push(`details=${errors.join("; ")}`);
   return details.join(" | ");
@@ -261,8 +279,8 @@ async function resetSession(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pro
   return saveSession(
     pi,
     ctx,
-    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" },
-    "Session delegation settings reset to off.",
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off", advisorMode: "off" },
+    "Session delegation and Advisor reset to off.",
   );
 }
 
@@ -452,7 +470,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           const state = await refreshRuntime(ctx);
           ctx.ui.notify(
             action.kind === "context-status" ? contextStatusText(state, shunt) : statusText(state),
-            hasRuntimeError(state) ? "error" : "info",
+            hasRuntimeError(state) || hasAdvisorError(state) ? "error" : "info",
           );
           return;
         }
@@ -468,6 +486,18 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           }
           const state = rememberRuntime(await setSessionIntensity(pi, ctx, action.intensity));
           synchronizeContextShunt(shunt, state);
+          return;
+        }
+        if (action.kind === "advisor-mode") {
+          const state = await loadRuntime(ctx);
+          rememberRuntime(
+            await saveSession(
+              pi,
+              ctx,
+              { ...state.session, schemaVersion: CURRENT_SCHEMA_VERSION, advisorMode: action.mode },
+              `Advisor: ${action.mode}. Consultations use the configured model and may incur cost.`,
+            ),
+          );
           return;
         }
         if (action.kind === "context-mode") {
@@ -492,7 +522,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           return;
         }
         ctx.ui.notify(
-          "Usage: /delegate [off|normal|aggressive|orchestrator|status|reset|context off|observe|enforce|status|allow TOKEN MAX_LINES MAX_BYTES]",
+          "Usage: /delegate [off|normal|aggressive|orchestrator|status|reset|advisor off|on|with-delegation|context off|observe|enforce|status|allow TOKEN MAX_LINES MAX_BYTES]",
           "error",
         );
       },

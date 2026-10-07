@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["schemaVersion"],
   "properties": {
-    "schemaVersion": { "const": 7 },
+    "schemaVersion": { "enum": [7, 8] },
     "intensity": { "enum": ["off", "normal", "aggressive", "orchestrator"] },
     "preference": { "enum": ["efficient", "standard", "intensive"] },
     "small": { "$ref": "#/$defs/ordinaryRole" },
@@ -13,9 +13,16 @@
     "large": { "$ref": "#/$defs/ordinaryRole" },
     "uiDesign": { "$ref": "#/$defs/modelRef" },
     "advisor": { "$ref": "#/$defs/modelRef" },
+    "advisorMode": { "enum": ["off", "on", "with-delegation"] },
     "thinking": { "$ref": "#/$defs/thinking" },
     "contextShunt": { "$ref": "#/$defs/contextShunt" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "schemaVersion": { "const": 7 } } },
+      "then": { "not": { "required": ["advisorMode"] } }
+    }
+  ],
   "$defs": {
     "modelRef": {
       "type": "object",

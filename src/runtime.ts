@@ -29,7 +29,23 @@ export type RuntimeState = {
   diagnostics: ConfigDiagnostic[];
   modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
+  advisorErrors?: string[];
 };
+
+export function isAdvisorEnabled(effective: EffectiveDelegateState): boolean {
+  return (
+    effective.advisorMode === "on" ||
+    (effective.advisorMode === "with-delegation" &&
+      effective.intensity !== "off" &&
+      !!effective.advisor)
+  );
+}
+
+export function advisorStatusLabel(state: RuntimeState): string {
+  if (hasAdvisorError(state)) return "A:ERR";
+  if (!isAdvisorEnabled(state.effective)) return "A:OFF";
+  return "A:ON";
+}
 
 export function isRoleEnabled(setting: OrdinaryRoleSetting | undefined): setting is ModelRef {
   return setting !== undefined && setting !== null;
@@ -105,7 +121,12 @@ function statusDetail(status: ModelStatus): string {
 function policyLevels(policy: ThinkingPolicy): ThinkingLevelName[] {
   return "level" in policy ? [policy.level] : [policy.min, policy.max];
 }
-/** A well-formed level the resolved role model does not support is a new `D:ERR` cause. */
+function roleErrors(state: RuntimeState, role: ModelConfigKey): string[] {
+  if (role !== "advisor") return state.runtimeErrors;
+  if (!state.advisorErrors) state.advisorErrors = [];
+  return state.advisorErrors;
+}
+/** Unsupported levels disable only the feature that owns the role. */
 function validateThinkingPolicy(
   state: RuntimeState,
   role: ModelConfigKey,
@@ -117,7 +138,7 @@ function validateThinkingPolicy(
   const supported = getSupportedThinkingLevels(status.model);
   for (const level of policyLevels(policy)) {
     if (!supported.includes(level)) {
-      state.runtimeErrors.push(
+      roleErrors(state, role).push(
         `${ROLE_LABELS[role]} thinking level "${level}" is not supported by ${reference.provider}/${reference.model}.`,
       );
     }
@@ -133,7 +154,7 @@ function validateEnabledRole(
   const status = validateModelReference(ctx, reference);
   state.modelStatuses.set(role, status);
   if (status.kind !== "available") {
-    state.runtimeErrors.push(`${ROLE_LABELS[role]} model ${statusDetail(status)}.`);
+    roleErrors(state, role).push(`${ROLE_LABELS[role]} model ${statusDetail(status)}.`);
   }
   validateThinkingPolicy(state, role, reference, status);
 }
@@ -174,10 +195,27 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
   state.effective = resolveDelegateState(state.global, state.session);
   state.modelStatuses.clear();
   state.runtimeErrors = [];
+  state.advisorErrors = [];
 
+  const advisorEnabled = isAdvisorEnabled(state.effective);
+  for (const diagnostic of state.diagnostics) {
+    if (diagnostic.scope === "advisor") {
+      // An unusable Advisor state is only an error while Advisor is on; otherwise the diagnostic
+      // stays informative in `details=` and the footer keeps reporting A:OFF.
+      if (advisorEnabled) state.advisorErrors.push(diagnostic.message);
+    } else if (state.effective.intensity !== "off") {
+      // Every other diagnostic belongs to the delegation axis, so a valid enabled Advisor keeps
+      // working while delegation is reported broken.
+      state.runtimeErrors.push(diagnostic.message);
+    }
+  }
+  if (state.effective.intensity === "off" && !advisorEnabled) return;
+  if (advisorEnabled) {
+    if (state.effective.advisor)
+      validateEnabledRole(ctx, state, "advisor", state.effective.advisor);
+    else state.advisorErrors.push("Advisor model is not configured.");
+  }
   if (state.effective.intensity === "off") return;
-
-  for (const diagnostic of state.diagnostics) state.runtimeErrors.push(diagnostic.message);
   for (const role of MODEL_ROLES) {
     const setting = state.effective[role];
     if (setting === undefined) {
@@ -193,14 +231,17 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
   }
   if (state.effective.uiDesign)
     validateEnabledRole(ctx, state, "uiDesign", state.effective.uiDesign);
-  if (state.effective.advisor) validateEnabledRole(ctx, state, "advisor", state.effective.advisor);
 
   const readerDiagnostic = readerRoleDiagnostic(state);
   if (readerDiagnostic) state.runtimeErrors.push(readerDiagnostic);
 }
 
+export function hasAdvisorError(state: RuntimeState): boolean {
+  return (state.advisorErrors?.length ?? 0) > 0;
+}
+
 export function hasRuntimeError(state: RuntimeState): boolean {
-  return state.effective.intensity !== "off" && state.runtimeErrors.length > 0;
+  return state.runtimeErrors.length > 0;
 }
 
 export function statusLabel(state: RuntimeState): string {

@@ -1,6 +1,8 @@
 import {
   enabledOrdinaryRoles,
   hasRuntimeError,
+  hasAdvisorError,
+  isAdvisorEnabled,
   isRoleDisabled,
   type RuntimeState,
 } from "./runtime.ts";
@@ -11,6 +13,9 @@ import type {
   Preference,
   ThinkingPolicy,
 } from "./types.ts";
+
+const LAUNCH_REQUIREMENTS =
+  "Before every delegated launch, name the selected role and take its exact combined provider/model base below. Choose thinking dynamically for that run from task demand, difficulty, quantity, risk, review cost, and the selected model's capabilities when the role's thinking policy is unset. A role with a fixed policy uses exactly that level for every launch and the main agent must not change it. A role with a range policy allows only a level inside its inclusive bounds. A fixed or range policy is binding: it is not an ambient launcher default and is not inherited by another role or by the main agent. Then transmit both through the launcher's per-run mechanism without changing the provider/model base. When the launcher encodes thinking as a model suffix, pass model: \"provider/model:LEVEL\", replacing LEVEL with that launch's level, or pass the literal level already shown in the role line. Do not omit the model or thinking choice, inherit an ambient launcher default for either, substitute an unlisted model, persist a per-run thinking choice, launch a disabled or unconfigured role, invent a role, or use a level that a bound policy or the selected model does not support.";
 
 const NORMAL_POLICY =
   "Delegate substantial, separable work only when the expected benefit clearly outweighs briefing, supervision, review, and integration cost. Count parallelism as a benefit only when valuable work can advance now or elapsed time matters. A merely possible fresh perspective is not enough by itself. Keep borderline work with the main agent.";
@@ -166,7 +171,15 @@ function rolesByState(effective: EffectiveDelegateState): {
 }
 
 export function buildPolicyPreview(effective: EffectiveDelegateState): string[] {
-  if (effective.intensity === "off") return ["off · no policy injected"];
+  if (effective.intensity === "off") {
+    if (!isAdvisorEnabled(effective)) return ["off · no policy injected"];
+    return [
+      "Delegation off · Advisor on · consultation only",
+      effective.advisor
+        ? `Advisor ${formatLaunchModel(effective.advisor)}${thinkingPreviewToken(roleThinking(effective.thinking.advisor))}`
+        : "Advisor model not configured · no policy can be injected",
+    ];
+  }
 
   const { enabled, disabled, unconfigured } = rolesByState(effective);
   if (unconfigured.length > 0) {
@@ -192,9 +205,40 @@ export function buildPolicyPreview(effective: EffectiveDelegateState): string[] 
 }
 
 export function buildDelegationPolicy(state: RuntimeState): string | undefined {
-  if (state.effective.intensity === "off" || hasRuntimeError(state)) return undefined;
-
   const { effective } = state;
+  const advisorEnabled = isAdvisorEnabled(effective) && !hasAdvisorError(state);
+  const advisorThinking = roleThinking(effective.thinking.advisor);
+  const advisorRoleLine =
+    advisorEnabled && effective.advisor
+      ? `
+- Advisor (optional): ${formatReference(effective.advisor)}; exact model base: ${formatLaunchModel(effective.advisor)}; pi-subagents form: ${formatThinkingLaunchModel(effective.advisor, advisorThinking)}; thinking policy: ${thinkingPolicyText(advisorThinking)}`
+      : "";
+  if (effective.intensity === "off" || hasRuntimeError(state)) {
+    if (!advisorRoleLine) return undefined;
+    return `<delegation_policy>
+<!-- pi-delegation-policy:owned -->
+Delegation intensity: ${effective.intensity}${hasRuntimeError(state) ? " (unavailable)" : ""}. Advisor: on.
+Only consultation guidance is active. This policy does not request delegation of execution,
+select ordinary or Visual Design roles, or enable ContextShunt. Keep execution with the main
+agent unless other applicable instructions require otherwise. Host permissions still apply.
+
+Decision order:
+1. ${ADVISOR_STEP}
+
+Advisor consultation:
+${ADVISOR_POLICY.replace("under the active intensity's rules", "under the applicable execution rules")}
+
+Launch requirements:
+${LAUNCH_REQUIREMENTS}
+
+Roles:${advisorRoleLine}
+
+Limits:
+The extension does not launch or supervise Advisor. The main agent uses an authorized host
+launcher and remains responsible for the decision. A consultation sends the written brief to
+another model and can incur latency, token usage and normal executor/provider retention.
+</delegation_policy>`;
+  }
   const { enabled, disabled } = rolesByState(effective);
   if (enabled.length === 0) return undefined;
 
@@ -216,13 +260,9 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
     effective.intensity === "orchestrator"
       ? `${VISUAL_DESIGN_POLICY}\n\n${ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY}`
       : `${VISUAL_DESIGN_POLICY}\n\n${LEGACY_VISUAL_DESIGN_ROUTING_POLICY}`;
-  const advisorThinking = roleThinking(effective.thinking.advisor);
-  const advisorRoleLine = effective.advisor
-    ? `\n- Advisor (optional): ${formatReference(effective.advisor)}; exact model base: ${formatLaunchModel(effective.advisor)}; pi-subagents form: ${formatThinkingLaunchModel(effective.advisor, advisorThinking)}; thinking policy: ${thinkingPolicyText(advisorThinking)}`
-    : "";
   // The consultation rule belongs to the decision procedure, not to the intensity paragraph.
-  const advisorSection = effective.advisor ? `\n\nAdvisor consultation:\n${ADVISOR_POLICY}` : "";
-  const decisionSteps = effective.advisor
+  const advisorSection = advisorEnabled ? `\n\nAdvisor consultation:\n${ADVISOR_POLICY}` : "";
+  const decisionSteps = advisorEnabled
     ? [ADVISOR_STEP, ...DELEGATION_DECISION_STEPS]
     : DELEGATION_DECISION_STEPS;
   const decisionOrder = decisionSteps.map((step, index) => `${index + 1}. ${step}`).join("\n");
@@ -257,7 +297,7 @@ Enabled ordinary roles: ${enabled.map(roleName).join(", ")}.${disabled.length ? 
 Model preference: ${effective.preference}. ${preferenceGuidance(effective.preference, enabled)}
 
 Launch requirements:
-Before every delegated launch, name the selected role and take its exact combined provider/model base below. Choose thinking dynamically for that run from task demand, difficulty, quantity, risk, review cost, and the selected model's capabilities when the role's thinking policy is unset. A role with a fixed policy uses exactly that level for every launch and the main agent must not change it. A role with a range policy allows only a level inside its inclusive bounds. A fixed or range policy is binding: it is not an ambient launcher default and is not inherited by another role or by the main agent. Then transmit both through the launcher's per-run mechanism without changing the provider/model base. When the launcher encodes thinking as a model suffix, pass model: "provider/model:LEVEL", replacing LEVEL with that launch's level, or pass the literal level already shown in the role line. Do not omit the model or thinking choice, inherit an ambient launcher default for either, substitute an unlisted model, persist a per-run thinking choice, launch a disabled or unconfigured role, invent a role, or use a level that a bound policy or the selected model does not support.
+${LAUNCH_REQUIREMENTS}
 
 Roles:
 ${roleLines}${uiDesign}${advisorRoleLine}

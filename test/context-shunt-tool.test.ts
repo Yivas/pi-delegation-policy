@@ -192,7 +192,7 @@ async function withRuntime<T>(
     await run?.adapter.close();
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previous;
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 }
 async function start(run: ReturnType<typeof install>, ctx: ReturnType<typeof context>) {
@@ -339,12 +339,6 @@ test("denies inactive, invalid, busy, and expired calls before external executio
       "output-unavailable",
       true,
     ],
-    [
-      "invalid advisor pauses the reader too",
-      { ...defaults, advisor: { provider: "missing", model: "advisor" } },
-      "output-unavailable",
-      true,
-    ],
   ];
   for (const [name, value, expected, initialize] of cases) {
     const directory = await mkdtemp(join(tmpdir(), "pi-delegation-policy-tool-"));
@@ -368,7 +362,7 @@ test("denies inactive, invalid, busy, and expired calls before external executio
     } finally {
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
-      await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   }
   await withRuntime(defaults, async (run, ctx) => {
@@ -393,6 +387,32 @@ test("denies inactive, invalid, busy, and expired calls before external executio
     );
     assert.equal(run.executor.calls.length, 0);
   });
+});
+
+test("an invalid Advisor does not revoke an independently authorized reader", async () => {
+  await withRuntime(
+    { ...defaults, advisor: { provider: "missing", model: "advisor" }, advisorMode: "on" },
+    async (run, ctx) => {
+      await start(run, ctx);
+      const id = await run.adapter.artifacts.archive("one fact");
+      assert.ok(id);
+      run.executor.next = {
+        kind: "completed",
+        value: {
+          status: "answered",
+          answer: "One fact.",
+          citations: [{ sourceId: id, startLine: 1, endLine: 1 }],
+        },
+      };
+      const result = await invoke(run, ctx, {
+        artifactId: id,
+        question: "What is here?",
+        thinking: "low",
+      });
+      assert.equal(code(result), "");
+      assert.equal(run.executor.calls.length, 1);
+    },
+  );
 });
 
 test("maps executor failures and rejects completed answers without exposing raw data", async () => {

@@ -12,8 +12,11 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { isThinkingLevelName, resolveDelegateState } from "./config.ts";
+import { isAdvisorEnabled } from "./runtime.ts";
 import { buildPolicyPreview } from "./prompt.ts";
 import {
+  ADVISOR_MODES,
+  type AdvisorMode,
   CONTEXT_SHUNT_MODES,
   type ContextShuntSettings,
   CURRENT_SCHEMA_VERSION,
@@ -53,6 +56,7 @@ const FIELD_IDS = [
   "thinkingUiDesign",
   "advisor",
   "thinkingAdvisor",
+  "advisorMode",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
 const THINKING_FIELDS = [
@@ -76,7 +80,7 @@ function isThinkingField(field: string): field is ThinkingField {
 function isDelegateField(item: string): item is DelegateField {
   return (FIELD_IDS as readonly string[]).includes(item);
 }
-type EnumField = "intensity" | "preference" | "contextShunt";
+type EnumField = "intensity" | "preference" | "contextShunt" | "advisorMode";
 type PanelAction = "apply" | "save-defaults" | "reset" | "cancel";
 type SettingsItem = DelegateField | PanelAction;
 const ADVANCED_FIELDS = [
@@ -143,6 +147,15 @@ type ModelChoice =
 
 export type DelegatePanelResult = "applied" | "cancelled";
 
+/**
+ * `unchanged` means this save left the previous global files in place; `partial` means it could not
+ * complete or confirm the pair, so the delegation file and the Advisor companion may disagree.
+ */
+export type SaveDefaultsOutcome =
+  | { kind: "saved"; defaults: GlobalDefaults }
+  | { kind: "unchanged" }
+  | { kind: "partial"; defaults?: GlobalDefaults; diagnostics?: string[] };
+
 export interface DelegatePanelOptions {
   tui: TUI;
   theme: Theme;
@@ -151,8 +164,9 @@ export interface DelegatePanelOptions {
   candidates: Model<Api>[];
   diagnostics: string[];
   hasRuntimeError: boolean;
+  hasAdvisorError?: boolean;
   onApply: (draft: SessionDelegateState) => Promise<boolean>;
-  onSaveDefaults: (draft: SessionDelegateState) => Promise<GlobalDefaults | undefined>;
+  onSaveDefaults: (draft: SessionDelegateState) => Promise<SaveDefaultsOutcome>;
   onDone: (result: DelegatePanelResult) => void;
 }
 
@@ -177,7 +191,8 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   thinkingMedium: "Medium thinking",
   thinkingLarge: "Large thinking",
   thinkingUiDesign: "Visual Design thinking",
-  advisor: "Advisor",
+  advisor: "Advisor model",
+  advisorMode: "Advisor mode",
   thinkingAdvisor: "Advisor thinking",
 };
 
@@ -205,6 +220,8 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
   thinkingUiDesign:
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
+  advisorMode:
+    "On works independently of delegation; off disables advice; with-delegation preserves legacy behavior. Consultations may incur cost.",
   advisor: "Optional advice model consulted on demand; it executes no work.",
   thinkingAdvisor:
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
@@ -255,6 +272,7 @@ function thinkingSummary(policy: ThinkingPolicy): string {
 export function sameSessionState(left: SessionDelegateState, right: SessionDelegateState): boolean {
   return (
     left.intensity === right.intensity &&
+    left.advisorMode === right.advisorMode &&
     left.preference === right.preference &&
     sameModel(left.small, right.small) &&
     sameModel(left.medium, right.medium) &&
@@ -345,6 +363,7 @@ export class DelegatePanel implements Component, Focusable {
   private readonly candidates: Model<Api>[];
   private readonly diagnostics: string[];
   private readonly hasRuntimeError: boolean;
+  private readonly hasAdvisorError: boolean;
   private readonly onApply: DelegatePanelOptions["onApply"];
   private readonly onSaveDefaults: DelegatePanelOptions["onSaveDefaults"];
   private readonly onDone: DelegatePanelOptions["onDone"];
@@ -369,6 +388,7 @@ export class DelegatePanel implements Component, Focusable {
     this.candidates = sortedModels(options.candidates);
     this.diagnostics = [...options.diagnostics];
     this.hasRuntimeError = options.hasRuntimeError;
+    this.hasAdvisorError = options.hasAdvisorError ?? false;
     this.onApply = options.onApply;
     this.onSaveDefaults = options.onSaveDefaults;
     this.onDone = options.onDone;
@@ -603,7 +623,8 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string {
     if (isThinkingField(field)) return this.thinkingValue(field);
-    if (field === "intensity" || field === "preference") return effective[field];
+    if (field === "intensity" || field === "preference" || field === "advisorMode")
+      return effective[field];
     if (field === "contextShunt")
       return effective.contextShunt.suspended
         ? `off (suspended; configured ${effective.contextShunt.configuredMode})`
@@ -643,10 +664,24 @@ export class DelegatePanel implements Component, Focusable {
     budget: number,
     effective: ReturnType<typeof resolveDelegateState>,
   ): string[] {
-    const lines =
-      effective.intensity !== "off" && this.hasRuntimeError
-        ? ["D:ERR · policy unavailable; fix the reported role diagnostics"]
-        : buildPolicyPreview(effective);
+    const delegationError = this.hasRuntimeError && effective.intensity !== "off";
+    const lines = this.isDirty()
+      ? buildPolicyPreview(effective)
+      : [
+          ...(delegationError
+            ? ["D:ERR · delegation unavailable; fix the reported role diagnostics"]
+            : []),
+          ...(this.hasAdvisorError
+            ? ["A:ERR · consultation unavailable; delegation is unaffected"]
+            : []),
+          ...(delegationError
+            ? isAdvisorEnabled(effective) && !this.hasAdvisorError
+              ? ["Advisor on · consultation only"]
+              : []
+            : buildPolicyPreview(
+                this.hasAdvisorError ? { ...effective, advisorMode: "off" } : effective,
+              )),
+        ];
     const maximum =
       width >= 60 && budget >= 8 ? (effective.intensity === "orchestrator" ? 5 : 4) : 2;
     return ["Effective policy preview", ...lines]
@@ -841,6 +876,13 @@ export class DelegatePanel implements Component, Focusable {
         `patterns ${context.exceptionPatterns.length} exempt, ${context.delegationHintPatterns.length} hint`,
       ];
     }
+    if (field === "advisorMode") {
+      return [
+        "built-in with-delegation",
+        `global ${this.global.advisorMode ?? "—"}`,
+        `session ${this.draft.advisorMode ?? "inherit"}`,
+      ];
+    }
     if (field === "preference") {
       return [
         "built-in standard",
@@ -888,11 +930,13 @@ export class DelegatePanel implements Component, Focusable {
         ? INTENSITIES
         : mode.field === "preference"
           ? PREFERENCES
-          : CONTEXT_SHUNT_MODES;
+          : mode.field === "advisorMode"
+            ? ADVISOR_MODES
+            : CONTEXT_SHUNT_MODES;
     const descriptions =
       mode.field === "intensity"
         ? {
-            off: "No policy is injected.",
+            off: "No execution-delegation policy. Advisor can remain on independently.",
             normal: "Delegate when the expected benefit clearly outweighs overhead.",
             aggressive: "Delegate suitable substantial work by default.",
             orchestrator: "Delegate transferable detail and keep ownership with the main agent.",
@@ -903,15 +947,27 @@ export class DelegatePanel implements Component, Focusable {
               standard: "No extra Small or Medium bias.",
               intensive: "Tie-break comparable fits toward Medium.",
             }
-          : {
-              off: "No classification, metrics, archive, or interception.",
-              observe: "Record would-block decisions without changing calls or results.",
-              enforce: "Block only declared excess and protect known textual results.",
-            };
+          : mode.field === "advisorMode"
+            ? {
+                off: "No Advisor guidance; keep the saved model.",
+                on: "Consult even with delegation off. Sends briefs to another model and may incur cost.",
+                "with-delegation":
+                  "Consult only while delegation is active; preserves existing behavior.",
+              }
+            : {
+                off: "No classification, metrics, archive, or interception.",
+                observe: "Record would-block decisions without changing calls or results.",
+                enforce: "Block only declared excess and protect known textual results.",
+              };
     const globalValue =
       mode.field === "contextShunt"
         ? (this.global.contextShunt?.mode ?? "off")
-        : (this.global[mode.field] ?? (mode.field === "intensity" ? "off" : "standard"));
+        : (this.global[mode.field] ??
+          (mode.field === "intensity"
+            ? "off"
+            : mode.field === "advisorMode"
+              ? "with-delegation"
+              : "standard"));
     const options = [
       {
         label: `${USE_GLOBAL_DEFAULT} (${globalValue})`,
@@ -1206,13 +1262,20 @@ export class DelegatePanel implements Component, Focusable {
       this.mode = { kind: "advanced", selected: 0 };
       return;
     }
-    if (item === "intensity" || item === "preference" || item === "contextShunt") {
+    if (
+      item === "intensity" ||
+      item === "preference" ||
+      item === "contextShunt" ||
+      item === "advisorMode"
+    ) {
       const values =
         item === "intensity"
           ? INTENSITIES
           : item === "preference"
             ? PREFERENCES
-            : CONTEXT_SHUNT_MODES;
+            : item === "advisorMode"
+              ? ADVISOR_MODES
+              : CONTEXT_SHUNT_MODES;
       const current = item === "contextShunt" ? this.draft.contextShunt?.mode : this.draft[item];
       this.mode = {
         kind: "enum",
@@ -1238,7 +1301,7 @@ export class DelegatePanel implements Component, Focusable {
     if (item === "apply") void this.applyDraft();
     else if (item === "save-defaults") void this.saveDefaults();
     else if (item === "reset")
-      this.draft = { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" };
+      this.draft = { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off", advisorMode: "off" };
     else this.requestClose();
   }
 
@@ -1249,7 +1312,9 @@ export class DelegatePanel implements Component, Focusable {
         ? INTENSITIES
         : this.mode.field === "preference"
           ? PREFERENCES
-          : CONTEXT_SHUNT_MODES;
+          : this.mode.field === "advisorMode"
+            ? ADVISOR_MODES
+            : CONTEXT_SHUNT_MODES;
     const count = values.length + 1;
     if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
     else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
@@ -1268,6 +1333,8 @@ export class DelegatePanel implements Component, Focusable {
         } else delete this.draft[field];
       } else if (field === "intensity") this.draft.intensity = values[selected - 1] as Intensity;
       else if (field === "preference") this.draft.preference = values[selected - 1] as Preference;
+      else if (field === "advisorMode")
+        this.draft.advisorMode = values[selected - 1] as AdvisorMode;
       else
         this.draft.contextShunt = {
           ...(this.draft.contextShunt ?? {}),
@@ -1660,8 +1727,10 @@ export class DelegatePanel implements Component, Focusable {
     if (!choice || this.mode.kind !== "model") return;
     const field = this.mode.field;
     if (choice.kind === "global") delete this.draft[field];
-    else if (choice.kind === "disabled") this.draft[field] = null;
-    else if (choice.kind === "model") this.draft[field] = { ...choice.reference };
+    else if (choice.kind === "disabled") {
+      this.draft[field] = null;
+      if (field === "advisor") this.draft.advisorMode = "off";
+    } else if (choice.kind === "model") this.draft[field] = { ...choice.reference };
     this.mode = { kind: "settings" };
   }
 
@@ -1748,24 +1817,32 @@ export class DelegatePanel implements Component, Focusable {
     this.working = "Saving defaults…";
     this.tui.requestRender();
     try {
-      const saved = await this.onSaveDefaults(cloneSession(this.draft));
-      if (saved) {
-        this.global = structuredClone(saved);
+      const outcome = await this.onSaveDefaults(cloneSession(this.draft));
+      if (outcome.kind === "saved") {
+        this.global = structuredClone(outcome.defaults);
         this.diagnostics.length = 0;
         this.message = {
           kind: "info",
           text: "Saved effective delegation settings as global defaults.",
         };
+      } else if (outcome.kind === "partial") {
+        if (outcome.defaults) this.global = structuredClone(outcome.defaults);
+        if (outcome.diagnostics)
+          this.diagnostics.splice(0, this.diagnostics.length, ...outcome.diagnostics);
+        this.message = {
+          kind: "error",
+          text: "Partially saved: the delegation file and the Advisor companion may disagree.",
+        };
       } else {
         this.message = {
           kind: "error",
-          text: "Could not save global defaults. Session settings were not changed.",
+          text: "Could not save global defaults. Nothing was changed on disk.",
         };
       }
     } catch {
       this.message = {
         kind: "error",
-        text: "Could not save global defaults. Session settings were not changed.",
+        text: "Could not save global defaults. Check /delegate status before retrying.",
       };
     } finally {
       this.working = undefined;

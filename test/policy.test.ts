@@ -17,6 +17,7 @@ import piDelegationPolicy, {
 import {
   DelegatePanel,
   sameSessionState,
+  type DelegatePanelOptions,
   type DelegatePanelResult,
 } from "../src/delegate-panel.ts";
 import {
@@ -32,11 +33,14 @@ import {
   restoreSessionState,
   restoreSessionStateWithDiagnostics,
   SESSION_ENTRY_TYPE,
+  ADVISOR_SESSION_ENTRY_TYPE,
   writeConfig,
 } from "../src/config.ts";
 import { buildDelegationPolicy, buildPolicyPreview } from "../src/prompt.ts";
 import {
   hasRuntimeError,
+  hasAdvisorError,
+  advisorStatusLabel,
   loadRuntime,
   modelCandidates,
   statusLabel,
@@ -1358,7 +1362,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
     assert.equal(matchesKey("\x04", "alt+g"), false);
 
     await handlers.get("session_start")?.({ type: "session_start" }, current);
-    assert.equal(statuses.at(-1), "D:OFF");
+    assert.equal(statuses.at(-1), "D:OFF A:OFF");
 
     runEditor = (component) => {
       component.handleInput?.("\r");
@@ -1369,48 +1373,49 @@ test("the extension uses only the approved lifecycle events and never accumulate
       component.handleInput?.("a");
     };
     await shortcuts.get("alt+g")?.handler(current);
-    assert.deepEqual(branch.at(-1)?.data, {
+    assert.deepEqual(restoreSessionState(branch), {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "aggressive",
     });
-    assert.equal(statuses.at(-1), "D:AGG");
+    assert.equal(statuses.at(-1), "D:AGG A:OFF");
     runEditor = undefined;
 
     await commands.get("delegate")?.handler("normal", current);
-    assert.deepEqual(branch.at(-1)?.data, {
+    assert.deepEqual(restoreSessionState(branch), {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "normal",
     });
     for (const reason of ["reload", "resume", "fork"]) {
       await handlers.get("session_start")?.({ type: "session_start", reason }, current);
-      assert.equal(statuses.at(-1), "D:NORM");
+      assert.equal(statuses.at(-1), "D:NORM A:OFF");
     }
 
     await commands.get("delegate")?.handler("orchestrator", current);
-    assert.deepEqual(branch.at(-1)?.data, {
+    assert.deepEqual(restoreSessionState(branch), {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "orchestrator",
     });
     for (const reason of ["reload", "resume", "fork"]) {
       await handlers.get("session_start")?.({ type: "session_start", reason }, current);
-      assert.equal(statuses.at(-1), "D:ORCH");
+      assert.equal(statuses.at(-1), "D:ORCH A:OFF");
     }
     await handlers.get("session_tree")?.({ type: "session_tree" }, current);
-    assert.equal(statuses.at(-1), "D:ORCH");
+    assert.equal(statuses.at(-1), "D:ORCH A:OFF");
     await commands.get("delegate")?.handler("off", current);
-    assert.deepEqual(branch.at(-1)?.data, {
+    assert.deepEqual(restoreSessionState(branch), {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "off",
     });
 
     await commands.get("delegate")?.handler("normal", current);
     await commands.get("delegate")?.handler("reset", current);
-    assert.deepEqual(branch.at(-1)?.data, {
+    assert.deepEqual(restoreSessionState(branch), {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "off",
+      advisorMode: "off",
     });
     await handlers.get("session_tree")?.({ type: "session_tree" }, current);
-    assert.equal(statuses.at(-1), "D:OFF");
+    assert.equal(statuses.at(-1), "D:OFF A:OFF");
 
     await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, current);
     assert.equal(statuses.at(-1), undefined);
@@ -1460,7 +1465,7 @@ test("quick commands fail safely when either guarded append throws", async () =>
           branch.map((entry) => entry.data),
           failAt === 1 ? [] : [{ schemaVersion: 2, intensity: "off" }],
         );
-        assert.equal(statuses.at(-1), "D:OFF");
+        assert.equal(statuses.at(-1), "D:OFF A:OFF");
         assert.equal(notifications.at(-1)?.type, "error");
         assert.match(
           notifications.at(-1)?.message ?? "",
@@ -1491,7 +1496,7 @@ function createPanelHarness(
     diagnostics?: string[];
     hasRuntimeError?: boolean;
     onApply?: (draft: SessionDelegateState) => Promise<boolean>;
-    onSaveDefaults?: (draft: SessionDelegateState) => Promise<GlobalDefaults | undefined>;
+    onSaveDefaults?: DelegatePanelOptions["onSaveDefaults"];
   } = {},
 ) {
   const terminal = { rows: options.rows ?? 30 };
@@ -1515,7 +1520,7 @@ function createPanelHarness(
     diagnostics: options.diagnostics ?? [],
     hasRuntimeError: options.hasRuntimeError ?? false,
     onApply: options.onApply ?? (async () => true),
-    onSaveDefaults: options.onSaveDefaults ?? (async () => defaults),
+    onSaveDefaults: options.onSaveDefaults ?? (async () => ({ kind: "saved", defaults })),
     onDone: (result) => done.push(result),
   });
   panel.focused = true;
@@ -1651,7 +1656,7 @@ test("advisor is an optional tri-state role on schema 7 without rewriting schema
     );
     const savedDefaults = defaultsFromEffectiveState(effective);
     await writeConfig(path, savedDefaults);
-    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), savedDefaults);
+    assert.deepEqual((await readConfig(path)).defaults, savedDefaults);
     const reloaded = (await readConfig(path)).defaults;
     assert.equal(reloaded.schemaVersion, CURRENT_SCHEMA_VERSION);
     assert.deepEqual(reloaded.advisor, advisor);
@@ -1667,13 +1672,15 @@ test("advisor is an optional tri-state role on schema 7 without rewriting schema
     const loaded = await readConfig(path);
     const after = await stat(path);
     assert.equal(loaded.defaults.schemaVersion, CURRENT_SCHEMA_VERSION);
-    assert.equal("advisor" in loaded.defaults, false);
+    assert.equal(loaded.defaults.advisorMode, "off");
+    assert.equal(loaded.diagnostics[0]?.scope, "advisor");
+    assert.deepEqual(loaded.defaults.advisor, advisor, "a readable companion keeps its model");
     assert.equal(await readFile(path, "utf8"), schema6);
     assert.equal(after.mtimeMs, before.mtimeMs);
   });
 });
 
-test("a configured advisor model validates like Visual Design and also pauses the reader", () => {
+test("Advisor model errors are isolated from delegation and reader validation", () => {
   const withAdvisor = (): RuntimeState =>
     runtime(
       { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
@@ -1696,8 +1703,8 @@ test("a configured advisor model validates like Visual Design and also pauses th
     }),
     missing,
   );
-  assert.equal(statusLabel(missing), "D:ERR");
-  assert.match(missing.runtimeErrors.join("\n"), /Advisor model is not registered in Pi\./);
+  assert.equal(statusLabel(missing), "D:NORM");
+  assert.match(missing.advisorErrors?.join("\n") ?? "", /Advisor model is not registered in Pi\./);
 
   const outsideScope = withAdvisor();
   validateRuntime(
@@ -1709,7 +1716,7 @@ test("a configured advisor model validates like Visual Design and also pauses th
   );
   assert.equal(statusLabel(outsideScope), "D:ERR");
   assert.match(
-    outsideScope.runtimeErrors.join("\n"),
+    outsideScope.advisorErrors?.join("\n") ?? "",
     /Advisor model is outside the current model scope\./,
   );
 
@@ -1721,9 +1728,9 @@ test("a configured advisor model validates like Visual Design and also pauses th
     }),
     noCredentials,
   );
-  assert.equal(statusLabel(noCredentials), "D:ERR");
+  assert.equal(statusLabel(noCredentials), "D:NORM");
   assert.match(
-    noCredentials.runtimeErrors.join("\n"),
+    noCredentials.advisorErrors?.join("\n") ?? "",
     /Advisor model has no configured authentication\./,
   );
 
@@ -1732,14 +1739,12 @@ test("a configured advisor model validates like Visual Design and also pauses th
     ["outside scope", outsideScope],
     ["no credentials", noCredentials],
   ] as const) {
-    assert.equal(buildDelegationPolicy(invalid), undefined, `${name} injects no policy`);
-    // Documented consequence: readerAuthorization() in src/index.ts requires !hasRuntimeError, so an
-    // invalid advisor pauses the reader as well. That coupling is deliberate, not an accident.
-    assert.equal(
-      hasRuntimeError(invalid),
-      true,
-      `${name}: the shared runtime error check leaves the reader unauthorized too`,
-    );
+    assert.doesNotMatch(buildDelegationPolicy(invalid) ?? "", /Advisor consultation:/);
+    assert.equal(hasAdvisorError(invalid), true, name);
+    if (name !== "outside scope") {
+      assert.equal(hasRuntimeError(invalid), false, name);
+      assert.match(buildDelegationPolicy(invalid) ?? "", /Enabled ordinary roles:/);
+    }
   }
 
   const advisorThinking = runtime(
@@ -1751,11 +1756,74 @@ test("a configured advisor model validates like Visual Design and also pauses th
     { ...defaults, advisor },
   );
   validateRuntime(withAdvisorModel(), advisorThinking);
-  assert.equal(statusLabel(advisorThinking), "D:ERR");
+  assert.equal(statusLabel(advisorThinking), "D:NORM");
   assert.match(
-    advisorThinking.runtimeErrors.join("\n"),
+    advisorThinking.advisorErrors?.join("\n") ?? "",
     /Advisor thinking level "xhigh" is not supported/,
   );
+});
+
+test("an ordinary configuration diagnostic never disables a valid enabled Advisor", () => {
+  const withAdvisorModel = () =>
+    context({
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(advisor)],
+    });
+  const enabled = (session: SessionDelegateState): RuntimeState => {
+    const state = runtime(session, { ...defaults, advisor, advisorMode: "on" });
+    state.diagnostics = [
+      { message: "Global defaults are invalid. Configure them again with /delegate." },
+    ];
+    validateRuntime(withAdvisorModel(), state);
+    return state;
+  };
+
+  const active = enabled({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
+  assert.equal(
+    statusLabel(active),
+    "D:ERR",
+    "the invalid global file still fails delegation closed",
+  );
+  assert.equal(advisorStatusLabel(active), "A:ON");
+  assert.equal(hasAdvisorError(active), false);
+  assert.match(active.runtimeErrors.join("\n"), /Global defaults are invalid/);
+  const activePolicy = buildDelegationPolicy(active) ?? "";
+  assert.match(activePolicy, /Advisor consultation:/);
+  assert.doesNotMatch(activePolicy, /Enabled ordinary roles:/);
+
+  const delegationOff = enabled({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
+  assert.equal(statusLabel(delegationOff), "D:OFF");
+  assert.equal(advisorStatusLabel(delegationOff), "A:ON");
+  assert.equal(hasAdvisorError(delegationOff), false);
+  assert.deepEqual(delegationOff.runtimeErrors, [], "delegation is off, so nothing fails closed");
+  const policy = buildDelegationPolicy(delegationOff) ?? "";
+  assert.match(policy, /Advisor consultation:/);
+  assert.doesNotMatch(policy, /Enabled ordinary roles:/);
+});
+
+test("the editor keeps an ordinary diagnostic visible when only Advisor is active", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeFile(getGlobalConfigPath(directory), JSON.stringify({ schemaVersion: 9 }));
+    const branch: unknown[] = [];
+    assert.equal(
+      appendGuardedSessionState(
+        { appendEntry: (customType, data) => branch.push({ type: "custom", customType, data }) },
+        { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off", advisor, advisorMode: "on" },
+      ),
+      "success",
+    );
+    const editorContext = context({
+      branch,
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(advisor)],
+      runCustom: (component) => {
+        const view = component.render(100).join("\n");
+        assert.match(view, /Global defaults are invalid\. Configure them again with \/delegate\./);
+        assert.match(view, /Delegation off · Advisor on · consultation only/);
+        assert.doesNotMatch(view, /A:ERR/);
+        sendKeys(component, KEY_ESCAPE);
+      },
+    });
+    await openDelegateEditor(editorContext, { appendEntry: () => undefined } as never);
+  });
 });
 
 test("the advisor rows end the settings list and stage the same tri-state", () => {
@@ -1765,7 +1833,7 @@ test("the advisor rows end the settings list and stage the same tri-state", () =
 
   focus(12);
   const advisorRow = harness.panel.render(100).join("\n");
-  assert.match(advisorRow, /^> Advisor\s+disabled\s*$/m);
+  assert.match(advisorRow, /^> Advisor model\s+disabled\s*$/m);
   assert.match(advisorRow, /Optional advice model consulted on demand; it executes no work/);
   assert.match(advisorRow, /built-in disabled/);
 
@@ -2007,7 +2075,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
 
   sendKeys(panel, KEY_ENTER);
   const intensityChoices = panel.render(100).join("\n");
-  assert.match(intensityChoices, /No policy is injected/);
+  assert.match(intensityChoices, /No execution-delegation policy/);
   assert.match(intensityChoices, /expected benefit clearly outweighs overhead/);
   assert.match(intensityChoices, /Delegate suitable substantial work by default/);
   sendKeys(panel, KEY_ESCAPE, KEY_DOWN, KEY_ENTER);
@@ -2049,7 +2117,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
     hasRuntimeError: true,
   });
   const errorView = runtimeError.panel.render(100).join("\n");
-  assert.match(errorView, /D:ERR · policy unavailable/);
+  assert.match(errorView, /D:ERR · delegation unavailable/);
   assert.match(errorView, /Small model is outside the current model scope/);
 
   const offDraft = createPanelHarness({
@@ -2058,7 +2126,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
   });
   const offView = offDraft.panel.render(100).join("\n");
   assert.match(offView, /off · no policy injected/);
-  assert.doesNotMatch(offView, /D:ERR · policy unavailable/);
+  assert.doesNotMatch(offView, /D:ERR · delegation unavailable/);
 });
 
 test("the settings list keeps one row per field and one hint block that follows the focus", () => {
@@ -2161,6 +2229,7 @@ test("the delegate panel searches models, keeps pinned actions, and stages safe 
   assert.deepEqual(reset.panel.getDraft(), {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "off",
+    advisorMode: "off",
   });
 });
 
@@ -2201,10 +2270,15 @@ test("the delegate panel preserves dirty drafts when apply or default saving fai
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(pendingApply.done, ["applied"]);
 
-  const missingSave = createPanelHarness({ onSaveDefaults: async () => undefined });
+  const missingSave = createPanelHarness({
+    onSaveDefaults: async () => ({ kind: "unchanged" as const }),
+  });
   sendKeys(missingSave.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(missingSave.panel.render(80).join("\n"), /Could not save global defaults/);
+  assert.match(
+    missingSave.panel.render(80).join("\n"),
+    /Could not save global defaults\. Nothing was changed on disk/,
+  );
 
   const failedSave = createPanelHarness({
     onSaveDefaults: async () => {
@@ -2213,8 +2287,34 @@ test("the delegate panel preserves dirty drafts when apply or default saving fai
   });
   sendKeys(failedSave.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(failedSave.panel.render(80).join("\n"), /Could not save global defaults/);
+  assert.match(
+    failedSave.panel.render(80).join("\n"),
+    /Could not save global defaults\. Check \/delegate status/,
+  );
   assert.deepEqual(failedSave.done, []);
+
+  const partialSave = createPanelHarness({
+    onSaveDefaults: async () => ({
+      kind: "partial" as const,
+      defaults: { ...defaults, intensity: "aggressive" as const },
+      diagnostics: ["Advisor settings no longer match delegation defaults."],
+    }),
+  });
+  sendKeys(partialSave.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(
+    partialSave.panel.render(120).join("\n"),
+    /Partially saved: the delegation file and the Advisor companion may disagree\./,
+  );
+  // The next interaction clears the notice and shows what the files actually hold.
+  sendKeys(partialSave.panel, KEY_DOWN);
+  const afterPartial = partialSave.panel.render(120).join("\n");
+  assert.match(afterPartial, /Advisor settings no longer match delegation defaults\./);
+  assert.match(
+    afterPartial,
+    /^aggressive · task fit first/m,
+    "the reloaded defaults drive the preview",
+  );
 
   const repairedDefaults = createPanelHarness({ diagnostics: ["invalid defaults"] });
   assert.match(repairedDefaults.panel.render(80).join("\n"), /invalid defaults/);
@@ -2241,7 +2341,7 @@ test("the custom editor applies, discards, inherits, and saves defaults", async 
       appendEntry: (customType: string, data?: unknown) =>
         applied.push({ type: "custom", customType, data }),
     } as never);
-    assert.deepEqual(applied.at(-1)?.data, {
+    assert.deepEqual(restoreSessionState(applied), {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       intensity: "normal",
     });
@@ -2262,7 +2362,7 @@ test("the custom editor applies, discards, inherits, and saves defaults", async 
       appendEntry: (customType: string, data?: unknown) =>
         inherited.push({ type: "custom", customType, data }),
     } as never);
-    assert.deepEqual(inherited.at(-1)?.data, { schemaVersion: CURRENT_SCHEMA_VERSION });
+    assert.deepEqual(restoreSessionState(inherited), { schemaVersion: CURRENT_SCHEMA_VERSION });
     assert.equal((await loadRuntime(inheritContext)).effective.intensity, "aggressive");
 
     const discarded: Array<Record<string, unknown>> = [];
@@ -2303,7 +2403,7 @@ test("the custom editor applies, discards, inherits, and saves defaults", async 
     await openDelegateEditor(saveContext, { appendEntry: () => undefined } as never);
     const saved = JSON.parse(await readFile(getGlobalConfigPath(directory), "utf8"));
     assert.equal(saved.intensity, "off");
-    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
+    assert.equal(saved.schemaVersion, 7);
     assert.deepEqual(saved.small, small);
   });
 });
@@ -2369,22 +2469,25 @@ test("reader settings inherit independently and persist through guarded Apply an
   sendKeys(apply.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER, "1", "6", "3", "8", "4", KEY_ENTER);
   sendKeys(apply.panel, KEY_ESCAPE, "a");
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(entries, [
-    { type: SESSION_ENTRY_TYPE, data: { schemaVersion: 2, intensity: "off" } },
+  assert.equal(entries.length, 3);
+  assert.equal(entries[0]?.type, SESSION_ENTRY_TYPE);
+  assert.equal(entries[1]?.type, ADVISOR_SESSION_ENTRY_TYPE);
+  assert.equal(entries[2]?.type, SESSION_ENTRY_TYPE);
+  assert.deepEqual(
+    restoreSessionState(
+      entries.map(({ type, data }) => ({ type: "custom", customType: type, data })),
+    ),
     {
-      type: SESSION_ENTRY_TYPE,
-      data: {
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        contextShunt: { readerEnabled: true, readerRole: "large", answerMaxBytes: 16384 },
-      },
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      contextShunt: { readerEnabled: true, readerRole: "large", answerMaxBytes: 16384 },
     },
-  ]);
+  );
 
   await withAgentDirectory(async (directory) => {
     const path = getGlobalConfigPath(directory);
     await writeConfig(path, global);
     let saveCompleted = false;
-    let saveWrite: Promise<void> | undefined;
+    let saveWrite: ReturnType<typeof writeConfig> | undefined;
     const save = createPanelHarness({
       global,
       session: {
@@ -2396,7 +2499,7 @@ test("reader settings inherit independently and persist through guarded Apply an
         saveWrite = writeConfig(path, saved);
         saveCompleted = true;
         await saveWrite;
-        return saved;
+        return { kind: "saved", defaults: saved };
       },
     });
     save.panel.render(80);
@@ -2409,7 +2512,7 @@ test("reader settings inherit independently and persist through guarded Apply an
     assert.equal(saveCompleted, true);
     await saveWrite;
     const saved = JSON.parse(await readFile(path, "utf8"));
-    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
+    assert.equal(saved.schemaVersion, 7);
     assert.deepEqual(saved.contextShunt, {
       mode: "off",
       readerEnabled: true,
@@ -2491,7 +2594,7 @@ test("saving disabled ordinary defaults is global-only and does not apply the dr
     } as never);
 
     const saved = JSON.parse(await readFile(getGlobalConfigPath(directory), "utf8"));
-    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
+    assert.equal(saved.schemaVersion, 7);
     assert.equal(saved.medium, null);
     assert.equal("uiDesign" in saved, true);
     assert.deepEqual(branch, []);
@@ -2752,6 +2855,7 @@ test("schema 2 and schema 3 migrate in memory while schema 4 preserves ordinary 
   assert.deepEqual(defaultsFromEffectiveState(effective), {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "off",
+    advisorMode: "with-delegation",
     preference: "standard",
     small: null,
     medium,
@@ -2932,7 +3036,11 @@ test("the latest invalid session entry is a fail-closed restoration barrier", ()
       active,
       { type: "custom", customType: SESSION_ENTRY_TYPE, data },
     ]);
-    assert.deepEqual(restored.session, { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
+    assert.deepEqual(restored.session, {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      intensity: "off",
+      advisorMode: "off",
+    });
     assert.equal(restored.diagnostics.length, 1);
     assert.doesNotMatch(restored.diagnostics[0]?.message ?? "", /example|provider|schemaVersion/i);
   }
@@ -2950,7 +3058,11 @@ test("guarded session writes preserve an off downgrade guard and fail safely", (
     large: null,
   };
   assert.equal(appendGuardedSessionState(writer, next), "success");
-  assert.deepEqual(entries, [{ schemaVersion: 2, intensity: "off" }, next]);
+  assert.deepEqual(entries, [
+    { schemaVersion: 2, intensity: "off" },
+    next,
+    { ...next, schemaVersion: 7, advisor: null },
+  ]);
   assert.equal(
     appendGuardedSessionState(
       {
@@ -3082,7 +3194,8 @@ test("guarded session writes use the extension type and leave only the guard aft
   );
   assert.deepEqual(calls, [
     { type: SESSION_ENTRY_TYPE, data: { schemaVersion: 2, intensity: "off" } },
-    { type: SESSION_ENTRY_TYPE, data: next },
+    { type: ADVISOR_SESSION_ENTRY_TYPE, data: next },
+    { type: SESSION_ENTRY_TYPE, data: { ...next, schemaVersion: 7, advisor: null } },
   ]);
 
   const partial: Array<{ type: string; data: unknown }> = [];
@@ -3149,7 +3262,7 @@ test("saving effective defaults preserves ordinary nulls without session writes"
     );
     const saved = defaultsFromEffectiveState(effective);
     await writeConfig(getGlobalConfigPath(directory), saved);
-    assert.deepEqual(JSON.parse(await readFile(getGlobalConfigPath(directory), "utf8")), saved);
+    assert.deepEqual((await readConfig(getGlobalConfigPath(directory))).defaults, saved);
     assert.equal((await readConfig(getGlobalConfigPath(directory))).defaults.medium, null);
     assert.equal("uiDesign" in saved, false);
     const incomplete = defaultsFromEffectiveState(

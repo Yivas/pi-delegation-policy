@@ -1,10 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-export const CURRENT_SCHEMA_VERSION = 8 as const;
+export const CURRENT_SCHEMA_VERSION = 7 as const;
 
 export const INTENSITIES = ["off", "normal", "aggressive", "orchestrator"] as const;
-export const ADVISOR_MODES = ["off", "on", "with-delegation"] as const;
-export type AdvisorMode = (typeof ADVISOR_MODES)[number];
 export type Intensity = (typeof INTENSITIES)[number];
 export const PREFERENCES = ["efficient", "standard", "intensive"] as const;
 export type Preference = (typeof PREFERENCES)[number];
@@ -70,7 +68,6 @@ export type GlobalDefaults = {
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
   advisor?: ModelRef;
-  advisorMode?: AdvisorMode;
   thinking?: ThinkingSettings;
   contextShunt?: ContextShuntSettings;
 };
@@ -83,7 +80,6 @@ export type SessionDelegateState = {
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef | null;
   advisor?: ModelRef | null;
-  advisorMode?: AdvisorMode;
   thinking?: SessionThinkingSettings;
   contextShunt?: ContextShuntSettings;
 };
@@ -110,7 +106,6 @@ export type EffectiveDelegateState = {
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
   advisor?: ModelRef;
-  advisorMode: AdvisorMode;
   thinking: ThinkingSettings;
   contextShunt: EffectiveContextShunt;
   source: {
@@ -121,7 +116,6 @@ export type EffectiveDelegateState = {
     large: ValueSource;
     uiDesign: ValueSource;
     advisor: ValueSource;
-    advisorMode: ValueSource;
     thinking: Record<ModelConfigKey, ValueSource>;
   };
 };

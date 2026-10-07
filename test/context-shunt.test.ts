@@ -136,7 +136,7 @@ test("schema, parser, example, and documentation accept the same ContextShunt pa
   }
 
   const example = JSON.parse(await readFile(join(process.cwd(), "examples/global.json"), "utf8"));
-  assert.equal(example.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.equal(example.schemaVersion, 7);
   assert.equal(validate(example), true, "the example must match the schema the code writes");
   assert.ok(parseConfig(example), "the example stays readable");
 
@@ -189,7 +189,7 @@ test("schema 2, 3, and 4 configurations accept legacy limits without reserializi
     const path = join(directory, "delegation-policy.json");
     await writeConfig(path, parsed);
     const saved = JSON.parse(await readFile(path, "utf8"));
-    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
+    assert.equal(saved.schemaVersion, 7);
     assert.equal("readerOutputBytes" in (saved.contextShunt?.limits ?? {}), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -256,7 +256,7 @@ test("schema 6 reader fields validate, inherit independently, and save only with
     const path = join(directory, "delegation-policy.json");
     await writeConfig(path, savedDefaults);
     const saved = JSON.parse(await readFile(path, "utf8"));
-    assert.equal(saved.schemaVersion, CURRENT_SCHEMA_VERSION);
+    assert.equal(saved.schemaVersion, 7);
     assert.equal(saved.contextShunt.answerMaxBytes, 16384);
     await assert.rejects(
       writeConfig(path, { ...savedDefaults, schemaVersion: 4 } as never),
@@ -1202,7 +1202,7 @@ test("Context advanced stages reader enabled, role, answer cap, and reset with k
     diagnostics: [],
     hasRuntimeError: false,
     onApply: async () => true,
-    onSaveDefaults: async () => defaults,
+    onSaveDefaults: async () => ({ kind: "saved", defaults }),
     onDone: () => undefined,
   });
   panel.focused = true;
@@ -1292,7 +1292,7 @@ test("Use global default for Context protection preserves advanced session field
       applied = draft;
       return true;
     },
-    onSaveDefaults: async () => defaults,
+    onSaveDefaults: async () => ({ kind: "saved", defaults }),
     onDone: () => undefined,
   });
   panel.focused = true;
