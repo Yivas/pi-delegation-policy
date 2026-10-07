@@ -8,7 +8,7 @@ ContextShunt is not a sandbox or a worker bridge. It preserves permissions and b
 
 ## Advisor consultation
 
-The optional Advisor role is off by default. The extension registers no tool, executor, or lifecycle work for it: it only injects policy guidance. When you configure an advisor and the main agent decides to consult it, the main agent launches the packaged `pi-delegation-policy.advisor` profile as a normal subagent through Pi's subagent mechanism and the host-authorized external executor. The extension no longer sends conversation on its own initiative: what leaves the process is what the main agent writes into that task, and the main agent decides what that text contains.
+The optional Advisor role is off by default. The extension registers no tool, executor, or lifecycle work for it: it only injects policy guidance. In the development version, `advisorMode: "on"` explicitly enables consultation even with delegation off; the default `with-delegation` preserves legacy coupling. `off` suppresses consultation guidance without deleting the model. Neither mode cancels host subagents already running. Advisor state is kept in a local companion file beside the delegation defaults; the companion is written last, so a failed or interrupted save cannot activate a new Advisor state, and a hard stop between the two atomic replacements can leave the files out of step until the next save. When you enable a configured advisor and the main agent decides to consult it, the main agent launches the packaged `pi-delegation-policy.advisor` profile as a normal subagent through Pi's subagent mechanism and the host-authorized external executor. The extension no longer sends conversation on its own initiative: what leaves the process is what the main agent writes into that task, and the main agent decides what that text contains.
 
 The task text and the reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and no absence of cost. The advisor cannot read files, run commands, delegate, or use tools, and its reply is plain text.
 
@@ -20,4 +20,4 @@ Include the affected version or commit, operating system, Pi version, reproducti
 
 ## Supported versions
 
-Only the latest published version is supported. Version 0.14.1 requires Pi 0.84.3 or later; version 0.15.0 requires Pi 0.87.1 or later.
+Only the latest published version is supported. Version `0.16.0` requires Pi `0.87.1` or later; version `0.14.1` requires Pi `0.84.3` or later.

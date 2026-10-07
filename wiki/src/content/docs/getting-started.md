@@ -3,63 +3,120 @@ title: Installation and first use
 description: Install pi-delegation-policy and reach a valid delegation status safely.
 ---
 
+> **Development version:** independent Advisor mode and its companion file are not included in npm `0.16.0`.
+> Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
+
 ## Requirements
 
-- Version `0.16.0` requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`); Pi `0.87.1` is the verified baseline for its per-request policy updates. It also re-applies the marked policy block in the final provider payload. Version `0.14.1` supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`).
-- The npm command below installs the package selected by npm's `latest` dist-tag; the package version available through that tag depends on the release channel's current state.
+- Version `0.16.0` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
+- Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design and Advisor are optional.
 
-## Safe first-use path
-
-### 1. Install and reload
+## 1. Install and reload
 
 ```bash
-pi install npm:pi-delegation-policy
+pi install npm:pi-delegation-policy@0.16.0
 ```
 
-Restart Pi or run `/reload`. A new session with no configured intensity starts at `off`.
+Restart Pi or run `/reload`. Installing or upgrading changes no configuration: a session with no saved
+intensity starts at `off`.
 
-### 2. Configure or disable ordinary roles
+## 2. Configure or disable the ordinary roles
 
-Open `/delegate` in Pi's TUI, or press `Alt+G`. For **Small**, **Medium**, and **Large**, choose an exact provider/model shown by Pi or choose **Disable for this session**. A disabled role is an explicit decision, not a missing model. Keep at least one ordinary role enabled. **Visual Design** and **Advisor** are optional and do not count toward that minimum.
+Open `/delegate` in Pi's TUI, or press `Alt+G`. Small, Medium, and Large each need an explicit
+decision: an exact provider/model that Pi offers, or **Disable for this session**. A disabled role is
+a decision, not a missing model, and it is not validated. At least one ordinary role must stay
+enabled. **Visual Design** and **Advisor** are optional and do not count toward that minimum.
 
-Each selector pins **Use global default** and **Disable for this session**, then searches provider, model ID, and display name. The model ID appears first and `[provider]` last. When Pi supplies public model metadata, the selected row can show its name, API, reasoning support, context window, and maximum output. That metadata is transient and is not stored. The panel uses text to distinguish `disabled`, `not configured`, and an exact `provider/model` reference. Changes remain a draft until **Apply changes**; closing a modified draft requires explicit discard.
+Every model selector pins **Use global default** and **Disable for this session** above the
+searchable list. The list shows the model ID first and `[provider]` last, and searches provider,
+model ID, and display name. When Pi supplies public model metadata, the focused row can show name,
+API, reasoning support, context window, and maximum output; that metadata is transient and is never
+stored. The panel uses text, not only colour, to distinguish `disabled`, `not configured`, and an
+exact reference.
 
-Thinking is optional per role. Leave the **Small thinking**, **Medium thinking**, **Large thinking**, **Visual Design thinking**, and **Advisor thinking** rows unset to choose a level for each launch, or set one fixed level or an inclusive range. A configured policy is binding for that role, and the panel lists only the levels that role's model supports.
+Thinking is optional per role. Leave a **thinking** row unset to let the main agent choose a level
+for each launch, or configure one fixed level or an inclusive range. The panel lists only the levels
+that role's model supports, and a configured level is validated locally when the policy is loaded.
 
-Every delegated launch uses the selected exact model. With `pi-subagents`, the launcher form is:
+Changes stay in a draft until **Apply changes**; closing a modified draft asks whether to keep editing
+or discard. For `pi-subagents`, a delegated launch carries the selected base and level as
+`model: "provider/model:LEVEL"`, where `LEVEL` is the fixed level, a level inside the range, or the
+level chosen for that run.
 
-```text
-model: "provider/model:LEVEL"
-```
+## 3. Activate and inspect
 
-`LEVEL` is the fixed level of that role's policy, a level inside its configured range, or the level you choose for the run when the role is unset. A fixed policy appears in the injected role line as its literal level instead of the `LEVEL` placeholder. The policy is validated locally against the role's resolved model; an unsupported level produces `D:ERR` and no injection. The extension persists the policy you configure, never the level chosen for an individual run, and it does not substitute a model or rely on an ambient model or thinking default.
+Choose `normal` when the expected delegation benefit clearly outweighs briefing, supervision, review,
+and integration. Choose `aggressive` for suitable substantial, separable, independently checkable
+work. Choose `orchestrator` to delegate all transferable execution before it begins whenever an
+enabled capable role and an authorized launcher exist, regardless of size; direct work then needs a
+briefly stated exception, and final acceptance stays with the main agent. `off` injects no
+execution-delegation guidance.
 
-Visual Design may own a bounded presentation patch when visual or user-experience quality is the primary acceptance criterion and behavior, data contracts, component scope, and platform remain unchanged. It can create and integrate scoped visual assets or presentation code, then run relevant existing checks. When configured, the main agent evaluates those four conditions before ordinary-role selection for every task or phase. If they all hold and that visual portion is already being delegated, or the active intensity requires delegation, it selects Visual Design instead of Small, Medium, or Large. It reevaluates when the task or phase changes. This priority does not make `normal` or `aggressive` delegate more work. In published `0.7.0` and `normal` or `aggressive`, use an enabled ordinary role for logic, data, APIs, routes, interaction behavior, application architecture, tooling, cross-system integration, and behavior tests; the main agent retains final integration and acceptance. In published `0.9.0` `orchestrator`, it retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies.
+Apply the draft, then run `/delegate status`. `D:NORM`, `D:AGG`, and `D:ORCH` mean every ordinary
+role is enabled with a valid exact reference or explicitly disabled, and at least one is enabled.
+`D:ERR` means a role is not configured, an enabled reference is unavailable, out of scope, or
+unauthenticated, no ordinary role is enabled, or a configured thinking level is unsupported; it
+removes delegation guidance. See [commands and status](/pi-delegation-policy/commands-and-status/) to
+diagnose it.
 
-**Advisor** is a second optional role, off by default and outside the ordinary-role minimum. It changes nothing about how work is delegated. When you configure it and the configuration is valid, the injected policy makes a brief consultation step 1 of the decision order and tells the main agent to launch `pi-delegation-policy.advisor`, the profile that ships in this package, as a normal subagent with the exact configured model and that role's thinking policy. It favors that brief contrast while the agent shapes or reconsiders a substantive choice — an approach, a scope, the acceptance criteria, a comparison between options, or a decision — without requiring a recognized doubt, a proposal or alternatives first, and without asking the agent to predict whether the answer will change the decision. Viable approaches trading off explicit requirements, evidence supporting conflicting explanations that call for different actions, and changes with destructive data operations, difficult rollback or compatibility breaks are examples, not a closed list. The advice is reused while the decision holds and reopened on new relevant evidence, not on every turn. The one concrete limit is a local detail with no effect on an approach or a solution already fixed. For a decision that belongs to the user, the main agent considers the advisor before asking, so the question reaches the user with better options and trade-offs. The profile executes no work and reads nothing on its own, so the brief the main agent writes puts the objective, the constraints, the facts and the open choice first and has to carry the decision, the constraints, the current state and evidence, the options and their consequences, what was tried, and the open question; the agent asks for an approach, criteria or critical assumptions rather than approval or a forced list of defects, and a short reply can be enough. The advisor is a conversation: a follow-up continues the same thread through the host's resume mechanism when a material discrepancy or gap remains instead of starting over. With no advisor configured, no advisor section is injected and nothing changes. A configured advisor whose model is missing, out of scope, or unauthenticated produces `D:ERR`, which also leaves the ContextShunt reader unauthorized. See [limits and privacy](/pi-delegation-policy/limits-and-privacy/#advisor-role) for the role and retention.
+## 4. Enable the Advisor when you want it
 
-### 3. Activate and inspect
+The Advisor is a consultation role the main agent may launch as a subagent with the profile packaged
+in this package. It advises and executes nothing, and the extension never launches it. Configure
+**Advisor model** and, optionally, **Advisor thinking**, then set **Advisor mode** in the panel or run
+`/delegate advisor on`.
 
-Choose `normal` when expected delegation benefit clearly outweighs briefing, supervision, review, and integration overhead. Choose `aggressive` for suitable substantial, separable, independently checkable work with clear objective and acceptance criteria. Choose `orchestrator` to delegate all transferable execution before it begins whenever an enabled capable role and authorized launcher are available, regardless of size. That includes small lookups, code reading, detailed planning, implementation, tests, writing, detailed review, and integration mechanics. Bootstrap covers only mandatory instructions, tool discovery, and narrow assignment scope. After assignment, do not take the task over or launch an equivalent worker while pending; coordinate only disjoint work, wait through the host, and consume results before dependencies or finalizing. The main agent retains decisions, coordination, safety, evidence evaluation, final acceptance, and concise synthesis, not personal execution of transferable review or integration. Direct work needs a briefly stated concrete exception: genuinely non-transferable work, no enabled capable role, a confirmed unavailable authorized launcher, or an explicit user or higher-priority requirement. Reinspect only concrete gaps, risks, or contradictions; delegate transferable fixes or rechecks. A final-review label, size, triviality, convenience, economics, transfer cost, or familiarity is not an exception. Published `0.9.0` uses this stricter guidance; published `0.7.0` retains the previous policy.
+With delegation `off` and mode `on`, status shows `D:OFF A:ON`: consultation-only guidance is
+injected and ordinary roles are not required. Mode `off` silences consultation and keeps the saved
+model. The default `with-delegation` preserves the previous coupling to active delegation. A
+consultation sends a brief to another model and can add latency and cost even with delegation off.
 
-Apply the draft, then run `/delegate status`. `D:NORM`, `D:AGG`, and `D:ORCH` mean every ordinary role is either enabled with a valid exact reference or explicitly disabled, and at least one is enabled. `D:ERR` means a role is not configured, an enabled reference is unavailable, out of scope, or unauthenticated, a configured Advisor reference is invalid, or no ordinary role is enabled. No policy is injected for `D:ERR`. `D:OFF` injects nothing.
+Validation is reported per axis. An enabled Advisor whose model is missing, out of scope,
+unauthenticated, or paired with an unsupported thinking level produces `A:ERR` and removes only
+consultation: valid delegation and an otherwise authorized ContextShunt reader keep working.
+Conversely, invalid delegation settings do not suppress a valid enabled Advisor. A malformed main
+delegation file still fails closed, and a malformed or stale Advisor companion affects only Advisor:
+the companion keeps its saved model and thinking policy only while it is readable and valid. A corrupt
+or unreadable companion cannot supply Advisor settings: settings still present in a legacy delegation
+file are retained, and otherwise the Advisor model and thinking policy must be configured again. Read
+[configuration](/pi-delegation-policy/configuration/#advisor) for the modes, and
+[limits and privacy](/pi-delegation-policy/limits-and-privacy/#advisor-role) for the signals and
+retention.
 
-### 4. Configure ContextShunt only when needed
+## 5. Turn on ContextShunt only when needed
 
-Choose **Context protection** in `/delegate`: start with `observe`, then explicitly choose `enforce` only if the reported decisions help. `off` is the default and performs no classification, metrics, archive I/O, or interception. `observe` does not change calls or results. `enforce` covers recognized native reads, conservative bounded PowerShell reads, and known successful text results; it never launches a worker, re-runs a command, or bypasses tool permissions.
+Choose **Context protection** in `/delegate`: start with `observe`, then choose `enforce` explicitly
+if the reported decisions help. `off` is the default and does no classification, metrics, archive
+I/O, or interception. `observe` changes neither a call nor its result. `enforce` covers recognized
+native reads, conservative bounded PowerShell reads, and known successful text results; it never
+launches a worker, re-runs a command, or bypasses tool permissions. When it preserves a large known
+text result, `context_shunt_recover` returns one bounded line or byte range.
 
-When enforcement preserves a large known text result, use `context_shunt_recover` with one bounded line or byte range. Errors, valid JSON of every root type, images, binaries, mixed content, and unknown contracts remain unchanged. The profile packaged at `agents/pi-delegation-policy.bulk-reader.md` is declared for discovery by a compatible executor as a guided read-only contract. It is not copied into user directories, launched automatically, or an isolation boundary; use it only with an executor that supports path-based profile discovery.
+[Limits and privacy](/pi-delegation-policy/limits-and-privacy/#contextshunt-limits) states the caps,
+the reader contract, and what one request sends.
 
-### 5. Know the persisted format
+## 6. Know what is saved
 
-Global defaults and new session entries use schema version 7. Schemas 2 through 6 values remain readable and are normalized in memory without rewriting the source; they carry no `advisor` key, and a schema 2 through 5 value has no thinking policy, so its roles keep the per-launch choice. Schema 3 uses `null` to disable an ordinary role. Session changes write a schema 2 `off` guard before the schema 7 state so an older package restores off rather than older active state.
+- Delegation defaults go to `~/.pi/agent/delegation-policy.json` in schema 7, so version `0.16.0`
+  keeps reading delegation after a downgrade.
+- Advisor settings go to the `delegation-policy.advisor.json` companion next to it; the main file
+  never carries an Advisor mode.
+- A branch saves a schema 2 `off` guard, the Advisor entry, and the schema 7 delegation entry, in that
+  order. A failure leaves the guard authoritative, so both features stay off for that branch.
 
-A package that cannot read schema 7 treats the document as invalid: global defaults fall back to empty defaults with `off` and no injection, and the branch falls back to `off` with a sanitized notice. Saving effective defaults changes only the global file and does not apply the current session draft or create that guard. Before downgrading to a package that cannot read schema 4, set global and branch ContextShunt to `off`. Before downgrading to `0.6.0`, also change intensity to `off`, `normal`, or `aggressive` and run `/delegate off` in every active branch. For `<=0.5.0`, change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references. Complete these steps before installing the older package; see [configuration](/pi-delegation-policy/configuration/#global-defaults-and-session-inheritance).
+Loading never rewrites a file: schemas 2 through 8 are normalized in memory only. **Save effective
+configuration as defaults** updates the global files and not the branch. Before installing an older
+package, follow the downgrade steps in
+[configuration](/pi-delegation-policy/configuration/#global-defaults-and-inheritance).
 
-### 6. When applied changes take effect
+## 7. When a change takes effect
 
-With version `0.14.1`, changes take effect on the next agent run. Version `0.15.0` refreshes policy before each LLM request on Pi `0.87.1+`; a change during a turn therefore affects its next request, but not a request already in progress or a subagent already launched. In either version, turning the policy off removes the block when that version next applies its policy.
+With version `0.16.0` on Pi `0.87.1` or later, the policy is refreshed before each LLM request, so a
+change made during a turn affects that turn's next request. A request already in progress, and
+subagents already launched, keep the state they started with. Turning everything off removes the
+injected block when that version next applies its policy. Version `0.14.1` applies changes on the next
+agent run.
 
 ## Local checkout (secondary)
 
@@ -69,4 +126,9 @@ For development, from the checkout's parent directory:
 pi install ./pi-delegation-policy
 ```
 
-See [configuration](/pi-delegation-policy/configuration/) for inheritance and selection, or [commands and status](/pi-delegation-policy/commands-and-status/) for keyboard operation.
+## Next steps
+
+- [Configuration](/pi-delegation-policy/configuration/) defines the policy values, inheritance, and
+  compatible saves.
+- [Commands and status](/pi-delegation-policy/commands-and-status/) covers keyboard operation and
+  status tokens.

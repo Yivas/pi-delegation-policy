@@ -3,11 +3,17 @@ title: Configuration
 description: Set valid global defaults, session-branch overrides, and optional thinking policies per role.
 ---
 
+> **Development version:** independent Advisor mode and its companion file are not included in npm `0.16.0`.
+> Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
+
 ## Quick valid configuration
 
-The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply the draft. In an active policy, every ordinary role needs an explicit decision: an exact, authenticated reference or `disabled`; at least one ordinary role must be enabled. Visual Design, and Advisor, are optional and do not satisfy that minimum.
+The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply
+the draft. In an active policy, every ordinary role needs an explicit decision: an exact,
+authenticated reference or `disabled`; at least one ordinary role must be enabled. Visual Design and
+Advisor are optional and do not satisfy that minimum.
 
-Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema version 7:
+Global defaults live at `~/.pi/agent/delegation-policy.json` and are written in schema version 7:
 
 ```json
 {
@@ -27,128 +33,314 @@ Global defaults live at `~/.pi/agent/delegation-policy.json` and use schema vers
 }
 ```
 
-The references are fictional. An absent setting inherits in a session or is **not configured** without a global value; an exact `{ "provider", "model" }` reference enables an ordinary role; `null` explicitly disables it. Global `uiDesign` and `advisor`, when present, remain exact references; only a session override may use `null` to disable that optional role.
+The references are fictional. The example is the schema version 7 format that `0.16.0` writes and
+that the extension still reads as inherited input; a current save keeps `advisor` and `advisorMode`
+out of this file and stores them in the companion described under
+[persistence](#persistence-and-compatibility). An absent setting inherits in a session or is **not
+configured** without a global value; an exact `{ "provider", "model" }` reference enables an ordinary
+role; `null` explicitly disables it. Global `uiDesign` and `advisor`, when present, are exact
+references; only a session override may use `null` to disable that optional role.
 
-`thinking` is optional and holds at most one policy per role. Omitting it, or omitting a role inside it, changes nothing: the main agent chooses that role's level for each launch, as before. See [Thinking](#thinking) for the three states and their validation.
+`thinking` is optional and holds at most one policy per role. Omitting it, or omitting a role inside
+it, changes nothing: the main agent chooses that role's level for each launch.
 
-## Global defaults and session inheritance
+## Global defaults, session inheritance, and saving
 
-Global defaults may contain intensity, preference, tri-state ordinary roles, the compatible `uiDesign` and `advisor` keys, and one thinking policy per role. If global intensity is absent, the built-in default is `off`. A branch inherits a global value until it records an override. **Use global default** removes that branch override. A session `null` wins over a global model; a session model wins over a global `null`. A session thinking `null` keeps no policy for that role in the branch even when global defaults set one. Sources are `default`, `global`, or `session`.
+Global defaults may contain intensity, preference, tri-state ordinary roles, the `uiDesign` and
+`advisor` keys, an independent `advisorMode`, and one thinking policy per role. If global intensity is
+absent, the built-in default is `off`; preference defaults to `standard`, and Advisor mode defaults to
+`with-delegation`.
 
-**Save effective configuration as defaults** copies the effective configuration to the global file, including ordinary `null` values, the effective thinking policies, and the configured ContextShunt mode even when delegation currently suspends it, but does not apply the current session draft or change its branch. A role with no effective policy is written without one, never as `null`. `/delegate reset` writes `off` for the branch and returns other fields to global inheritance. In the panel, **Reset draft to off** is only a draft until Apply.
+A branch inherits a global value until it records an override. **Use global default** removes the
+branch override. A session `null` wins over a global model, and a session model wins over a global
+`null`. A session thinking `null` keeps no policy for that role in the branch even when global
+defaults set one. Sources are reported as `default`, `global`, or `session`.
 
-Schema 2 through 6 defaults and session entries remain supported as input and are migrated in memory to schema 7 without a write: a schema 2 through 5 document has no thinking policy, and any document below schema 7 carries no `advisor`. Schema 1 remains inactive and is not migrated automatically. The extension restores only the latest delegation entry: a future or malformed latest entry forces the branch off and reports a sanitized diagnostic rather than reactivating older state.
+**Save effective configuration as defaults** copies the effective configuration to the global files,
+including ordinary `null` values, the effective thinking policies, and the configured ContextShunt
+mode even while delegation suspends it. It does not apply the current session draft or change the
+branch. A role with no effective policy is written without one, never as `null`. `/delegate reset`
+writes `off` for both intensity and Advisor mode and returns the other fields to global inheritance;
+**Reset draft to off** is only a draft until Apply.
 
-Each session Apply, quick intensity command, ContextShunt mode command, and reset first append a schema 2 `off` guard and then the schema 7 state. If the second append fails, the guard remains and the branch is off. A global save or manual schema-3 edit cannot create that guard.
+## Roles and validation
 
-Published `0.9.0` includes `orchestrator`. Before downgrading:
+Active execution-delegation guidance requires each ordinary role to be an exact authenticated
+reference or `disabled`, with at least one enabled. An absent role is **not configured**. Any of the
+following produces `D:ERR` and removes execution-delegation guidance:
 
-1. Set the global `intensity` to `off`, `normal`, or `aggressive`, preferably `off`.
-2. Run `/delegate off` in every active branch before installing the older package.
-3. For `0.6.0`, keep schema 3 and the existing role settings. For `<=0.5.0`, also change global `schemaVersion` to 2 and replace ordinary `null` values with exact model references.
+- an ordinary role with no value;
+- an enabled reference that is missing, unavailable, out of scope, or unauthenticated;
+- no enabled ordinary role;
+- a configured thinking level the role's resolved model does not support, reported with the role, the
+  level, and the model.
 
-A package that cannot read schema 7 treats the document as invalid: global defaults fall back to empty defaults with `off` and no injection, and a branch falls back to `off` with a sanitized notice. The guarded branch write already presents schema 2 `off` to older versions.
+Disabled roles are not validated, and a configured Visual Design reference is validated whenever it
+is configured. The extension has no model fallback and never substitutes a role, model, or level. A
+policy set for a disabled or not configured role is stored and inert until that role is enabled again,
+and adds no error.
 
-Schema 2 never accepts `orchestrator`. Saving defaults alone does not update branch overrides; changing a branch alone does not repair unsupported global defaults.
+## Thinking
 
-## ContextShunt
+The main agent chooses thinking for every delegated task from demand, difficulty, quantity, risk,
+error and review cost, and the selected model's capabilities. That per-launch choice is the default,
+and the extension neither stores it nor reports it.
 
-`contextShunt.mode` is independent from delegation intensity: `off` is the default and does no classification, metrics, archive I/O, or interception; `observe` records decisions without changing calls or results; `enforce` covers only recognized native reads, conservative bounded PowerShell reads, and known successful textual results. Delegation `off` suspends the effective mode without deleting the saved preference.
+A policy per role is optional and has three states:
 
-Optional `readerRole`, limits, and patterns inherit per field between global defaults and the session branch. Preflight limits use declared lines; post-result limits use actual UTF-8 bytes and returned lines. `exceptionPatterns` exempt matching paths only from this optimization; they never grant filesystem access. `delegationHintPatterns` label an already blocked declared excess as a delegation hint; they do not expand coverage or force a bounded read to block. `readerRole` is a requested ordinary role rather than an added model configuration: no separate reader model is stored, and the reader uses that role's exact resolved model when it is invoked. **Context advanced** in the panel edits reader enablement, the reader role, the answer cap, each limit, and comma-separated patterns. Each value can return to global inheritance by clearing it, and **Reset ContextShunt draft** clears all branch ContextShunt values. The hint block reports whether the reader is on and, when it is, whether the selected ordinary role is enabled, still **not configured**, or has a model the local validation rejected. Enforcement provides guided redirection rather than an automatic bridge.
+- **Unset** (key absent) — the main agent chooses the level for each launch.
+- **Fixed** (`{ "level": "<name>" }`) — every launch of that role uses exactly that level.
+- **Range** (`{ "min": "<name>", "max": "<name>" }`) — the main agent chooses a level inside the
+  inclusive bounds.
 
-Three further keys control the opt-in inline reader, which stays off by default:
+Level names are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, in lower case. A range
+whose `min` and `max` are equal is normalized to a fixed level. A configured policy is binding for
+that role and cannot come from an ambient launcher default or from another role. With `pi-subagents`
+the launch carries `model: "provider/model:LEVEL"`, where a fixed policy appears as its literal
+level; another launcher may expose a separate per-run field.
 
-- `readerEnabled` (boolean, built-in `false`) — allow `context_shunt_delegate` to answer from a preserved artifact. A false value changes nothing else.
-- `readerRole` (`small`, `medium`, or `large`, default `small`) — the existing ordinary role whose exact model answers the question. The role must be enabled and its model available.
-- `answerMaxBytes` (integer, 1024 to 16384, default 8192) — the cap on the serialized result the reader returns to the main agent, including its citations and envelope.
+A `thinking` entry outside those three states is a malformed document rather than a policy error: an
+unrecognized level name, an empty or malformed policy object, a `min` above its `max`, mixed or
+unknown keys, a non-object, an unknown role key, or `null` in global defaults. Global defaults then
+fall back to empty defaults with no injection, and a session branch falls back to `off` with a
+sanitized notice; neither case produces `D:ERR`.
 
-All three inherit per field and are editable under **Reader enabled**, **Reader role**, and **Reader answer max bytes**. The reader also needs an effective mode of `enforce`, an active delegation intensity, and a valid configuration. It requires a compatible external executor: protocol version `0.69.0` is the verified one, and another build fails closed with `reader-unavailable`. A valid reader configuration looks like this:
+## Intensities
+
+- `off` reports `D:OFF` and removes execution-delegation guidance before the next LLM request. An
+  explicitly enabled Advisor keeps consultation-only guidance; with both off nothing is injected.
+  A request already in progress and subagents already launched are unchanged.
+- `normal` delegates substantial, separable work only when the expected benefit clearly outweighs
+  briefing, supervision, review, and integration. Borderline work stays with the main agent.
+- `aggressive` delegates suitable substantial, separable, independently checkable work by default when
+  its objective and acceptance criteria are clear. Tightly coupled work or clearly prohibitive
+  overhead stays with the main agent.
+- `orchestrator` delegates all transferable execution before performing it whenever an enabled capable
+  role and an authorized launcher are available, regardless of size. This includes small lookups,
+  code reading, detailed planning, implementation, testing, writing, detailed review, and integration
+  mechanics. Bootstrap is limited to mandatory instructions, tool discovery, and a narrow assignment
+  scope; it must not pre-solve or broadly inspect the repository, and small tasks are grouped without
+  recursive fanout. After assigning, it must not take the task over or run an equivalent worker while
+  it is pending: it coordinates only disjoint work, waits through the host, and consumes the result
+  before dependent work or finalizing. It retains strategy, objectives, critical user decisions,
+  coordination, safety, evidence evaluation, final acceptance, and concise synthesis; that
+  responsibility does not permit performing transferable review or integration. It reinspects only a
+  concrete gap, risk, or contradiction, then delegates transferable fixes and rechecks. Direct
+  execution is allowed only for genuinely non-transferable work, no enabled capable role, a confirmed
+  unavailable authorized launcher, or an explicit user or higher-priority requirement, stated briefly
+  before the minimum direct work. Size, triviality, convenience, economics, transfer cost, a
+  final-review or integration label, and familiarity are not exceptions.
+
+In `normal` and `aggressive` the main agent also retains global strategy, coordination, integration,
+and work whose essential context is too costly or risky to transfer.
+
+## Preference and role selection
+
+The policy considers demand, difficulty, quantity, risk, acceptance criteria, evidence, and review
+cost. It first removes disabled roles, then chooses the least costly enabled role that can satisfy the
+work. A more capable enabled role may cover work normally suited to a disabled role only when it can
+meet the same acceptance and evidence. If no enabled role is sufficient, the main agent keeps the
+work.
+
+- **Small** handles bounded, planned, and verifiable execution. Difficult but well-defined work can
+  stay Small with higher thinking.
+- **Medium** handles planning, ambiguity reduction, broad synthesis, several modules, comparison,
+  context coordination, or difficult decisions. Small does not need to fail first.
+- **Large** is exceptional while Small and Medium are enabled alternatives; in a partial
+  configuration it may cover other delegable work only when it is the least costly enabled role that
+  can satisfy the same acceptance and evidence.
+
+Large quantities of repetitive independent work favor multiple Small delegations. Volume alone does
+not justify Medium or Large, and agent type does not determine the role.
+
+`efficient` breaks a credible Small/Medium tie toward Small, `intensive` breaks the same tie toward
+Medium, and `standard` adds no bias. If Small or Medium is disabled, all three preferences are inert:
+they never redirect work to Large or another role.
+
+## Visual Design
+
+Visual Design is an optional specialist, not a fourth execution tier. Use it only when the primary
+acceptance criterion is visual or user experience, behavior and data contracts remain unchanged, the
+patch is bounded, and no logic, data flow, APIs, routes, architecture, tooling, or cross-system
+coordination is involved. When it is configured, evaluate those four conditions before ordinary-role
+selection for every task or phase. If they hold and the visual portion is being delegated by the
+main agent's decision or required by the active intensity, Visual Design takes priority over Small,
+Medium, and Large for that portion; reevaluate when the task or phase changes. The priority does not
+require delegation in `normal` or `aggressive`. It may design, create, implement, and review scoped
+presentation code and assets, including visual accessibility, and run its relevant checks. It does
+not own interaction behavior, state, validation, semantic accessibility, persistence, test
+infrastructure, or integration mechanics. When it is disabled, an enabled ordinary role handles
+eligible visual work by task fit.
+
+## Advisor
+
+Advisor is an optional consultation role, not an execution role. It is off by default, does not count
+toward the ordinary-role minimum, and stores an exact `{ "provider", "model" }` reference in global
+defaults. A session `advisor: null` removes that model for the branch and, without an explicit session
+mode, resolves to `off`. `thinking.advisor` accepts the same three states as any other role.
+
+The extension never launches the Advisor. When the role is enabled, configured and valid, the injected
+policy makes a brief consultation step 1 of the decision order and tells the main agent to launch
+`pi-delegation-policy.advisor`, the profile that ships in this package, as a normal subagent through
+Pi's subagent mechanism, with the exact configured model and `thinking.advisor` policy. It favors that
+brief contrast while the agent shapes or reconsiders a substantive choice — an approach, a scope, the
+acceptance criteria, a comparison between options, or a decision — without requiring a recognized
+doubt, a proposal, or alternatives first, and without asking the agent to predict whether the answer
+will change the decision. The advice is reused while the decision holds and reopened on new relevant
+evidence. The one concrete limit is a local detail with no effect on an approach or a solution already
+fixed. Those are signals and limits, not a threshold or a quota, and the policy promises no obedience.
+
+The profile executes no work and has no tools or extensions, so it sees only the brief the main agent
+writes and answers with plain text. That brief puts the objective, the constraints, the facts, and the
+open choice first, and the agent's proposal and reasons after if there is one; the agent asks for an
+approach, criteria, or critical assumptions rather than approval or a forced list of defects. The
+advisor is a conversation, not a single answer: the main agent continues the same thread through the
+host's resume mechanism when a material discrepancy or gap remains.
+
+### Advisor modes
+
+`advisorMode` inherits from global defaults unless the branch overrides it:
+
+| Mode              | Effect                                                                                                                     |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `on`              | Enable consultation even with delegation off. Requires a valid Advisor model; no ordinary roles are required in that case. |
+| `off`             | Inject no Advisor guidance and keep the saved model and thinking policy.                                                   |
+| `with-delegation` | Consult only while delegation is active and an Advisor is configured. Default when the key is absent.                      |
+
+Use **Advisor mode** in the panel, `/delegate advisor on|off|with-delegation`, or `/delegate reset`,
+which turns both features off. `D:OFF A:ON` means consultation only; `D:OFF A:OFF` means nothing is
+injected. ContextShunt stays suspended while delegation is off. Changing a mode does not cancel a
+subagent the host already launched, and an explicit `on` without a model is an error rather than
+implicit activation of another model.
+
+### Errors by axis
+
+Delegation and Advisor report separately, and neither replaces the other:
+
+- An enabled Advisor whose model is missing, unavailable, out of scope, or unauthenticated, or whose
+  configured thinking level its model does not support, produces `A:ERR` and removes only
+  consultation. Valid delegation and an otherwise authorized ContextShunt reader remain available.
+- An unusable Advisor state is an error only while Advisor is enabled. With Advisor off, the
+  diagnostic stays informative and the footer keeps reporting `A:OFF`.
+- Invalid delegation settings do not suppress a valid enabled Advisor.
+- A malformed main delegation document still fails closed; a malformed or stale Advisor companion
+  affects only Advisor, and it keeps its model and thinking policy only while it is readable and
+  valid.
+
+## Persistence and compatibility
+
+The extension stores policy only: intensity, preference, Advisor mode, model references, the optional
+ContextShunt configuration, and the thinking policies you configure. It never stores credentials,
+prompts, or the thinking level of one run.
+
+| File                                         | Content                                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `~/.pi/agent/delegation-policy.json`         | Delegation defaults, schema 7, readable by version `0.16.0`.                        |
+| `~/.pi/agent/delegation-policy.advisor.json` | Advisor companion, `{ "schemaVersion": 1, "state": … }`, where `state` is schema 8. |
+| Pi session entries                           | A schema 2 `off` guard, the Advisor entry, and the schema 7 delegation entry.       |
 
 ```json
 {
-  "schemaVersion": 7,
-  "contextShunt": {
-    "mode": "enforce",
-    "readerEnabled": true,
-    "readerRole": "medium",
-    "answerMaxBytes": 8192
+  "schemaVersion": 1,
+  "state": {
+    "schemaVersion": 8,
+    "intensity": "normal",
+    "small": { "provider": "example-provider", "model": "example-small" },
+    "medium": null,
+    "large": null,
+    "advisor": { "provider": "example-provider", "model": "example-advisor" },
+    "advisorMode": "on"
   }
 }
 ```
 
-Read [limits and privacy](/pi-delegation-policy/limits-and-privacy/#contextshunt-reader) for the request, the answer contract, and retention.
+An earlier development build also wrote a `delegationDigest` in that envelope. It is still read but
+never used: the companion is accepted on its parsed state, not on a hash of the delegation text.
 
-Schema 4 still accepts a positive `limits.readerOutputBytes` from older saved files, but ignores it and never writes it again. Schema 4 writes a guarded schema 2 `off` entry before session state. Before installing a package that cannot read schema 4, set the global and branch ContextShunt mode to `off`; no schema rewrite happens automatically.
+Loading never writes. Schemas 2 through 8 are normalized in memory: a schema 2 through 5 document has
+no thinking policy, a document below schema 7 carries no `advisor`, and schema 2 never accepts
+`orchestrator`. Schema 1 remains inactive and is not migrated automatically. The extension restores
+only the latest delegation session entry, so a future or malformed latest entry forces the branch off
+with a sanitized diagnostic instead of reactivating older state, and a later entry written by an
+older version cannot reuse an earlier companion. `/delegate reset` and the guard keep a downgrade
+fail-closed: a reset, a schema 2 `off` guard, or an invalid restoration turns Advisor off even when
+global defaults enable it.
 
-## Intensity
+### Compatible saves and interruption recovery
 
-- `off` reports `D:OFF` and removes the policy block before the next LLM request. A request already in progress and subagents already launched are unchanged.
-- `normal` delegates substantial, separable work only when expected benefit clearly outweighs briefing, supervision, review, and integration. Borderline work stays with the main agent.
-- `aggressive` delegates suitable substantial, separable, independently checkable work by default when its objective and acceptance criteria are clear. Tightly coupled work or clearly prohibitive overhead stays with the main agent.
-- `orchestrator` delegates all transferable execution before performing it whenever an enabled capable role and authorized launcher are available, regardless of size. This includes small lookups, code reading, detailed planning, implementation, testing, writing, detailed review, and integration mechanics. Bootstrap is limited to mandatory instructions, tool discovery, and narrow assignment scope; it must not pre-solve or broadly inspect the repository. Batch small tasks without recursive fanout. After assigning, do not take the task over or run an equivalent worker while it is pending; coordinate only disjoint work, wait through the host, and consume the result before dependent work or finalizing. The main agent retains strategy, objectives, critical user decisions, coordination, safety, evidence evaluation, final acceptance, and concise synthesis; responsibility does not permit personal review or integration execution. Reinspect only a concrete gap, risk, or contradiction, then delegate transferable fixes or rechecks. Direct execution is allowed only for genuinely non-transferable work, no enabled capable role, a confirmed unavailable authorized launcher, or an explicit user or higher-priority requirement. State that exception briefly before the minimum direct work, do not repeat it while unchanged, and resume delegation when it ends. A final-review or integration label, triviality, convenience, economics, transfer cost, size, or familiarity is not a bypass. Published `0.9.0` uses this stricter guidance; published `0.7.0` retains its original wording.
+The companion is accepted only while its state parses and its delegation projection — intensity,
+preference, roles, ordinary thinking, and ContextShunt — equals the delegation file's. Reformatting,
+CRLF line endings, or a hand-edited key order therefore do not disable Advisor.
 
-In `normal` and `aggressive`, the main agent retains global strategy, coordination, integration, final review, and work whose essential context is too costly or risky to transfer. In `orchestrator`, it retains final responsibility and acceptance without a direct-execution exception for transferable detail.
+When the companion is absent, the delegation file is used on its own with no diagnostic. When it is
+unreadable, malformed, or out of step, delegation from the main file wins and Advisor is silenced.
+A readable, valid companion that is merely out of step keeps its listed model and thinking policy so a
+later save can repair the pair instead of losing them; a corrupt or unreadable companion cannot
+supply Advisor settings. Settings still present in a legacy delegation file are retained; otherwise,
+configure the Advisor model and thinking policy again. The panel's
+**Save effective configuration as defaults** re-saves the pair, and the diagnostic stays visible until
+then.
 
-## Preference and role selection
+Each of the two files is replaced atomically, but the pair is not a filesystem transaction:
 
-The policy considers demand, difficulty, quantity, risk, acceptance criteria, evidence, and review cost. It first removes disabled roles, then chooses the least costly enabled role that can satisfy the work. A more capable enabled role may cover work normally suited to a disabled role only when it can meet the same acceptance and evidence. If no enabled role is sufficient, the main agent keeps the work.
+- A save stops before its first write when either previous file exists but cannot be read, and
+  reports that nothing changed, because it cannot establish the state it would have to restore.
+- The companion is committed last, so an interrupted save cannot activate a new Advisor state.
+- When the companion write fails, the previous delegation file is read before the save starts,
+  restored, and checked. The save reports that nothing changed only when that check succeeds.
+  A failure only ever reaches the caller before a replacement is committed, so a failed cleanup cannot
+  undo a written file.
+- When the previous state cannot be restored or verified, the save reports a partial result instead
+  of claiming success: the panel reloads what the files actually hold, shows the diagnostic, and
+  `/delegate status` explains it.
+- A hard stop between the two replacements can still leave the files out of step. The pair then
+  reports `A:OFF` with a diagnostic until the next successful save.
 
-- **Small** handles bounded, planned, and verifiable execution. Difficult but well-defined work can remain Small with higher thinking.
-- **Medium** handles planning, ambiguity reduction, broad synthesis, several modules, comparison, context coordination, or difficult decisions. Small does not need to fail first.
-- **Large** is exceptional when Small and Medium are enabled alternatives and unblocks genuinely stuck work. In a partial configuration, it may cover other delegable work only when it is the least costly enabled role that can satisfy the same acceptance and evidence.
+Before restoring, the extension checks that the delegation file still holds its own projection and that
+the companion is unchanged. If either check fails, it does not restore and reports a partial save.
+These checks are not a lock: another writer can change either file between a check and a replacement.
 
-Large quantities of repetitive independent work favor multiple Small delegations. Volume alone does not justify Medium or Large, and agent type does not determine the role.
+### Downgrade
 
-`efficient` breaks a credible Small/Medium tie toward Small. `intensive` breaks the same tie toward Medium. `standard` adds no bias. If Small or Medium is disabled, all three preferences are inert: they do not redirect work to Large or another role.
+New saves keep delegation in schema 7, and the Advisor state is omitted from that projection, so a
+schema 7 reader such as `0.16.0` keeps reading delegation and simply ignores the companion. This
+guarantee is for schema 7 readers; earlier versions keep their existing limitations. Additional steps
+before installing an older package:
 
-## Thinking
+1. For a package that cannot read schema 4, set global and branch ContextShunt mode to `off`.
+2. For `0.6.0`, set intensity to `off`, `normal`, or `aggressive`, and run `/delegate off` in every
+   active branch.
+3. For `<=0.5.0`, also convert global defaults to schema 2 and replace ordinary `null` values with
+   exact model references.
 
-The main agent chooses thinking for every delegated task from demand, difficulty, quantity, risk, error and review cost, and the selected model's capabilities. That per-launch choice is the default, and the extension neither stores it nor reports it. What you may configure is a policy per role. Configuring one is optional; leaving a role unset keeps the per-launch behavior exactly as before.
+## ContextShunt
 
-Each role has three states:
+`contextShunt.mode` is independent from delegation intensity: `off` is the default and does no
+classification, metrics, archive I/O, or interception; `observe` records decisions without changing
+calls or results; `enforce` covers only recognized native reads, conservative bounded PowerShell
+reads, and known successful textual results. Delegation `off` suspends the effective mode without
+deleting the saved preference.
 
-- **Unset** (key absent) — the main agent chooses the level for each launch.
-- **Fixed** (`{ "level": "<name>" }`) — every launch of that role uses exactly that level, and the main agent must not change it.
-- **Range** (`{ "min": "<name>", "max": "<name>" }`) — the main agent chooses a level inside the inclusive bounds.
+Limits, patterns, and the reader settings inherit per field between global defaults and the branch.
+Preflight limits use declared lines and post-result limits use real UTF-8 bytes and returned lines.
+`exceptionPatterns` exempt matching paths only from this optimization and never grant filesystem
+access; `delegationHintPatterns` label an already blocked declared excess as a delegation hint. Three
+further keys control the opt-in inline reader:
 
-The level names are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, in lower case. A range whose `min` and `max` are the same level is normalized to a fixed level. A configured policy is binding: the injected block states `fixed <level> (must not change)` or `range <min>..<max> inclusive (choose within it)` for that role, and the level cannot come from an ambient launcher default or from another role.
+- `readerEnabled` (boolean, built-in `false`) — allow `context_shunt_delegate` to answer from a
+  preserved artifact.
+- `readerRole` (`small`, `medium`, or `large`, default `small`) — an existing ordinary role whose
+  exact model answers. No separate reader model is stored, and the role must be enabled with an
+  available model.
+- `answerMaxBytes` (integer, 1024 to 16384, default `8192`) — cap on the serialized result, including
+  its citations and envelope.
 
-The extension validates each configured level locally against the role's resolved model when an active policy is loaded. A well-formed level the model does not support produces `D:ERR`, names the role, the level, and the model, and injects no policy. It never substitutes or clamps a level. A policy on a disabled or **not configured** role, or on Visual Design while it is disabled, is stored and inert until that role is enabled again; it adds no error.
+The reader also needs an effective mode of `enforce`, an active delegation intensity, and a valid
+configuration. It requires a compatible external executor: protocol version `0.69.0` is the verified
+one, and another build fails closed with `reader-unavailable`. **Context advanced** in the panel edits
+these values and each limit, and **Reset ContextShunt draft** clears all branch values. Schema 4 still
+accepts a positive `limits.readerOutputBytes` from older files, but ignores it and never writes it
+again.
 
-A `thinking` entry outside those three states is a malformed document rather than a policy error: an unrecognized level name (including an empty string or a number), an empty or malformed policy object such as `{}` for a role, a `min` above its `max`, mixed or unknown keys inside a policy, a non-object, an unknown role key, or `null` in global defaults. The `thinking` object itself may be empty; that simply means no role has a policy. Malformed documents follow the strict contract described above: global defaults fall back to empty defaults with no injection, and a session branch falls back to `off` with a sanitized notice. That case does not produce `D:ERR`.
-
-With `pi-subagents`, the selected base and level are sent as `model: "provider/model:LEVEL"`; a fixed policy shows its literal level instead of the `LEVEL` placeholder. Another launcher may expose a separate per-run field. The stored policy appears in the panel and in `/delegate status`.
-
-## Visual Design
-
-Visual Design is an optional specialist, not a fourth execution tier. Use it only when the primary acceptance criterion is visual or user experience, behavior and data contracts remain unchanged, the patch is bounded, and it needs no logic, data flow, APIs, routes, architecture, tooling, or cross-system coordination. When it is configured, evaluate those four conditions before ordinary-role selection for every task or phase. If they hold and the visual portion is being delegated by the main agent's decision or required by the active intensity, Visual Design takes priority over Small, Medium, and Large. Reevaluate eligibility when the task or phase changes. This priority does not require delegation in `normal` or `aggressive`. It may design, create, implement, and review scoped presentation code and assets, including visual accessibility, and run its relevant checks. In published `0.7.0` and `normal` or `aggressive`, the main agent retains integration and final acceptance. In published `0.9.0` `orchestrator`, it retains integration responsibility, coordination, and final acceptance while a capable ordinary role performs transferable integration mechanics and detailed review unless a named direct-work exception applies. Visual Design does not replace ordinary roles or own interaction behavior, state, validation, semantic accessibility, persistence, test infrastructure, or integration mechanics. When disabled, an enabled ordinary role handles eligible visual work by task fit.
-
-## Advisor
-
-Advisor is an optional consultation role, not an execution role. It is off by default, does not count toward the ordinary-role minimum, and configures exactly like Visual Design: an exact `{ "provider", "model" }` reference in global defaults, where only a session override may use `null` to turn it off. `thinking.advisor` accepts the same three states as any other role.
-
-When the advisor is configured and valid, the injected policy makes a brief consultation step 1 of the decision order it gives the main agent and tells it to launch `pi-delegation-policy.advisor`, the profile that ships in this package, as a normal subagent through Pi's subagent mechanism, with the exact configured model and `thinking.advisor` policy. It favors that brief contrast while the agent shapes or reconsiders a substantive choice — an approach, a scope, the acceptance criteria, a comparison between options, or a decision — without requiring a recognized doubt, a proposal or alternatives first, and without asking the agent to predict whether the answer will change the decision. Viable approaches trading off explicit requirements, evidence supporting conflicting explanations that call for different actions, and changes with destructive data operations, difficult rollback or compatibility breaks are examples, not a closed list. The advice is reused while the decision holds and reopened on new relevant evidence, not on every turn. The one concrete limit is a local detail with no effect on an approach or a solution already fixed. When a decision belongs to the user, the main agent considers the advisor before asking, so the question reaches the user with better options and trade-offs. Those are signals and limits, not a threshold or a quota, and the policy promises no obedience. With no advisor configured, no advisor section is injected and nothing else changes.
-
-The profile executes no work. It has no tools, no extensions, and no filesystem, network or conversation access beyond the task text it receives, so the brief has to stand on its own: it puts the objective, the constraints, the facts and the open choice first, and adds the agent's proposal and reasons after if there is one. It carries the decision, the constraints, the current state and the relevant evidence, the options and their consequences, what was tried or is proposed and why, and the open uncertainty. The agent asks for an approach, criteria or critical assumptions rather than approval or a forced list of defects, and a short reply can be enough. The advisor is a conversation, not a single answer: the main agent continues the same thread through the host's resume mechanism when a material discrepancy or gap remains, instead of restarting it for the same matter.
-
-A trimmed example of that brief and of a follow-up on the same thread:
-
-```text
-Decision: keep the retry loop in the client or move it behind the queue.
-Constraints: the public response format cannot change; no new dependency.
-State: the client retries three times with a fixed delay; the queue already records failures.
-Evidence: the failing integration test, and the queue's failure record for the same request.
-Options: (a) keep the client retries and add jitter; (b) drop them and let the queue own
-         retries. Consequence of (b): callers stop seeing transient failures at all, and
-         some of them depend on that.
-Tried: raising the retry count, which turned one timeout into three.
-Open question: does any caller depend on seeing a transient failure before the queue
-         succeeds?
-```
-
-A follow-up continues that same thread rather than opening a new one: `I kept the client retries and added jitter. Does that change your answer about the queue owning retries?`
-
-A configured advisor whose model is missing, unavailable, out of scope, or unauthenticated produces `D:ERR` and injects no policy, exactly like Visual Design. That validation is shared: the same error also leaves the ContextShunt reader unauthorized until the configuration is corrected. This coupling is deliberate and documented rather than incidental. Read [limits and privacy](/pi-delegation-policy/limits-and-privacy/#advisor-role) for the role, its signals, and retention.
-
-For fail-closed behavior, privacy, and reporting guidance, read [limits and privacy](/pi-delegation-policy/limits-and-privacy/).
+Read [limits and privacy](/pi-delegation-policy/limits-and-privacy/#contextshunt-reader) for the
+request, the answer contract, and retention.

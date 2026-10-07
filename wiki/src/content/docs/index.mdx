@@ -15,27 +15,51 @@ hero:
 
 import { LinkCard, Steps } from "@astrojs/starlight/components";
 
-`pi-delegation-policy` is a local Pi extension for delegation intensity, exact references for
-Small, Medium, Large, and optional Visual Design, an optional Advisor role the main agent may launch
-as a subagent with the profile that ships in the package, and an optional thinking policy per role. It guides the main agent; it never runs or routes delegated work. Its optional ContextShunt protects recognized oversized context without launching a worker. When configured, Visual Design takes priority over ordinary roles only for a delegated visual portion that meets all four eligibility conditions, using its exact configured model and that role's thinking policy. Evaluate and reevaluate that eligibility before ordinary-role selection for every task or phase; it does not make `normal` or `aggressive` delegate more work.
+`pi-delegation-policy` is a local Pi extension that guides the main agent on when delegation is worth
+it and which exact models to use for Small, Medium, Large, and the optional Visual Design and Advisor
+roles. It adds guidance to the system prompt and nothing else: it does not route, supervise, or
+collect delegated work, and it never changes Pi's main model, thinking level, or tool permissions.
+
+What it configures:
+
+- **Intensity** — `off`, `normal`, `aggressive`, or `orchestrator`, set globally or per branch.
+- **Roles** — an exact `provider/model` reference or an explicit `disabled` for each ordinary role,
+  plus the optional Visual Design and Advisor roles.
+- **Thinking** — an optional fixed level or inclusive range per role, or no policy so the main agent
+  chooses the level for each launch.
+- **ContextShunt** — a separate opt-in layer that bounds recognized oversized context without
+  launching a worker.
 
 :::caution
-The extension adds guidance only when an active configuration is valid. ContextShunt is off by default and is not a sandbox or an automatic worker bridge. Neither capability can guarantee that another system follows a configured role or thinking choice.
+The extension injects guidance only while an active configuration is valid. It cannot guarantee that
+another system follows a configured role or thinking choice, and ContextShunt is off by default, not a
+sandbox, and not an automatic worker bridge.
 :::
 
 ## Start here
 
-Version `0.16.0` requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent >=0.87.1`). It also re-applies the marked policy block in the final provider payload. Version `0.14.1` supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`).
+Version **0.16.0** requires Pi `0.87.1` or later (`>=0.87.1`). Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 
 <Steps>
 
 1. Install `pi-delegation-policy` and reload Pi.
-2. Open `/delegate`, configure or explicitly disable each of Small, Medium, and Large, and leave at least one enabled. Visual Design and Advisor are optional.
-3. Select `normal`, `aggressive`, or `orchestrator`, choose **Apply changes**, then confirm `/delegate status` and `D:NORM`, `D:AGG`, or `D:ORCH`.
+2. Open `/delegate` and give Small, Medium, and Large an explicit decision each: an exact
+   authenticated model, or **Disable for this session**. Keep at least one enabled. Visual Design and
+   Advisor are optional.
+3. Choose an intensity, choose **Apply changes**, then confirm `/delegate status` reports `D:NORM`,
+   `D:AGG`, or `D:ORCH`.
 
 </Steps>
 
-`orchestrator` delegates all transferable execution before it begins whenever an enabled capable role and authorized launcher are available, regardless of size, including small lookups, code reading, detailed planning, implementation, testing, writing, detailed review, and integration mechanics. Bootstrap is only mandatory instructions, tool discovery, and narrow assignment scope. Pending work is not taken over or duplicated: coordinate disjoint work, wait through the host, and consume results before dependent work or finalizing. The main agent retains critical decisions, coordination, safety, evidence evaluation, final acceptance, and concise synthesis—not personal execution of transferable review or integration. Direct work needs a briefly stated concrete exception: genuinely non-transferable work, no enabled capable role, a confirmed unavailable authorized launcher, or an explicit user or higher-priority requirement. Reinspect only concrete gaps, risks, or contradictions and delegate transferable fixes or rechecks; a final-review label, size, triviality, convenience, economics, transfer cost, or familiarity is not a bypass. Published `0.9.0` includes the stricter guidance; published `0.7.0` retains its original policy. Before downgrading to 0.6.0, set the global intensity and each active branch to `off`, `normal`, or `aggressive`; for `<=0.5.0`, also convert global defaults to schema 2 and replace ordinary `null` values with exact model references. `disabled` is distinct from `not configured`. The latter, an invalid enabled reference, or zero enabled ordinary roles produces `D:ERR` and injects no policy. Version `0.14.1` supports Pi `0.84.3` or later (`@earendil-works/pi-coding-agent >=0.84.3`); its explicitly checked baseline was Pi `0.85.1`. Version `0.15.0` requires Pi `0.87.1` or later.
+Optional next steps: set a per-role thinking policy, enable the Advisor with `/delegate advisor on`,
+or turn on ContextShunt with `/delegate context observe`.
+
+## Availability
+
+Independent Advisor mode and the companion file that stores it are a development change and are not
+included in npm `0.16.0`. A configuration saved without an explicit Advisor mode keeps the previous
+behavior: Advisor is consulted only while delegation is active. Selecting `on` is what enables
+consultation with delegation off.
 
 <LinkCard
   title="Install and configure"
@@ -49,7 +73,7 @@ Version `0.16.0` requires Pi `0.87.1` or later (`@earendil-works/pi-coding-agent
 />
 <LinkCard
   title="Set policy values"
-  description="Understand schema 7, tri-state roles, thinking policies, and inheritance."
+  description="Understand inheritance, roles, thinking policies, Advisor modes, and compatible saves."
   href="/pi-delegation-policy/configuration/"
 />
 <LinkCard
