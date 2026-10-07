@@ -3,7 +3,7 @@ title: Limits and privacy
 description: Understand the product boundary, fail-closed behavior, local data, and safe reporting.
 ---
 
-> **Development version:** independent Advisor mode and its companion file are not included in npm `0.16.0`.
+> Independent Advisor mode and its companion file are available from version `0.17.0`.
 > Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
 
 ## Product boundary

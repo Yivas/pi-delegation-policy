@@ -3,19 +3,19 @@ title: Installation and first use
 description: Install pi-delegation-policy and reach a valid delegation status safely.
 ---
 
-> **Development version:** independent Advisor mode and its companion file are not included in npm `0.16.0`.
+> Independent Advisor mode and its companion file are available from version `0.17.0`.
 > Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
 
 ## Requirements
 
-- Version `0.16.0` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
+- Version `0.17.0` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
 - Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design and Advisor are optional.
 
 ## 1. Install and reload
 
 ```bash
-pi install npm:pi-delegation-policy@0.16.0
+pi install npm:pi-delegation-policy@0.17.0
 ```
 
 Restart Pi or run `/reload`. Installing or upgrading changes no configuration: a session with no saved
@@ -112,7 +112,7 @@ package, follow the downgrade steps in
 
 ## 7. When a change takes effect
 
-With version `0.16.0` on Pi `0.87.1` or later, the policy is refreshed before each LLM request, so a
+With version `0.17.0` on Pi `0.87.1` or later, the policy is refreshed before each LLM request, so a
 change made during a turn affects that turn's next request. A request already in progress, and
 subagents already launched, keep the state they started with. Turning everything off removes the
 injected block when that version next applies its policy. Version `0.14.1` applies changes on the next

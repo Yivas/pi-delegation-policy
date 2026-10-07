@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.17.0 - 2026-10-07
+
+### Added
+
+- Configure Advisor independently with `advisorMode: off|on|with-delegation`, the panel, or `/delegate advisor`. Explicit `on` permits consultation with delegation off (`D:OFF A:ON`) without ordinary roles. An omitted mode preserves the previous coupling; `off` keeps the saved model and thinking policy without validating or injecting consultation guidance.
+
+### Fixed
+
+- Isolate errors by axis: an invalid enabled Advisor removes only consultation, and invalid delegation does not suppress a valid enabled Advisor. Status and the panel show `D:* A:OFF|ON|ERR`; unreported configuration diagnostics remain visible without becoming Advisor errors.
+- Stop global saves before writing when either previous settings file cannot be read. If the companion write fails, attempt restoration and verify both files before reporting no changes; otherwise report a partial save and reload the observable state.
+- Preserve Advisor model and thinking from readable, valid but mismatched companions while silencing consultation. Compare normalized delegation projections rather than raw-text digests, so reformatting does not invalidate the pair.
+- Keep an older session's explicit removal of Advisor from inheriting a newly enabled global Advisor. Reset, invalid restoration, and interrupted session saves disable both axes.
+
+### Changed
+
+- Rewrite the README and wiki around setup, modes, role thinking, commands, persistence, downgrade, and privacy.
+
+### Compatibility and limits
+
+- Requires Pi `0.87.1` or later. Current state uses schema 8, but saved delegation remains schema 7, with Advisor in a companion. The actual `0.16.0` reader retains delegation after downgrade; earlier readers keep their existing limitations. Loading migrates only in memory.
+- Global settings use two individually atomic replacements, not a transaction. A hard stop can leave a mismatched pair with Advisor off; concurrency checks are not locks, and another writer can change a file between a check and a replacement.
+- ContextShunt remains suspended with delegation off. The extension does not launch Advisor from hooks, change the host executor, or alter the main model or thinking. Consultation still carries normal executor/provider retention, latency, and cost.
+
 ## 0.16.0 - 2026-10-06
 
 ### Changed
