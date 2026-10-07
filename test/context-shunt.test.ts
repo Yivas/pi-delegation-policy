@@ -140,10 +140,7 @@ test("schema, parser, example, and documentation accept the same ContextShunt pa
   assert.equal(validate(example), true, "the example must match the schema the code writes");
   assert.ok(parseConfig(example), "the example stays readable");
 
-  const configuration = await readFile(
-    join(process.cwd(), "wiki/src/content/docs/configuration.md"),
-    "utf8",
-  );
+  const configuration = await readFile(join(process.cwd(), "wiki/configuration/index.md"), "utf8");
   const documented = /```json\s*([\s\S]*?)```/.exec(configuration)?.[1];
   assert.ok(documented, "the configuration page must document a JSON example");
   const documentedValue = JSON.parse(documented);

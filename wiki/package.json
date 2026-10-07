@@ -5,22 +5,17 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=18.0.0"
   },
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
-    "preview": "astro preview",
-    "check": "astro check",
-    "check:links": "node scripts/check-links.mjs"
-  },
-  "dependencies": {
-    "@astrojs/starlight": "^0.42.0",
-    "astro": "7.3.2",
-    "sharp": "0.35.4"
+    "dev": "vitepress dev .",
+    "build": "vitepress build .",
+    "preview": "vitepress preview .",
+    "check:links": "node scripts/check-links.mjs",
+    "test": "node --test scripts/check-links.test.mjs",
+    "check": "npm run build && npm run check:links && npm test"
   },
   "devDependencies": {
-    "@astrojs/check": "0.9.10",
-    "typescript": "^6.0.3"
+    "vitepress": "1.6.4"
   }
 }

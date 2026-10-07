@@ -2675,10 +2675,7 @@ test("public documentation states the versioned Pi requirements without release-
   const readme = await readFile(join(process.cwd(), "README.md"), "utf8");
   versionedRequirements(readme, "README.md");
 
-  for (const path of [
-    "wiki/src/content/docs/index.mdx",
-    "wiki/src/content/docs/getting-started.md",
-  ]) {
+  for (const path of ["wiki/index.md", "wiki/getting-started/index.md"]) {
     versionedRequirements(await readFile(join(process.cwd(), path), "utf8"), path);
   }
 });

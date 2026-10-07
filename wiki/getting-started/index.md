@@ -3,6 +3,8 @@ title: Installation and first use
 description: Install pi-delegation-policy and reach a valid delegation status safely.
 ---
 
+# Installation and first use
+
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
 > Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
 
@@ -57,7 +59,7 @@ Apply the draft, then run `/delegate status`. `D:NORM`, `D:AGG`, and `D:ORCH` me
 role is enabled with a valid exact reference or explicitly disabled, and at least one is enabled.
 `D:ERR` means a role is not configured, an enabled reference is unavailable, out of scope, or
 unauthenticated, no ordinary role is enabled, or a configured thinking level is unsupported; it
-removes delegation guidance. See [commands and status](/pi-delegation-policy/commands-and-status/) to
+removes delegation guidance. See [commands and status](/commands-and-status/) to
 diagnose it.
 
 ## 4. Enable the Advisor when you want it
@@ -80,8 +82,8 @@ delegation file still fails closed, and a malformed or stale Advisor companion a
 the companion keeps its saved model and thinking policy only while it is readable and valid. A corrupt
 or unreadable companion cannot supply Advisor settings: settings still present in a legacy delegation
 file are retained, and otherwise the Advisor model and thinking policy must be configured again. Read
-[configuration](/pi-delegation-policy/configuration/#advisor) for the modes, and
-[limits and privacy](/pi-delegation-policy/limits-and-privacy/#advisor-role) for the signals and
+[configuration](/configuration/#advisor) for the modes, and
+[limits and privacy](/limits-and-privacy/#advisor-role) for the signals and
 retention.
 
 ## 5. Turn on ContextShunt only when needed
@@ -93,7 +95,7 @@ native reads, conservative bounded PowerShell reads, and known successful text r
 launches a worker, re-runs a command, or bypasses tool permissions. When it preserves a large known
 text result, `context_shunt_recover` returns one bounded line or byte range.
 
-[Limits and privacy](/pi-delegation-policy/limits-and-privacy/#contextshunt-limits) states the caps,
+[Limits and privacy](/limits-and-privacy/#contextshunt-limits) states the caps,
 the reader contract, and what one request sends.
 
 ## 6. Know what is saved
@@ -108,7 +110,7 @@ the reader contract, and what one request sends.
 Loading never rewrites a file: schemas 2 through 8 are normalized in memory only. **Save effective
 configuration as defaults** updates the global files and not the branch. Before installing an older
 package, follow the downgrade steps in
-[configuration](/pi-delegation-policy/configuration/#global-defaults-and-inheritance).
+[configuration](/configuration/#global-defaults-and-inheritance).
 
 ## 7. When a change takes effect
 
@@ -128,7 +130,7 @@ pi install ./pi-delegation-policy
 
 ## Next steps
 
-- [Configuration](/pi-delegation-policy/configuration/) defines the policy values, inheritance, and
+- [Configuration](/configuration/) defines the policy values, inheritance, and
   compatible saves.
-- [Commands and status](/pi-delegation-policy/commands-and-status/) covers keyboard operation and
+- [Commands and status](/commands-and-status/) covers keyboard operation and
   status tokens.

@@ -3,6 +3,8 @@ title: Limits and privacy
 description: Understand the product boundary, fail-closed behavior, local data, and safe reporting.
 ---
 
+# Limits and privacy
+
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
 > Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
 
@@ -43,7 +45,7 @@ authentication, or thinking level is wrong produces `A:ERR` and removes only con
 valid delegation and an otherwise authorized reader available; invalid delegation does not suppress a
 valid enabled Advisor. With Advisor off, an unusable Advisor state is reported as a diagnostic while
 the footer keeps `A:OFF`. See
-[errors by axis](/pi-delegation-policy/configuration/#errors-by-axis).
+[errors by axis](/configuration/#errors-by-axis).
 
 A configured thinking policy is validated locally against that role's resolved model. A well-formed
 level the model does not support is a `D:ERR` cause and injects no policy, and the diagnostic names
@@ -222,16 +224,15 @@ another system followed the guidance.
 
 ## Reporting vulnerabilities
 
-Use GitHub's [private vulnerability reporting](https://github.com/Yivas/pi-delegation-policy/security/policy)
-for an undisclosed vulnerability; do not open a public issue. Include the affected version or commit,
+For an undisclosed vulnerability, use [GitHub's vulnerability reporting page](https://github.com/Yivas/pi-delegation-policy/security/advisories/new); do not open a public issue. Include the affected version or commit,
 operating system, Pi version, reproduction steps, expected behavior, observed behavior, and a minimal
 sanitized configuration. For ordinary changes, read the
 [contribution guide](https://github.com/Yivas/pi-delegation-policy/blob/main/CONTRIBUTING.md).
 
 ## More information
 
-- [Getting started](/pi-delegation-policy/getting-started/) installs and configures the extension.
-- [Configuration](/pi-delegation-policy/configuration/) defines policy values and inheritance.
-- [Commands and status](/pi-delegation-policy/commands-and-status/) explains operation and diagnostics.
+- [Getting started](/getting-started/) installs and configures the extension.
+- [Configuration](/configuration/) defines policy values and inheritance.
+- [Commands and status](/commands-and-status/) explains operation and diagnostics.
 - [Source repository](https://github.com/Yivas/pi-delegation-policy)
 - [Package on npm](https://www.npmjs.com/package/pi-delegation-policy)

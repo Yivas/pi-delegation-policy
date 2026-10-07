@@ -7,6 +7,8 @@ export default tseslint.config(
       "dist/**",
       "node_modules/**",
       "wiki/.astro/**",
+      "wiki/.vitepress/cache/**",
+      "wiki/.vitepress/dist/**",
       "wiki/dist/**",
       "wiki/node_modules/**",
     ],

@@ -3,6 +3,8 @@ title: Configuration
 description: Set valid global defaults, session-branch overrides, and optional thinking policies per role.
 ---
 
+# Configuration
+
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
 > Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
 
@@ -44,7 +46,7 @@ references; only a session override may use `null` to disable that optional role
 `thinking` is optional and holds at most one policy per role. Omitting it, or omitting a role inside
 it, changes nothing: the main agent chooses that role's level for each launch.
 
-## Global defaults, session inheritance, and saving
+## Global defaults, session inheritance, and saving {#global-defaults-and-inheritance}
 
 Global defaults may contain intensity, preference, tri-state ordinary roles, the `uiDesign` and
 `advisor` keys, an independent `advisorMode`, and one thinking policy per role. If global intensity is
@@ -342,5 +344,5 @@ these values and each limit, and **Reset ContextShunt draft** clears all branch 
 accepts a positive `limits.readerOutputBytes` from older files, but ignores it and never writes it
 again.
 
-Read [limits and privacy](/pi-delegation-policy/limits-and-privacy/#contextshunt-reader) for the
+Read [limits and privacy](/limits-and-privacy/#contextshunt-reader) for the
 request, the answer contract, and retention.

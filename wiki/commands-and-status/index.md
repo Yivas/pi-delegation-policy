@@ -3,6 +3,8 @@ title: Commands and status
 description: Operate the /delegate panel and interpret its status in Pi.
 ---
 
+# Commands and status
+
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
 > Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
 
@@ -72,7 +74,7 @@ If a global save cannot be completed, the panel says so and never claims that no
 file did change: **Could not save global defaults. Nothing was changed on disk.**, **Partially saved:
 the delegation file and the Advisor companion may disagree.**, or, when the outcome could not be
 confirmed at all, a prompt to check `/delegate status` before retrying. See
-[compatible saves](/pi-delegation-policy/configuration/#compatible-saves-and-interruption-recovery).
+[compatible saves](/configuration/#compatible-saves-and-interruption-recovery).
 
 ## 3. Keep the terminal large enough
 
@@ -132,7 +134,7 @@ no policy even when global defaults set one.
 `A:ERR` means an enabled Advisor cannot be used; it does not affect valid delegation or an authorized
 ContextShunt reader, and `D:ERR` does not suppress a valid enabled Advisor. With Advisor off, an
 unusable companion is reported as a diagnostic in `details=` and the footer keeps `A:OFF`. Read
-[errors by axis](/pi-delegation-policy/configuration/#errors-by-axis) for the exact cases. None of
+[errors by axis](/configuration/#errors-by-axis) for the exact cases. None of
 these labels proves that a launch happened or that another system followed the guidance.
 
 A sanitized restoration warning can accompany `D:OFF` when the latest stored session state is invalid
@@ -184,5 +186,5 @@ A malformed `thinking` entry is not part of that list: it invalidates its docume
 delegation document fails closed while an Advisor companion disables consultation only, and the
 sanitized warning in section 5 applies instead.
 
-See [configuration](/pi-delegation-policy/configuration/) for inheritance and policy meanings, and
-[limits and privacy](/pi-delegation-policy/limits-and-privacy/) for the fail-closed boundary.
+See [configuration](/configuration/) for inheritance and policy meanings, and
+[limits and privacy](/limits-and-privacy/) for the fail-closed boundary.
