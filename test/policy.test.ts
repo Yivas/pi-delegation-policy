@@ -1487,6 +1487,17 @@ function sendKeys(component: InteractiveComponent, ...keys: string[]): void {
   for (const key of keys) component.handleInput?.(key);
 }
 
+async function waitForRenderedText(component: InteractiveComponent, text: string): Promise<string> {
+  const deadline = Date.now() + 5_000;
+  let view = component.render(80).join("\n");
+  while (!view.includes(text) && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    view = component.render(80).join("\n");
+  }
+  assert.ok(view.includes(text), `Expected ${JSON.stringify(text)} before timeout:\n${view}`);
+  return view;
+}
+
 function createPanelHarness(
   options: {
     rows?: number;
@@ -2233,6 +2244,47 @@ test("the delegate panel searches models, keeps pinned actions, and stages safe 
   });
 });
 
+test("the delegate panel waits for default saving before accepting Escape", async () => {
+  let finishSave: ((outcome: { kind: "saved"; defaults: GlobalDefaults }) => void) | undefined;
+  const pendingSave = createPanelHarness({
+    onSaveDefaults: () =>
+      new Promise((resolve) => {
+        finishSave = resolve;
+      }),
+  });
+  sendKeys(pendingSave.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
+  assert.match(pendingSave.panel.render(80).join("\n"), /Saving defaults/);
+  sendKeys(pendingSave.panel, KEY_ESCAPE);
+  assert.deepEqual(pendingSave.done, []);
+  assert.match(pendingSave.panel.render(80).join("\n"), /Saving defaults/);
+
+  finishSave?.({ kind: "saved", defaults });
+  const savedView = await waitForRenderedText(
+    pendingSave.panel,
+    "Saved effective delegation settings as global defaults.",
+  );
+  assert.doesNotMatch(savedView, /Saving defaults/);
+  sendKeys(pendingSave.panel, KEY_ESCAPE);
+  assert.deepEqual(pendingSave.done, ["cancelled"]);
+
+  let failSave: ((error: Error) => void) | undefined;
+  const failedSave = createPanelHarness({
+    onSaveDefaults: () =>
+      new Promise((_, reject) => {
+        failSave = reject;
+      }),
+  });
+  sendKeys(failedSave.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
+  assert.match(failedSave.panel.render(80).join("\n"), /Saving defaults/);
+  failSave?.(new Error("write failed"));
+  const failedView = await waitForRenderedText(
+    failedSave.panel,
+    "Could not save global defaults. Check /delegate status before retrying.",
+  );
+  assert.doesNotMatch(failedView, /Saving defaults/);
+  assert.deepEqual(failedSave.done, []);
+});
+
 test("the delegate panel preserves dirty drafts when apply or default saving fails", async () => {
   const failedApply = createPanelHarness({ onApply: async () => false });
   sendKeys(failedApply.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, "a");
@@ -2393,10 +2445,10 @@ test("the custom editor applies, discards, inherits, and saves defaults", async 
       branch: [],
       runCustom: async (component) => {
         sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
-        for (let attempt = 0; attempt < 50; attempt += 1) {
-          if (!component.render(80).join("\n").includes("Saving defaults")) break;
-          await new Promise((resolve) => setImmediate(resolve));
-        }
+        await waitForRenderedText(
+          component,
+          "Saved effective delegation settings as global defaults.",
+        );
         sendKeys(component, KEY_ESCAPE);
       },
     });
@@ -2579,10 +2631,10 @@ test("saving disabled ordinary defaults is global-only and does not apply the dr
       runCustom: async (component) => {
         sendKeys(component, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_DOWN, KEY_ENTER);
         sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
-        for (let attempt = 0; attempt < 50; attempt += 1) {
-          if (!component.render(80).join("\n").includes("Saving defaults")) break;
-          await new Promise((resolve) => setImmediate(resolve));
-        }
+        await waitForRenderedText(
+          component,
+          "Saved effective delegation settings as global defaults.",
+        );
         assert.equal((component as DelegatePanel).isDirty(), true);
         sendKeys(component, KEY_ESCAPE, KEY_DOWN, KEY_ENTER);
       },
