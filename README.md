@@ -5,7 +5,7 @@ models to use for Small, Medium, Large, and the optional Visual Design and Advis
 subagent runner: it never routes, supervises, or collects the results of delegated work.
 
 > **Docs:** [yivas.github.io/pi-delegation-policy](https://yivas.github.io/pi-delegation-policy/).
-> Version **0.17.0** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
+> Version **0.18.0** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
 > Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 >
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
@@ -14,7 +14,7 @@ subagent runner: it never routes, supervises, or collects the results of delegat
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.17.0
+pi install npm:pi-delegation-policy@0.18.0
 # restart Pi, or run /reload
 ```
 
@@ -163,8 +163,10 @@ one bounded line or byte range. Errors, structured results, images, binaries, mi
 unknown tool contracts stay unchanged, and nothing is launched from a hook. The reader keys
 `readerEnabled`, `readerRole`, and `answerMaxBytes` control the optional
 `context_shunt_delegate`/`context_shunt_recover` pair, which needs `enforce`, an active delegation
-intensity, a valid configuration, and a compatible external executor (protocol `0.69.0` is the
-verified one). Delegation `off` suspends the layer.
+intensity, a valid configuration, and a compatible external executor. The only verified executor is
+`pi-subagents` `0.76.1` on Pi `1.1.0`; Pi `0.87.1`, the declared minimum, is not verified for the
+reader. Other executor builds, including `0.69.0`, fail closed with `reader-unavailable`. Delegation
+`off` suspends the layer.
 
 The [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 states the caps, the answer contract, and what one request sends.

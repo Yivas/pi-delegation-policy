@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -22,6 +23,36 @@ const agentPath = resolve(
   ),
 );
 const digest = "a".repeat(64);
+const promptRuntimePath = "/packages/pi-subagents/src/runs/shared/subagent-prompt-runtime.js";
+const pi076FixtureText = readFileSync(
+  new URL("./fixtures/pi-subagents-0.76.1/preflight-contract.json", import.meta.url),
+  "utf8",
+);
+const pi076LaunchDigest = (
+  JSON.parse(pi076FixtureText) as { contract: { launchContractDigest: string } }
+).contract.launchContractDigest;
+
+/**
+ * The contract `pi-subagents` 0.76.1 returned for the packaged reader. Machine paths and the run id
+ * are placeholders, the lifecycle block is omitted, and the model is the synthetic `example/reader`.
+ * The digests come from the real run with its machine paths, so they are carried as recorded and
+ * never recomputed here.
+ */
+function pi076Preflight(
+  runId: string,
+  cwd: string,
+  mutate?: (contract: Record<string, unknown>) => void,
+): { ok: true; contract: Record<string, unknown> } {
+  const escapeJson = (text: string) => JSON.stringify(text).slice(1, -1);
+  const text = pi076FixtureText
+    .replaceAll("{{agentPath}}", escapeJson(agentPath))
+    .replaceAll("{{cwd}}", escapeJson(resolve(cwd)))
+    .replaceAll("{{promptRuntimePath}}", escapeJson(promptRuntimePath));
+  const value = JSON.parse(text) as { ok: true; contract: Record<string, unknown> };
+  value.contract.runId = runId;
+  mutate?.(value.contract);
+  return value;
+}
 const request: ReaderExecutorRequest = {
   question: "What does this prove?",
   snapshot: {
@@ -104,8 +135,10 @@ function contract(
     model: modelName(value),
     thinking: value.model.thinking,
     systemPromptMode: "replace",
+    inheritGlobalContext: false,
     inheritProjectContext: false,
     inheritSkills: false,
+    intercomBridge: { active: false, mode: "off" },
     skills: { requested: [], resolved: [], missing: [] },
     tools: {
       explicitAllowlist: true,
@@ -118,8 +151,9 @@ function contract(
       effectiveMcpTools: [],
       toolExtensionPaths: [],
       configuredExtensions: [],
-      runtimeExtensions: ["/runtime.ts"],
-      extensionArgs: ["/runtime.ts"],
+      runtimeExtensions: [promptRuntimePath],
+      extensionArgs: [promptRuntimePath],
+      requiredExtensionIds: [],
       fanoutAuthorized: false,
       disableAmbientExtensions: true,
     },
@@ -147,7 +181,11 @@ function modules(
     return contract(fields.runId as string, fields.cwd as string);
   },
 ): ReaderExecutorModules {
-  return { ...events, resolveSubagentLaunchContract: preflight };
+  return {
+    ...events,
+    resolveSubagentLaunchContract: preflight,
+    profileRuntimeExtensions: () => [promptRuntimePath],
+  };
 }
 
 function tuple(payload: Record<string, unknown>) {
@@ -222,6 +260,9 @@ test("default loader accepts only the approved delegation event protocol", async
     if (specifier === "pi-subagents/preflight") {
       return { resolveSubagentLaunchContract: preflight };
     }
+    if (specifier === "pi-subagents/child-tool-plan") {
+      return { resolvePiLaunchToolPlan: () => ({ runtimeExtensions: [promptRuntimePath] }) };
+    }
     return {
       SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
       SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
@@ -231,6 +272,7 @@ test("default loader accepts only the approved delegation event protocol", async
   });
   const valid = await validLoader();
   assert.equal(typeof valid?.resolveSubagentLaunchContract, "function");
+  assert.deepEqual(valid?.profileRuntimeExtensions(), [promptRuntimePath]);
   assert.deepEqual(
     valid && [valid.requestEvent, valid.startedEvent, valid.responseEvent, valid.cancelEvent],
     [
@@ -251,6 +293,9 @@ test("default loader accepts only the approved delegation event protocol", async
       if (specifier === "pi-subagents/preflight") {
         return { resolveSubagentLaunchContract: preflight };
       }
+      if (specifier === "pi-subagents/child-tool-plan") {
+        return { resolvePiLaunchToolPlan: () => ({ runtimeExtensions: [promptRuntimePath] }) };
+      }
       return {
         SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
         SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
@@ -261,6 +306,29 @@ test("default loader accepts only the approved delegation event protocol", async
     });
     assert.equal(await loader(), undefined, exportName);
   }
+});
+
+test("default loader fails closed when the public child tool plan is unavailable", async () => {
+  const loaderWithChildToolPlan = (childToolPlan: unknown) =>
+    createDefaultReaderExecutorLoader(async (specifier) => {
+      if (specifier === "pi-subagents/preflight") {
+        return { resolveSubagentLaunchContract: async () => undefined };
+      }
+      if (specifier === "pi-subagents/child-tool-plan") return childToolPlan;
+      return {
+        SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
+        SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
+        SUBAGENT_DELEGATION_RESPONSE_EVENT: "prompt-template:subagent:response",
+        SUBAGENT_DELEGATION_CANCEL_EVENT: "prompt-template:subagent:cancel",
+      };
+    });
+  assert.equal(await loaderWithChildToolPlan(undefined)(), undefined, "missing module");
+  assert.equal(await loaderWithChildToolPlan({})(), undefined, "missing export");
+  assert.equal(
+    await loaderWithChildToolPlan({ resolvePiLaunchToolPlan: "not-a-function" })(),
+    undefined,
+    "non-function export",
+  );
 });
 
 test("preflight and request payloads use their exact public parser fields and one inline source", async () => {
@@ -287,6 +355,7 @@ test("preflight and request payloads use their exact public parser fields and on
     "availableModels",
     "context",
     "cwd",
+    "intercomBridge",
     "model",
     "output",
     "outputSchema",
@@ -298,6 +367,7 @@ test("preflight and request payloads use their exact public parser fields and on
   assert.equal(preflightInput.model, "example/reader");
   assert.equal(preflightInput.thinking, "low");
   assert.equal(preflightInput.output, false);
+  assert.deepEqual(preflightInput.intercomBridge, { mode: "off" });
   assert.equal("turnBudget" in preflightInput, false);
   assert.deepEqual(preflightInput.outputSchema, createReaderAnswerSchema(request.snapshot));
   assert.deepEqual(Object.keys(emitted).sort(), [
@@ -305,6 +375,7 @@ test("preflight and request payloads use their exact public parser fields and on
     "artifacts",
     "context",
     "cwd",
+    "intercomBridge",
     "model",
     "nodeId",
     "ownerRunId",
@@ -513,6 +584,97 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
       {
         kind: "reader-unavailable",
       },
+      name,
+    );
+    assert.equal(bus.emissions.length, 0, name);
+  }
+});
+
+test("accepts the pi-subagents 0.76.1 preflight and binds its terminal result", async () => {
+  const bus = new FakeEventBus();
+  const executor = new ContextShuntExecutor({
+    loader: async () =>
+      modules(async (input) => {
+        const fields = preflightFields(input);
+        return pi076Preflight(fields.runId as string, fields.cwd as string);
+      }),
+  });
+  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const emitted = await waitForRequest(bus);
+  assert.deepEqual(emitted.intercomBridge, { mode: "off" });
+  start(bus, emitted);
+  bus.emit(events.responseEvent, {
+    ...completed(emitted),
+    launchContractDigest: pi076LaunchDigest,
+  });
+  assert.equal((await pending).kind, "completed");
+});
+
+test("rejects pi-subagents 0.76.1 contract drift and widening before REQUEST", async () => {
+  const protocol = (value: Record<string, unknown>) => value.protocol as Record<string, unknown>;
+  const tools = (value: Record<string, unknown>) => value.tools as Record<string, unknown>;
+  const withRuntime = (runtimeExtensions: string[]) => (value: Record<string, unknown>) => {
+    tools(value).runtimeExtensions = runtimeExtensions;
+    tools(value).extensionArgs = runtimeExtensions;
+  };
+  const mutations: Array<[string, (value: Record<string, unknown>) => void]> = [
+    ["newer package", (value) => (protocol(value).packageVersion = "0.77.0")],
+    ["retired package", (value) => (protocol(value).packageVersion = "0.69.0")],
+    ["relabeled runtime extension", withRuntime(["/evil/subagent-prompt-runtime.js"])],
+    ["additional runtime extension", withRuntime([promptRuntimePath, "/evil/ext.js"])],
+    [
+      "widened extension args only",
+      (value) => (tools(value).extensionArgs = [promptRuntimePath, "/evil/ext.js"]),
+    ],
+    [
+      "permission extension",
+      withRuntime([promptRuntimePath, "/packages/@gotgenes/pi-permission-system/index.ts"]),
+    ],
+    ["inherited global context", (value) => (value.inheritGlobalContext = true)],
+    [
+      "missing global context flag",
+      (value) => {
+        delete value.inheritGlobalContext;
+      },
+    ],
+    [
+      "required child extension",
+      (value) => (tools(value).requiredExtensionIds = ["sha256:0123456789abcdef"]),
+    ],
+    [
+      "missing required child extension list",
+      (value) => {
+        delete tools(value).requiredExtensionIds;
+      },
+    ],
+    [
+      "active intercom bridge",
+      (value) => (value.intercomBridge = { active: true, mode: "always" }),
+    ],
+    ["intercom bridge mode", (value) => (value.intercomBridge = { active: false, mode: "always" })],
+    [
+      "active intercom bridge with off mode",
+      (value) => (value.intercomBridge = { active: true, mode: "off" }),
+    ],
+    [
+      "missing intercom bridge",
+      (value) => {
+        delete value.intercomBridge;
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const bus = new FakeEventBus();
+    const executor = new ContextShuntExecutor({
+      loader: async () =>
+        modules(async (input) => {
+          const fields = preflightFields(input);
+          return pi076Preflight(fields.runId as string, fields.cwd as string, mutate);
+        }),
+    });
+    assert.deepEqual(
+      await executor.execute(request, { cwd: "/workspace", events: bus }),
+      { kind: "reader-unavailable" },
       name,
     );
     assert.equal(bus.emissions.length, 0, name);

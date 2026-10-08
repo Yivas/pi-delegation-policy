@@ -164,8 +164,8 @@ receipt whose `answerArtifactId` `context_shunt_recover` reads back as one bound
 within `answerMaxBytes`. Both tools are always registered, and each call decides its own availability:
 with the reader disabled, with delegation `off`, with an effective mode other than `enforce`, with an
 invalid configuration, or with the reader role's model unavailable, `context_shunt_delegate` returns
-`output-unavailable` and no answer. With no compatible external executor — protocol version `0.69.0`
-is the verified one — it fails closed with `reader-unavailable`.
+`output-unavailable` and no answer. With no compatible external executor — `pi-subagents` `0.76.1` on
+Pi `1.1.0` is the verified one — it fails closed with `reader-unavailable`.
 
 A blocked call can be narrowed, or a real user can approve its matching next call once through the
 token shown in the block message. The exception is tied to that tool call and input snapshot,

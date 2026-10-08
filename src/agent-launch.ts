@@ -5,7 +5,7 @@ export const LAUNCH_PREFLIGHT_TIMEOUT_MS = 5_000;
 export const LAUNCH_TERMINAL_TIMEOUT_MS = 120_000;
 
 const PACKAGE_NAME = "pi-delegation-policy";
-/** `pi-subagents` 0.69.0 `src/api/preflight.ts` and `src/shared/launch-contract.ts`. */
+/** `pi-subagents` 0.76.1 `src/api/preflight.ts` and `src/shared/launch-contract.ts`. */
 const LAUNCH_CONTRACT_VERSION = 3;
 const DEFINITION_PROJECTION_VERSION = 2;
 const SHA256_LOWER_HEX = /^[0-9a-f]{64}$/;
@@ -48,6 +48,11 @@ export type AgentLaunchPreflight = (input: unknown) => Promise<unknown>;
 
 export type AgentLaunchModules = Readonly<{
   resolveSubagentLaunchContract: AgentLaunchPreflight;
+  /**
+   * Runtime extension paths that `pi-subagents` gives a profile with no tools and no extensions.
+   * The contract must report exactly these, so a relabeled or added extension fails closed.
+   */
+  profileRuntimeExtensions: () => readonly string[];
   requestEvent: string;
   startedEvent: string;
   responseEvent: string;
@@ -165,16 +170,24 @@ export function createDefaultAgentLaunchLoader(
   loadModule: DynamicModuleLoader = (specifier) => import(specifier),
 ): () => Promise<AgentLaunchModules | undefined> {
   return () =>
-    Promise.all([loadModule("pi-subagents/preflight"), loadModule("pi-subagents/delegation")])
-      .then(([preflight, delegation]) => {
-        if (!isRecord(preflight) || !isRecord(delegation)) return undefined;
+    Promise.all([
+      loadModule("pi-subagents/preflight"),
+      loadModule("pi-subagents/delegation"),
+      loadModule("pi-subagents/child-tool-plan"),
+    ])
+      .then(([preflight, delegation, childToolPlan]) => {
+        if (!isRecord(preflight) || !isRecord(delegation) || !isRecord(childToolPlan)) {
+          return undefined;
+        }
         const resolveLaunchContract = preflight.resolveSubagentLaunchContract;
+        const resolvePiLaunchToolPlan = childToolPlan.resolvePiLaunchToolPlan;
         const requestEvent = delegation.SUBAGENT_DELEGATION_REQUEST_EVENT;
         const startedEvent = delegation.SUBAGENT_DELEGATION_STARTED_EVENT;
         const responseEvent = delegation.SUBAGENT_DELEGATION_RESPONSE_EVENT;
         const cancelEvent = delegation.SUBAGENT_DELEGATION_CANCEL_EVENT;
         if (
           typeof resolveLaunchContract !== "function" ||
+          typeof resolvePiLaunchToolPlan !== "function" ||
           requestEvent !== DELEGATION_EVENTS.request ||
           startedEvent !== DELEGATION_EVENTS.started ||
           responseEvent !== DELEGATION_EVENTS.response ||
@@ -184,8 +197,18 @@ export function createDefaultAgentLaunchLoader(
         }
         const resolveSubagentLaunchContract: AgentLaunchPreflight = async (input) =>
           resolveLaunchContract(input);
+        // The same public resolver the child launch uses, given the profile's own inputs. Its
+        // runtime list depends only on the installed package unless permissions, fast mode or
+        // fanout are requested, and the profile requests none of them.
+        const profileRuntimeExtensions = (): readonly string[] =>
+          resolvePiLaunchToolPlan({
+            tools: [],
+            extensions: [],
+            structuredOutput: true,
+          }).runtimeExtensions;
         return {
           resolveSubagentLaunchContract,
+          profileRuntimeExtensions,
           requestEvent,
           startedEvent,
           responseEvent,
@@ -216,6 +239,7 @@ function createPreflightInput<Request extends AgentLaunchRequest, Value>(
     ...(definition.result.variant === "structured"
       ? { outputSchema: definition.result.buildSchema(request) }
       : {}),
+    intercomBridge: { mode: "off" },
     skill: false,
     runId: requestId,
   };
@@ -226,6 +250,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
   request: Request,
   active: Pick<ActiveRun<Value>, "requestId" | "host">,
   definition: AgentLaunchDefinition<Request, Value>,
+  modules: AgentLaunchModules,
 ): value is AgentLaunchContract {
   try {
     if (!isRecord(value) || value.ok !== true || !isRecord(value.contract)) return false;
@@ -267,8 +292,12 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       contract.model !== resolvedModel ||
       contract.thinking !== request.model.thinking ||
       contract.systemPromptMode !== "replace" ||
+      contract.inheritGlobalContext !== false ||
       contract.inheritProjectContext !== false ||
-      contract.inheritSkills !== false
+      contract.inheritSkills !== false ||
+      !isRecord(contract.intercomBridge) ||
+      contract.intercomBridge.active !== false ||
+      contract.intercomBridge.mode !== "off"
     )
       return false;
 
@@ -292,6 +321,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       !exactStrings(contract.tools.effectiveMcpTools, []) ||
       !exactStrings(contract.tools.toolExtensionPaths, []) ||
       !exactStrings(contract.tools.configuredExtensions, []) ||
+      !exactStrings(contract.tools.requiredExtensionIds, []) ||
       contract.tools.disableAmbientExtensions !== true ||
       contract.tools.fanoutAuthorized !== false ||
       "capabilityCeiling" in contract.tools ||
@@ -301,7 +331,8 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       !contract.tools.runtimeExtensions.every(
         (extension) => typeof extension === "string" && extension.length > 0,
       ) ||
-      !exactStrings(contract.tools.extensionArgs, contract.tools.runtimeExtensions)
+      !exactStrings(contract.tools.runtimeExtensions, modules.profileRuntimeExtensions()) ||
+      !exactStrings(contract.tools.extensionArgs, modules.profileRuntimeExtensions())
     )
       return false;
 
@@ -348,6 +379,7 @@ function requestPayload<Request extends AgentLaunchRequest, Value>(
     thinking: request.model.thinking,
     timeoutMs: LAUNCH_TERMINAL_TIMEOUT_MS,
     artifacts: false,
+    intercomBridge: { mode: "off" },
     skill: false,
     result:
       definition.result.variant === "structured"
@@ -492,7 +524,7 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
       resolved = undefined;
     }
     if (!this.isLive(active)) return;
-    if (!validateLaunchContract(resolved, request, active, this.definition)) {
+    if (!validateLaunchContract(resolved, request, active, this.definition, modules)) {
       active.settle({ kind: "unavailable" });
       return;
     }

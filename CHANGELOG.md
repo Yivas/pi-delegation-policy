@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.18.0 - 2026-10-08
+
+### Fixed
+
+- Restore the ContextShunt reader with `pi-subagents` `0.76.1`. The reader accepts only that build's launch contract: the packaged profile, the prompt runtime as its only extension, no inherited global context, no required child extensions, and the child's Intercom bridge off. Any other build fails closed with `reader-unavailable` before a request is sent.
+
+### Changed
+
+- Ask the main agent not to paste workflow scripts, child briefs, or other internal orchestration material into the chat. Scripts stay in private files and are launched by path. The instruction applies to normal, aggressive, and orchestrator intensities; delegation off still injects nothing.
+
+### Compatibility and limits
+
+- Breaking for the reader: `pi-subagents` `0.69.0` no longer works with it and returns `reader-unavailable`. Upgrade the external executor to `0.76.1`. The extension's Pi minimum, `0.87.1`, is unchanged.
+- Verified only on Pi `1.1.0` with `pi-subagents` `0.76.1`, in an offline loopback harness with a synthetic provider. Pi `0.87.1` is not verified for the reader, and no real provider was used.
+- A child that loads a permission extension is rejected, so the reader returns `reader-unavailable`. This path was not exercised with pi-subagents permission rules.
+
 ## 0.17.0 - 2026-10-07
 
 ### Added

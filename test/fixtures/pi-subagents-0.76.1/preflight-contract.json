@@ -1,0 +1,65 @@
+{
+  "ok": true,
+  "contract": {
+    "version": 3,
+    "runId": "fixture-run",
+    "agent": {
+      "name": "pi-delegation-policy.context-shunt-inline-reader",
+      "localName": "pi-delegation-policy.context-shunt-inline-reader",
+      "source": "package",
+      "filePath": "{{agentPath}}",
+      "definitionProjectionVersion": 2,
+      "definitionDigest": "ff114c9e7677f5e850904093827d9ce97abde9a74cc32d72bc89e76443973630",
+      "shadowedCandidates": []
+    },
+    "context": "fresh",
+    "model": "example/reader:low",
+    "thinking": "low",
+    "systemPromptMode": "replace",
+    "inheritProjectContext": false,
+    "inheritGlobalContext": false,
+    "inheritSkills": false,
+    "skills": {
+      "requested": [],
+      "resolved": [],
+      "missing": []
+    },
+    "tools": {
+      "requestedBuiltin": [],
+      "declaredBuiltin": [],
+      "effectiveAllowlist": ["structured_output"],
+      "explicitAllowlist": true,
+      "requiredChildTools": ["structured_output"],
+      "internalTools": ["structured_output"],
+      "mcp": [],
+      "effectiveMcpTools": [],
+      "toolExtensionPaths": [],
+      "runtimeExtensions": ["{{promptRuntimePath}}"],
+      "configuredExtensions": [],
+      "requiredExtensionIds": [],
+      "extensionArgs": ["{{promptRuntimePath}}"],
+      "disableAmbientExtensions": true,
+      "fanoutAuthorized": false
+    },
+    "intercomBridge": {
+      "active": false,
+      "mode": "off"
+    },
+    "roots": {
+      "cwd": "{{cwd}}"
+    },
+    "protocol": {
+      "lifecycleArtifactVersion": 3,
+      "packageVersion": "0.76.1"
+    },
+    "diagnostics": [
+      {
+        "code": "host_required",
+        "severity": "host-required",
+        "message": "No sessionRoot/sessionDir was supplied; exact child session paths require the Pi host session-root policy."
+      }
+    ],
+    "launchContractDigest": "efcce10b89c7ce78f4d7c2912a8a3c91056c1b44c01587fa94ab2c0a186aa29e",
+    "digest": "4003e416b4942d440ad3917a4c265e26ce6d5fbfd30db14ad374ec1851735399"
+  }
+}

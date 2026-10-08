@@ -921,8 +921,15 @@ async function coinstall(root, tarball, host, externalRoot, includeBridge) {
   await rm(join(nodeModules, "package"), { recursive: true, force: true });
   await cp(externalRoot, subagents, { recursive: true });
   const externalModules = dirname(externalRoot);
-  for (const dependency of ["jiti", "typebox", "yaml"])
+  for (const dependency of ["jiti", "yaml"])
     await symlink(join(externalModules, dependency), join(nodeModules, dependency), "junction");
+  // pi-subagents declares typebox as a peer, so the selected Pi host provides it; the structured
+  // output validator imports typebox/compile from the child's own package tree.
+  await symlink(
+    join(host.root, "node_modules", "typebox"),
+    join(nodeModules, "typebox"),
+    "junction",
+  );
   await symlink(
     join(host.root, "node_modules", "@earendil-works"),
     join(nodeModules, "@earendil-works"),
@@ -1284,7 +1291,7 @@ try {
   const temporary = await mkdtemp(join(tmpdir(), "context-shunt-b17-reader-host-"));
   try {
     const externalManifest = JSON.parse(await readFile(join(externalRoot, "package.json"), "utf8"));
-    assert.equal(externalManifest.version, "0.69.0", "external pi-subagents is exactly 0.69.0");
+    assert.equal(externalManifest.version, "0.76.1", "external pi-subagents is exactly 0.76.1");
     const hosts = [await hostFrom(currentRoot, currentVersion)];
     reportPhase = "pack";
     const tarball = await packProduct(temporary);

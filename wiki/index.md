@@ -32,7 +32,7 @@ The extension injects guidance only while an active configuration is valid. It c
 
 ## Start here
 
-Version **0.17.0** requires Pi `0.87.1` or later (`>=0.87.1`). Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
+Version **0.18.0** requires Pi `0.87.1` or later (`>=0.87.1`). Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 
 1. [Install the extension and reach a valid status](/getting-started/).
 2. [Configure models, intensity, and thinking policies](/configuration/).

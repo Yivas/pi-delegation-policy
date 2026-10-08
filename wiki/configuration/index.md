@@ -338,8 +338,9 @@ further keys control the opt-in inline reader:
   its citations and envelope.
 
 The reader also needs an effective mode of `enforce`, an active delegation intensity, and a valid
-configuration. It requires a compatible external executor: protocol version `0.69.0` is the verified
-one, and another build fails closed with `reader-unavailable`. **Context advanced** in the panel edits
+configuration. It requires a compatible external executor: `pi-subagents` `0.76.1` on Pi `1.1.0` is the
+only verified combination, and another build, including `0.69.0`, fails closed with
+`reader-unavailable`. **Context advanced** in the panel edits
 these values and each limit, and **Reset ContextShunt draft** clears all branch values. Schema 4 still
 accepts a positive `limits.readerOutputBytes` from older files, but ignores it and never writes it
 again.

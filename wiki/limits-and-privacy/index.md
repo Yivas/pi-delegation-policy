@@ -201,9 +201,14 @@ launch contract as well, before any launch.
 Both the snapshot and the answer are untrusted data rather than instructions. The extension never
 follows text inside them and never executes it.
 
-The reader needs a compatible external executor. Protocol version `0.69.0` is the verified one; a
-different executor build fails the contract check and returns `reader-unavailable`, with no answer and
-no fallback model, provider, or retry.
+The reader needs a compatible external executor. The only verified one is `pi-subagents` `0.76.1` on Pi
+`1.1.0`; Pi `0.87.1`, the declared minimum, is not verified for the reader. A different executor build,
+including `0.69.0`, fails the contract check and returns `reader-unavailable`, with no answer and no
+fallback model, provider, or retry.
+
+The contract check also rejects a child that loads any extension beyond the packaged prompt runtime,
+such as a permission extension, or that inherits global context. The package version it reports is a
+label, not a signature: the check confirms the contract the executor declares, not the executor's code.
 
 ### Retention
 

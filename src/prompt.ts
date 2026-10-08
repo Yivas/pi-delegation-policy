@@ -44,6 +44,9 @@ const LEGACY_OWNERSHIP_POLICY =
 const ORCHESTRATOR_OWNERSHIP_POLICY =
   "In orchestrator, keep global strategy, objectives, critical decisions, coordination, safety, evidence evaluation, final acceptance, and concise synthesis with the main agent. The main agent MUST delegate transferable detailed review and integration mechanics; final responsibility does not permit personal execution except under the named direct-work exceptions.";
 
+const WORKFLOW_DISCLOSURE_POLICY =
+  "Orchestration scripts, workflow code, and child briefs are internal working material, not deliverables for the user. Do not paste or send their source code into the chat. Launch a script by the path of its private file, which the host manages, and report only the results, blockers, and decisions the user needs. Keep any control or visibility the host requires. When the user explicitly asks to inspect code, show what was requested.";
+
 const VISUAL_DESIGN_POLICY = `Visual Design is an optional specialist role. It is optional to configure. Before selecting an ordinary role for each task or phase, evaluate whether Visual Design is configured and all four conditions hold:
 1. the primary acceptance criterion is a visual or user-experience result;
 2. product behavior and data contracts are already defined and remain unchanged;
@@ -291,6 +294,9 @@ ${ROLE_SELECTION_POLICY}
 
 Ownership and retention:
 ${ownershipPolicy}
+
+Workflow disclosure:
+${WORKFLOW_DISCLOSURE_POLICY}
 
 Enabled ordinary roles: ${enabled.map(roleName).join(", ")}.${disabled.length ? `\nDisabled ordinary roles: ${disabled.map(roleName).join(", ")}.` : ""}
 

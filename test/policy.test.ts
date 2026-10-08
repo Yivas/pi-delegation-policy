@@ -1774,6 +1774,44 @@ test("Advisor model errors are isolated from delegation and reader validation", 
   );
 });
 
+test("active delegation keeps workflow code out of the chat for every active intensity", () => {
+  for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
+    const current = runtime(
+      { schemaVersion: CURRENT_SCHEMA_VERSION, intensity },
+      { ...defaults, uiDesign: undefined },
+    );
+    validateRuntime(context(), current);
+    const policy = buildDelegationPolicy(current) ?? "";
+    assert.match(policy, /Workflow disclosure:/, intensity);
+    assert.match(policy, /internal working material, not deliverables for the user/, intensity);
+    assert.match(policy, /Do not paste or send their source code into the chat\./, intensity);
+    assert.match(policy, /Keep any control or visibility the host requires\./, intensity);
+    assert.match(
+      policy,
+      /When the user explicitly asks to inspect code, show what was requested\./,
+    );
+  }
+
+  const off = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
+  validateRuntime(context(), off);
+  assert.equal(buildDelegationPolicy(off), undefined);
+
+  const advisorOnly = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" },
+    { ...defaults, advisor, advisorMode: "on" },
+  );
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(advisor)],
+    }),
+    advisorOnly,
+  );
+  const consultation = buildDelegationPolicy(advisorOnly) ?? "";
+  assert.match(consultation, /Advisor consultation:/);
+  assert.doesNotMatch(consultation, /Workflow disclosure:/);
+  assert.doesNotMatch(consultation, /internal working material/);
+});
+
 test("an ordinary configuration diagnostic never disables a valid enabled Advisor", () => {
   const withAdvisorModel = () =>
     context({
@@ -2738,7 +2776,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.17.0");
+  assert.equal(packageJson.version, "0.18.0");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
   assert.deepEqual(packageJson.pi.subagents.agents, ["./agents"]);
@@ -3471,6 +3509,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // decision procedure and reflowed the numbered steps into single lines: the obligations, conditions
   // and exceptions of these two configurations are unchanged. The owned-block marker below is part
   // of the literal policy text so request-local updates can identify only this extension's section.
+  // They were regenerated for the workflow disclosure paragraph, which adds text to the active
+  // blocks only; the consultation-only block is unchanged.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3479,8 +3519,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "fe006e9ce30ea8971ed62260a81a8c780a286f40725a0ca8c76995321b6508d1",
-    aggressive: "59681ee01d4ca5aebb7db09e3a1f57a0edd56c07f971c4c6f3a0d256aaec5a54",
+    normal: "85493710838a4d29ba53bf2b72f8302f18a6f640895085131540203fc5e5c665",
+    aggressive: "68bc6054c5d7aab520d77c0afefe5ff0d549becfbc4fbf3ccfa927fcb39c9cca",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
