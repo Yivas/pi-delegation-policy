@@ -9,6 +9,10 @@ export default defineConfig({
   description:
     "Configure delegation intensity, exact role model references, and optional thinking policies for Pi.",
   base,
+  vite: {
+    server: { host: "127.0.0.1" },
+    preview: { host: "127.0.0.1" },
+  },
   head: [["link", { rel: "icon", href: `${base}favicon.svg` }]],
   sitemap: { hostname: siteUrl },
   transformPageData(pageData) {

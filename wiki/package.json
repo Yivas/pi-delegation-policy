@@ -5,17 +5,18 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
-    "dev": "vitepress dev .",
+    "dev": "vitepress dev . --host 127.0.0.1 --port 5173 --strictPort",
     "build": "vitepress build .",
-    "preview": "vitepress preview .",
+    "preview": "vite preview --outDir .vitepress/dist --base /pi-delegation-policy/ --host 127.0.0.1 --port 4173 --strictPort",
     "check:links": "node scripts/check-links.mjs",
     "test": "node --test scripts/check-links.test.mjs",
     "check": "npm run build && npm run check:links && npm test"
   },
   "devDependencies": {
-    "vitepress": "1.6.4"
+    "vite": "8.3.3",
+    "vitepress": "2.0.0-alpha.20"
   }
 }
