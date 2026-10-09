@@ -206,9 +206,9 @@ The reader needs a compatible external executor. The only verified one is `pi-su
 including `0.69.0`, fails the contract check and returns `reader-unavailable`, with no answer and no
 fallback model, provider, or retry.
 
-Unreleased, after `0.18.0`: the permission runtime described below is not in a published release.
-Version `0.18.0` still rejects any extra runtime, so with host permission rules its reader returns
-`reader-unavailable` until a release is approved.
+From `0.19.0`, the reader also accepts the host's permission runtime described below. Version
+`0.18.0` and earlier reject any extra runtime, so with host permission rules their reader returns
+`reader-unavailable`.
 
 The contract check accepts a child that loads only the packaged prompt runtime. It also accepts that
 runtime followed by the exact `@gotgenes/pi-permission-system` `33.0.3` entry, which the host adds when
@@ -218,19 +218,28 @@ reader uses the prompt-only launch. If the host adds a permission entry whose pa
 manifest does not verify, the check rejects it.
 
 The host owns its permission rules. The reader never reads, copies, normalizes, or changes them, and
-it never grants itself an exception. In isolated synthetic runs, a child that the host allows only for
-structured output completes. When the host asks or denies that output, the reader fails closed, with no
-accepted answer and no second delegation request. An `ask` decision can make two model calls inside
-that one request. The reader sets no ceiling on generation, retries, or cost, and its local timeout does
-not limit them.
+it never grants itself an exception. A default `ask` decision can block a headless child that has no
+authorizer; the reader then fails closed and does not fall back to another model, provider, or launch.
+In isolated synthetic runs, a child that the host allows only for structured output completes. When the
+host asks or denies that output, the reader fails closed, with no accepted answer and no second
+delegation request. An `ask` decision can make two model calls inside that one request. Neither the
+reader nor the request sets a ceiling on generation, retries, or cost, and the local timeout does not
+limit them.
 
 The host may append its own tool-surface block to the child's system prompt. In those synthetic runs
-the block held only Pi's two universal guidelines, and the child prompt gained no project context,
-skills, resources, or source text. This is an exact compatibility check for one verified runtime, not a
-support guarantee for the host. The runtime the host loads is part of its trusted computing base, not
-authority granted to the model. Its version label is not a signature, and the digests check only the
-format. The binding checked against the terminal response is `launchContractDigest`. The check confirms
-the contract the executor declares, not the executor's code.
+the block held exactly Pi's two universal guidelines, and the child prompt gained no project context,
+skills, resources, or source text. The working directory in that prompt comes from host metadata,
+not from the tool's model-supplied arguments. The child model can call only `structured_output`,
+and the host may remove or deny that tool.
+
+This is an exact compatibility check for one verified runtime, not a support guarantee for the host.
+The verified combination is `pi-subagents` `0.76.1` on Pi `1.1.0`, with a synthetic loopback provider. A
+real provider, personal permission rules, and Pi `0.87.1` were not tested with this reader. The runtime
+the host loads is trusted host code, not authority granted to the model. Version labels and digests are
+not signatures: the digests check only their format. The preflight is bound to the session of the tool's
+context. The public API does not show that the launch request runs in that same session, so a mismatched
+terminal digest rejects the answer only after the snapshot has been sent. The check confirms the contract
+the executor declares, not the executor's code.
 
 ### Retention
 
