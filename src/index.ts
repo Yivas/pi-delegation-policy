@@ -115,6 +115,16 @@ function contextStatusText(state: RuntimeState, shunt: ContextShuntAdapter): str
   return `${statusText(state)} | context-reader=enabled:${context.readerEnabled} (${context.source.readerEnabled}); role:${context.readerRole} (${context.source.readerRole}); answer-max-bytes:${context.answerMaxBytes} (${context.source.answerMaxBytes}); executor=checked-on-invocation | context-limits=preflight-lines full=${limits.fullReadLines} targeted=${limits.targetedReadLines}; postresult-utf8-bytes full=${limits.fullReadBytes} targeted=${limits.targetedReadBytes} | context-coverage=known builtin text only; unknown contracts and invalid inputs are unchanged | context-events=blocked:${metrics.blocked},would-block:${metrics.wouldBlock},bounded:${metrics.boundedResults},exceptions:${metrics.manualOverrides},archive-failures:${metrics.archiveFailures},uncovered:${metrics.uncoveredResults}`;
 }
 
+/** The session the reader's preflight binds to; undefined when Pi does not expose a usable id. */
+function currentSessionId(ctx: ExtensionContext): string | undefined {
+  try {
+    const sessionId: unknown = ctx.sessionManager.getSessionId();
+    return typeof sessionId === "string" && sessionId.trim() ? sessionId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isBuiltinTool(pi: ExtensionAPI, toolName: string): boolean {
   return pi
     .getAllTools()
@@ -384,6 +394,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           return readerToolError("reader-unavailable");
         }
         if (!prepared.ok) return readerToolError(prepared.code);
+        const sessionId = currentSessionId(ctx);
+        if (sessionId === undefined) return readerToolError("reader-unavailable");
 
         const run = await executor.execute(
           {
@@ -403,7 +415,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               },
             ],
           },
-          { cwd: ctx.cwd, events: pi.events },
+          { cwd: ctx.cwd, sessionId, events: pi.events },
           signal,
         );
         if (run.kind !== "completed") {

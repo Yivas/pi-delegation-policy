@@ -5,7 +5,7 @@ import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, URL } from "node:url";
@@ -30,6 +30,7 @@ const FAILURE_PHASES = new Set([
   "recover-receipt-mismatch",
   "success-case",
   "cancel-case",
+  "refused-case",
   "unavailable-case",
   "rpc-timeout",
   "rpc-protocol",
@@ -49,6 +50,32 @@ const reportPath = readArg("--report");
 if (!reportPath)
   throw new Error("Usage: node scripts/test-context-shunt-reader-host.mjs --report PATH");
 
+// Synthetic host rules for the permission runtime; they never come from a personal configuration.
+const PERMISSION_SYSTEM_DEPENDENCIES = ["tree-sitter-bash", "web-tree-sitter", "zod"];
+/**
+ * Two public config files, both written only to the temporary agent directory. The pi-subagents
+ * `permissions.rules.write: deny` entry is a host trigger, not the consumer's metadata probe: pi-subagents
+ * adds the permission runtime to the child only when its rules are non-empty. The permission-system file
+ * below carries the policy under test.
+ */
+const PERMISSION_SUBAGENT_CONFIG = { permissions: { rules: { write: "deny" } } };
+/**
+ * Synthetic policies for the isolated permission runtime, written to
+ * `extensions/pi-permission-system/config.json`. `allow` lets only the reader's structured output through,
+ * with every other tool at `deny`. `ask` has no permission map, so the omitted `"*"` defaults to ask,
+ * and this isolated run has no interactive authorizer to answer it. `deny` denies every tool.
+ */
+const PERMISSION_POLICIES = {
+  allow: { debugLog: true, permission: { "*": "deny", structured_output: "allow" } },
+  ask: { debugLog: true },
+  deny: { debugLog: true, permission: { "*": "deny" } },
+};
+const DECISION_TOOLS = new Set([
+  "structured_output",
+  "read",
+  "context_shunt_delegate",
+  "context_shunt_recover",
+]);
 const AUDIT_TOOL_NAMES = new Set(["read", "context_shunt_delegate", "context_shunt_recover"]);
 const MESSAGE_ROLES = new Set(["system", "developer", "user", "assistant", "tool"]);
 let mostRecentDebugFacts;
@@ -621,6 +648,75 @@ function storedReceiptFromPayload(payload, expectedSourceId) {
   facts.validReceipt = answerArtifactId !== undefined;
   return { answerArtifactId, facts };
 }
+/**
+ * The block the host appends to a child prompt when the child allows only `structured_output`. That
+ * tool registers no prompt snippet or guidelines, so only Pi's two universal guidelines remain.
+ */
+const PERMISSION_SURFACE_BLOCK =
+  "Guidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files";
+const SKILLS_MARKERS = [
+  "<available_skills>",
+  "<skills>",
+  "<skill ",
+  "The following skills provide",
+];
+const PROJECT_CONTEXT_MARKERS = ["<project_context>", "<project_instructions", "# Project Context"];
+/** The system message of a chat-completions payload, as the provider receives it. */
+function systemMessageText(payload) {
+  const messages = isRecord(payload) && Array.isArray(payload.messages) ? payload.messages : [];
+  const message = messages.find((entry) => isRecord(entry) && entry.role === "system");
+  if (typeof message?.content === "string") return message.content;
+  if (!Array.isArray(message?.content)) return undefined;
+  return message.content
+    .filter((block) => isRecord(block) && block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("");
+}
+/**
+ * A child prompt names its isolated workspace once, in `<cwd>`. That path is the only text that differs
+ * between cells, so it is replaced after checking it occurs exactly once; everything else stays in the
+ * comparison byte for byte.
+ */
+function withoutWorkspaceCwd(systemText, workspace) {
+  const cwd = `<cwd>\n${workspace.replaceAll("\\", "/")}\n</cwd>`;
+  assert.equal(systemText.split(cwd).length - 1, 1, "child prompt names its workspace once");
+  return systemText.replace(cwd, "<cwd>\n[workspace]\n</cwd>");
+}
+/**
+ * Compares every child prompt of a permission cell with the prompt-only success baseline plus the
+ * host's block. The report keeps booleans, sizes and hashes; prompt text never leaves this process.
+ */
+function permissionSystemPromptFacts(cell, baseline) {
+  const baselineChild = baseline.requests.find((request) => request.child);
+  assert.equal(
+    typeof baselineChild?.systemText,
+    "string",
+    "prompt-only baseline has a child system prompt",
+  );
+  const baselineText = withoutWorkspaceCwd(baselineChild.systemText, baseline.workspace);
+  // Pi appends the surface block after the prompt it received, with one blank line between them.
+  const expected = `${baselineText}\n\n${PERMISSION_SURFACE_BLOCK}`;
+  const childTexts = cell.requests
+    .filter((request) => request.child)
+    .map((request) => request.systemText);
+  const normalized = childTexts.map((text) =>
+    typeof text === "string" ? withoutWorkspaceCwd(text, cell.workspace) : "",
+  );
+  const present = (markers) =>
+    normalized.some((text) => markers.some((marker) => text.includes(marker)));
+  return {
+    childRequests: normalized.length,
+    equalsBaselineWithSurfaceBlock:
+      normalized.length > 0 && normalized.every((text) => text === expected),
+    baselineSha256: sha256(baselineText),
+    sha256: sha256(normalized[0] ?? ""),
+    utf8Bytes: Buffer.byteLength(normalized[0] ?? "", "utf8"),
+    canaryAbsent: !present([SOURCE_SENTINEL, ANSWER_SENTINEL]),
+    skillsAbsent: !present(SKILLS_MARKERS),
+    projectContextAbsent: !present(PROJECT_CONTEXT_MARKERS),
+    availableToolsAbsent: !present(["Available tools:"]),
+  };
+}
 function providerFailure(state, response, phase) {
   if (state) markFailure(state, phase);
   if (!response.headersSent) response.writeHead(500);
@@ -670,12 +766,14 @@ function startProvider() {
             .map((item) => item?.function?.name ?? item?.name)
             .filter((name) => typeof name === "string")
         : [];
-      const child = tools.length === 1 && tools[0] === "structured_output";
+      // A child whose policy removed structured_output sends no tools; main requests always keep theirs.
+      const child = tools.length === 0 || (tools.length === 1 && tools[0] === "structured_output");
       state.requests.push({
         child,
         toolNames: tools,
         noRealCredentials: true,
         bodyHash: sha256(text),
+        systemText: child ? systemMessageText(payload) : undefined,
       });
       response.once("close", () => {
         if (child) state.childSocketClosed = true;
@@ -687,6 +785,16 @@ function startProvider() {
       });
       if (child) {
         state.childRequests += 1;
+        // A refused structured output gets one retry opportunity; a text-only answer then ends it.
+        if (
+          state.kind === "refused" &&
+          (state.childRequests > 1 || !tools.includes("structured_output"))
+        ) {
+          sse(response, completion({ role: "assistant", content: "no structured output" }, null));
+          sse(response, completion({}, "stop"));
+          response.end("data: [DONE]\n\n");
+          return;
+        }
         if (state.kind === "cancel") {
           state.childInFlight = true;
           return;
@@ -729,7 +837,7 @@ function startProvider() {
         });
         return;
       }
-      if (state.mainRequests === 3 && state.kind === "unavailable") {
+      if (state.mainRequests === 3 && (state.kind === "unavailable" || state.kind === "refused")) {
         sse(response, completion({ role: "assistant", content: "B17-FIXED-MARKER" }, null));
         sse(response, completion({}, "stop"));
         response.end("data: [DONE]\n\n");
@@ -901,7 +1009,7 @@ async function manifestExtensionEntry(root) {
   );
   return entry;
 }
-async function coinstall(root, tarball, host, externalRoot, includeBridge) {
+async function coinstall(root, tarball, host, externalRoot, includeBridge, permissionSystemRoot) {
   const agentDirectory = join(root, "agent");
   const nodeModules = join(agentDirectory, "npm", "node_modules");
   const product = join(nodeModules, "pi-delegation-policy");
@@ -923,6 +1031,15 @@ async function coinstall(root, tarball, host, externalRoot, includeBridge) {
   const externalModules = dirname(externalRoot);
   for (const dependency of ["jiti", "yaml"])
     await symlink(join(externalModules, dependency), join(nodeModules, dependency), "junction");
+  if (permissionSystemRoot) {
+    await mkdir(join(nodeModules, "@gotgenes"), { recursive: true });
+    await cp(permissionSystemRoot, join(nodeModules, "@gotgenes", "pi-permission-system"), {
+      recursive: true,
+    });
+    const publicModules = dirname(dirname(permissionSystemRoot));
+    for (const dependency of PERMISSION_SYSTEM_DEPENDENCIES)
+      await symlink(join(publicModules, dependency), join(nodeModules, dependency), "junction");
+  }
   // pi-subagents declares typebox as a peer, so the selected Pi host provides it; the structured
   // output validator imports typebox/compile from the child's own package tree.
   await symlink(
@@ -942,6 +1059,42 @@ async function coinstall(root, tarball, host, externalRoot, includeBridge) {
       ? join(subagents, await manifestExtensionEntry(subagents))
       : undefined,
   };
+}
+/** Counts log lines only; the log contents and paths never leave the isolated run. */
+async function countLogLines(directory) {
+  const entries = await readdir(directory, { recursive: true, withFileTypes: true }).catch(
+    () => [],
+  );
+  let lines = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const text = await readFile(join(entry.parentPath ?? entry.path, entry.name), "utf8");
+    lines += text.split("\n").filter(Boolean).length;
+  }
+  return lines;
+}
+/** Reads only the tool name and action of each permission decision; reasons and paths stay in the log. */
+async function readPermissionDecisions(agentDirectory) {
+  const directory = join(agentDirectory, "extensions", "pi-permission-system", "logs");
+  const files = await readdir(directory, { recursive: true, withFileTypes: true }).catch(() => []);
+  const decisions = [];
+  for (const file of files) {
+    if (!file.isFile()) continue;
+    const text = await readFile(join(file.parentPath ?? file.path, file.name), "utf8");
+    for (const line of text.split("\n").filter(Boolean)) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.event !== "permission.decision") continue;
+        decisions.push({
+          tool: DECISION_TOOLS.has(entry.toolName) ? entry.toolName : "other",
+          action: typeof entry.action === "string" ? entry.action : "other",
+        });
+      } catch {
+        decisions.push({ tool: "other", action: "unparsed" });
+      }
+    }
+  }
+  return decisions;
 }
 function config(baseUrl, caseId) {
   return {
@@ -994,14 +1147,45 @@ function config(baseUrl, caseId) {
     },
   };
 }
-async function runCase(temporary, host, tarball, externalRoot, baseUrl, cases, name, kind) {
+async function runCase(
+  temporary,
+  host,
+  tarball,
+  externalRoot,
+  baseUrl,
+  cases,
+  name,
+  kind,
+  permission,
+) {
+  const permissionSystemRoot = permission?.root;
   const root = join(temporary, `${host.version}-${name}`);
   const workspace = join(root, "workspace");
   const home = join(root, "home");
   const sessions = join(root, "sessions");
   await mkdir(workspace, { recursive: true });
   await writeFile(join(workspace, "large.txt"), `${SOURCE_SENTINEL} α\n`.repeat(350), "utf8");
-  const install = await coinstall(root, tarball, host, externalRoot, kind !== "unavailable");
+  const install = await coinstall(
+    root,
+    tarball,
+    host,
+    externalRoot,
+    kind !== "unavailable",
+    permissionSystemRoot,
+  );
+  if (permissionSystemRoot) {
+    for (const [folder, content] of [
+      ["subagent", PERMISSION_SUBAGENT_CONFIG],
+      ["pi-permission-system", PERMISSION_POLICIES[permission.policy]],
+    ]) {
+      await mkdir(join(install.agentDirectory, "extensions", folder), { recursive: true });
+      await writeFile(
+        join(install.agentDirectory, "extensions", folder, "config.json"),
+        JSON.stringify(content),
+        "utf8",
+      );
+    }
+  }
   const current = config(baseUrl, name);
   await writeFile(
     join(install.agentDirectory, "delegation-policy.json"),
@@ -1022,6 +1206,7 @@ async function runCase(temporary, host, tarball, externalRoot, baseUrl, cases, n
     childRequests: 0,
     mainRequests: 0,
     childInFlight: false,
+    workspace,
     childSocketClosed: false,
     failurePhase: undefined,
     recovery: undefined,
@@ -1041,6 +1226,7 @@ async function runCase(temporary, host, tarball, externalRoot, baseUrl, cases, n
   );
   let finished = false;
   const facts = {};
+  let systemPrompt;
   try {
     const commands = await rpc.send({ type: "get_commands" });
     assert.ok(
@@ -1126,7 +1312,74 @@ async function runCase(temporary, host, tarball, externalRoot, baseUrl, cases, n
         );
       }
       assert.equal(state.failurePhase, undefined, `${name}: provider has no protocol failure`);
-      if (kind === "unavailable") {
+      if (kind === "refused") {
+        const entries = await readJsonLines(audit);
+        assert.equal(
+          entries.filter((entry) => entry.kind === "REQUEST").length,
+          1,
+          `${name}: refused reader sends exactly one REQUEST`,
+        );
+        assert.equal(
+          entries.some((entry) => entry.kind === "RESPONSE" && entry.status === "completed"),
+          false,
+          `${name}: refused reader accepts no terminal answer`,
+        );
+        assert.equal(
+          entries.filter(
+            (entry) => entry.kind === "TOOL_CALL" && entry.toolName === "context_shunt_delegate",
+          ).length,
+          1,
+          `${name}: no second delegate call or consumer fallback`,
+        );
+        assert.equal(
+          /reader-(?:failed|unavailable)/.test(JSON.stringify(rpc.events)),
+          true,
+          `${name}: refused delegate returns a bounded reader error`,
+        );
+        assert.equal(
+          JSON.stringify(rpc.events).includes(ANSWER_SENTINEL),
+          false,
+          `${name}: refused answer never reaches the main agent`,
+        );
+        assert.ok(
+          state.childRequests >= 1 && state.childRequests <= 2,
+          `${name}: refused child stays bounded`,
+        );
+        const decisions = await readPermissionDecisions(install.agentDirectory);
+        const structuredOutputActions = decisions
+          .filter((decision) => decision.tool === "structured_output")
+          .map((decision) => decision.action);
+        const childSurfaces = state.requests
+          .filter((request) => request.child)
+          .map((request) => request.toolNames);
+        if (permission?.policy === "ask") {
+          // Ask keeps structured_output visible to the child; the host's block decision refuses it.
+          assert.deepEqual(
+            childSurfaces,
+            [["structured_output"], ["structured_output"]],
+            `${name}: ask exposes structured_output to both child requests`,
+          );
+          assert.ok(
+            structuredOutputActions.includes("block"),
+            `${name}: ask records a block decision for structured_output`,
+          );
+        } else {
+          // Deny removes every tool from the child surface and records no allow for structured_output.
+          assert.deepEqual(childSurfaces, [[]], `${name}: deny leaves the child with no tools`);
+          assert.equal(
+            structuredOutputActions.includes("allow"),
+            false,
+            `${name}: deny records no allow for structured_output`,
+          );
+        }
+        Object.assign(facts, {
+          refused: true,
+          singleRequest: true,
+          noAcceptedAnswer: true,
+          noConsumerFallback: true,
+          boundedChild: true,
+        });
+      } else if (kind === "unavailable") {
         assert.equal(
           state.childRequests,
           0,
@@ -1228,6 +1481,21 @@ async function runCase(temporary, host, tarball, externalRoot, baseUrl, cases, n
         });
       }
     }
+    if (permission) {
+      systemPrompt = permissionSystemPromptFacts(
+        cases.get(name),
+        cases.get(`${host.version}-success`),
+      );
+      assert.equal(
+        systemPrompt.equalsBaselineWithSurfaceBlock &&
+          systemPrompt.canaryAbsent &&
+          systemPrompt.skillsAbsent &&
+          systemPrompt.projectContextAbsent &&
+          systemPrompt.availableToolsAbsent,
+        true,
+        `${name}: child prompt equals the prompt-only baseline plus the host block`,
+      );
+    }
     await rpc.close();
     finished = true;
     return {
@@ -1245,6 +1513,22 @@ async function runCase(temporary, host, tarball, externalRoot, baseUrl, cases, n
               matchesExpected: cases.get(name).recovery.matchesExpected,
             }
           : undefined,
+      permissionPolicy: permission?.policy,
+      systemPrompt,
+      permissionRuntime: permissionSystemRoot
+        ? {
+            debugLogLines: await countLogLines(
+              join(install.agentDirectory, "extensions", "pi-permission-system", "logs"),
+            ),
+            decisions: await readPermissionDecisions(install.agentDirectory),
+            childToolNames: cases
+              .get(name)
+              .requests.filter((request) => request.child)
+              .map((request) =>
+                request.toolNames.map((tool) => (DECISION_TOOLS.has(tool) ? tool : "other")),
+              ),
+          }
+        : undefined,
       facts,
     };
   } catch {
@@ -1304,11 +1588,21 @@ try {
     assert.ok(address && typeof address !== "string", "loopback server has a numeric port");
     try {
       for (const host of hosts) {
-        for (const [name, kind] of [
-          ["success", "success"],
-          ["cancel", "cancel"],
-          ["unavailable", "unavailable"],
-        ]) {
+        const cells = [
+          ["success", "success", undefined],
+          ["cancel", "cancel", undefined],
+          ["unavailable", "unavailable", undefined],
+        ];
+        // Permission cell: same success flow with the pinned runtime present in the isolated agentDir.
+        const permissionSystemRoot = process.env.PI_CONTEXT_SHUNT_PERMISSION_SYSTEM_ROOT;
+        if (permissionSystemRoot) {
+          cells.push(
+            ["permission-allow", "success", { root: permissionSystemRoot, policy: "allow" }],
+            ["permission-ask", "refused", { root: permissionSystemRoot, policy: "ask" }],
+            ["permission-deny", "refused", { root: permissionSystemRoot, policy: "deny" }],
+          );
+        }
+        for (const [name, kind, cellPermission] of cells) {
           report.hosts.push(
             await runCase(
               temporary,
@@ -1319,6 +1613,7 @@ try {
               cases,
               `${host.version}-${name}`,
               kind,
+              cellPermission,
             ),
           );
         }

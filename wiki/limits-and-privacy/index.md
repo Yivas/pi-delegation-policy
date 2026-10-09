@@ -206,9 +206,31 @@ The reader needs a compatible external executor. The only verified one is `pi-su
 including `0.69.0`, fails the contract check and returns `reader-unavailable`, with no answer and no
 fallback model, provider, or retry.
 
-The contract check also rejects a child that loads any extension beyond the packaged prompt runtime,
-such as a permission extension, or that inherits global context. The package version it reports is a
-label, not a signature: the check confirms the contract the executor declares, not the executor's code.
+Unreleased, after `0.18.0`: the permission runtime described below is not in a published release.
+Version `0.18.0` still rejects any extra runtime, so with host permission rules its reader returns
+`reader-unavailable` until a release is approved.
+
+The contract check accepts a child that loads only the packaged prompt runtime. It also accepts that
+runtime followed by the exact `@gotgenes/pi-permission-system` `33.0.3` entry, which the host adds when
+it has permission rules. Any other extension, another version, a reordered or duplicated list, or a
+child that inherits global context fails the check. If the permission package is not installed, the
+reader uses the prompt-only launch. If the host adds a permission entry whose package, version, or
+manifest does not verify, the check rejects it.
+
+The host owns its permission rules. The reader never reads, copies, normalizes, or changes them, and
+it never grants itself an exception. In isolated synthetic runs, a child that the host allows only for
+structured output completes. When the host asks or denies that output, the reader fails closed, with no
+accepted answer and no second delegation request. An `ask` decision can make two model calls inside
+that one request. The reader sets no ceiling on generation, retries, or cost, and its local timeout does
+not limit them.
+
+The host may append its own tool-surface block to the child's system prompt. In those synthetic runs
+the block held only Pi's two universal guidelines, and the child prompt gained no project context,
+skills, resources, or source text. This is an exact compatibility check for one verified runtime, not a
+support guarantee for the host. The runtime the host loads is part of its trusted computing base, not
+authority granted to the model. Its version label is not a signature, and the digests check only the
+format. The binding checked against the terminal response is `launchContractDigest`. The check confirms
+the contract the executor declares, not the executor's code.
 
 ### Retention
 

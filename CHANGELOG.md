@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The ContextShunt reader accepts the exact `@gotgenes/pi-permission-system` `33.0.3` runtime when the host adds it to the reader's child next to the prompt runtime. Earlier builds rejected that runtime, so the reader returned `reader-unavailable` whenever the host had permission rules. The host owns those rules: the reader never reads, copies, or changes them. In isolated synthetic runs, a child the host allows only for structured output completes, and a child the host asks or denies fails closed. Version `0.18.0` still rejects this runtime; the entry is not in a published release.
+- The reader binds its preflight to the session of the tool's context. Without a session id it returns `reader-unavailable` before launching anything. The extension cannot verify that the launch request runs in that same session; the terminal launch digest rejects a mismatched answer, but only after the snapshot has been sent.
+
 ## 0.18.0 - 2026-10-08
 
 ### Fixed

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
-import test from "node:test";
+import { join, resolve } from "node:path";
+import test, { after } from "node:test";
 import {
   CONTEXT_SHUNT_READER_AGENT_NAME,
   CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
@@ -180,11 +181,12 @@ function modules(
     const fields = preflightFields(input);
     return contract(fields.runId as string, fields.cwd as string);
   },
+  admittedRuntimeExtensionLists: readonly (readonly string[])[] = [[promptRuntimePath]],
 ): ReaderExecutorModules {
   return {
     ...events,
     resolveSubagentLaunchContract: preflight,
-    profileRuntimeExtensions: () => [promptRuntimePath],
+    admittedRuntimeExtensionLists: () => admittedRuntimeExtensionLists,
   };
 }
 
@@ -272,7 +274,7 @@ test("default loader accepts only the approved delegation event protocol", async
   });
   const valid = await validLoader();
   assert.equal(typeof valid?.resolveSubagentLaunchContract, "function");
-  assert.deepEqual(valid?.profileRuntimeExtensions(), [promptRuntimePath]);
+  assert.deepEqual(valid?.admittedRuntimeExtensionLists(), [[promptRuntimePath]]);
   assert.deepEqual(
     valid && [valid.requestEvent, valid.startedEvent, valid.responseEvent, valid.cancelEvent],
     [
@@ -331,6 +333,274 @@ test("default loader fails closed when the public child tool plan is unavailable
   );
 });
 
+const permissionFixtureRoot = mkdtempSync(join(tmpdir(), "context-shunt-permission-"));
+after(() => rmSync(permissionFixtureRoot, { recursive: true, force: true }));
+
+/** Writes a scoped `pi-permission-system` package with the given manifest and returns its entry. */
+function permissionEntry(folder: string, manifest: Record<string, unknown>): string {
+  return writePermissionPackage(
+    join(permissionFixtureRoot, folder, "node_modules", "@gotgenes", "pi-permission-system"),
+    manifest,
+  );
+}
+
+/** Writes a `pi-permission-system` package at the given root and returns its loaded entry. */
+function writePermissionPackage(packageRoot: string, manifest: Record<string, unknown>): string {
+  mkdirSync(join(packageRoot, "src"), { recursive: true });
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify(manifest));
+  const entry = join(packageRoot, "src", "index.ts");
+  writeFileSync(entry, "export {};\n");
+  return entry;
+}
+const pinnedPermissionManifest = {
+  name: "@gotgenes/pi-permission-system",
+  version: "33.0.3",
+  pi: { extensions: ["./src/index.ts"] },
+};
+const pinnedPermissionPath = permissionEntry("pinned", pinnedPermissionManifest);
+
+/** A `child-tool-plan` stub whose probe, and only the probe, reports the permission runtime. */
+function permissionProbeLoader(
+  runtimeFor: (input: Record<string, unknown>) => string[],
+): ReturnType<typeof createDefaultReaderExecutorLoader> {
+  return createDefaultReaderExecutorLoader(async (specifier) => {
+    if (specifier === "pi-subagents/preflight") {
+      return { resolveSubagentLaunchContract: async () => undefined };
+    }
+    if (specifier === "pi-subagents/child-tool-plan") {
+      return {
+        resolvePiLaunchToolPlan: (input: Record<string, unknown>) => ({
+          runtimeExtensions: runtimeFor(input),
+        }),
+      };
+    }
+    return {
+      SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
+      SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
+      SUBAGENT_DELEGATION_RESPONSE_EVENT: "prompt-template:subagent:response",
+      SUBAGENT_DELEGATION_CANCEL_EVENT: "prompt-template:subagent:cancel",
+    };
+  });
+}
+
+const withPermissionProbe = (permissionPath: string) => (input: Record<string, unknown>) =>
+  input.permissionRules ? [promptRuntimePath, permissionPath] : [promptRuntimePath];
+
+test("default loader admits the permission runtime only when the probe resolves the pinned package", async () => {
+  const loaded = await permissionProbeLoader(withPermissionProbe(pinnedPermissionPath))();
+  assert.deepEqual(loaded?.admittedRuntimeExtensionLists(), [
+    [promptRuntimePath],
+    [promptRuntimePath, pinnedPermissionPath],
+  ]);
+});
+
+test("default loader keeps prompt-only when the permission probe is not the pinned package", async () => {
+  const cases: Array<[string, (input: Record<string, unknown>) => string[]]> = [
+    [
+      "other version",
+      withPermissionProbe(
+        permissionEntry("other-version", { ...pinnedPermissionManifest, version: "33.0.2" }),
+      ),
+    ],
+    [
+      "other package name",
+      withPermissionProbe(
+        permissionEntry("other-name", { ...pinnedPermissionManifest, name: "pi-permission" }),
+      ),
+    ],
+    ["missing entry", withPermissionProbe(join(permissionFixtureRoot, "missing", "index.ts"))],
+    [
+      "declared entry that is not the loaded entry",
+      withPermissionProbe(
+        permissionEntry("declared-other", {
+          ...pinnedPermissionManifest,
+          pi: { extensions: ["./src/other.ts"] },
+        }),
+      ),
+    ],
+    [
+      "unscoped second candidate under extensions",
+      withPermissionProbe(
+        writePermissionPackage(
+          join(permissionFixtureRoot, "direct", "extensions", "pi-permission-system"),
+          pinnedPermissionManifest,
+        ),
+      ),
+    ],
+    [
+      "reordered runtime",
+      (input) =>
+        input.permissionRules ? [pinnedPermissionPath, promptRuntimePath] : [promptRuntimePath],
+    ],
+    [
+      "extra runtime after the permission entry",
+      (input) =>
+        input.permissionRules
+          ? [promptRuntimePath, pinnedPermissionPath, "/evil/ext.js"]
+          : [promptRuntimePath],
+    ],
+    [
+      "probe failure",
+      (input) => {
+        if (input.permissionRules) throw new Error("manifest is invalid");
+        return [promptRuntimePath];
+      },
+    ],
+  ];
+  for (const [name, runtimeFor] of cases) {
+    const loaded = await permissionProbeLoader(runtimeFor)();
+    assert.deepEqual(loaded?.admittedRuntimeExtensionLists(), [[promptRuntimePath]], name);
+  }
+});
+
+function withRuntimeExtensions(runtimeExtensions: string[], args = runtimeExtensions) {
+  return (value: Record<string, unknown>) => {
+    const tools = value.tools as Record<string, unknown>;
+    tools.runtimeExtensions = runtimeExtensions;
+    tools.extensionArgs = args;
+  };
+}
+const permissionAdmittedLists = [
+  [promptRuntimePath],
+  [promptRuntimePath, pinnedPermissionPath],
+] as const;
+
+test("accepts the pinned permission runtime only as an admitted exact list", async () => {
+  const bus = new FakeEventBus();
+  const executor = new ContextShuntExecutor({
+    loader: async () =>
+      modules(
+        async (input) => {
+          const fields = preflightFields(input);
+          return pi076Preflight(
+            fields.runId as string,
+            fields.cwd as string,
+            withRuntimeExtensions([promptRuntimePath, pinnedPermissionPath]),
+          );
+        },
+        permissionAdmittedLists.map((list) => [...list]),
+      ),
+  });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
+  const emitted = await waitForRequest(bus);
+  start(bus, emitted);
+  bus.emit(events.responseEvent, {
+    ...completed(emitted),
+    launchContractDigest: pi076LaunchDigest,
+  });
+  assert.equal((await pending).kind, "completed");
+});
+
+test("rejects permission runtime shapes outside the admitted lists before REQUEST", async () => {
+  const cases: Array<[string, (value: Record<string, unknown>) => void]> = [
+    [
+      "args differ from runtime",
+      (value) => {
+        (value.tools as Record<string, unknown>).runtimeExtensions = [
+          promptRuntimePath,
+          pinnedPermissionPath,
+        ];
+        (value.tools as Record<string, unknown>).extensionArgs = [promptRuntimePath];
+      },
+    ],
+    [
+      "unadmitted permission path",
+      withRuntimeExtensions([promptRuntimePath, "/evil/pi-permission-system/index.ts"]),
+    ],
+    [
+      "reordered permission runtime",
+      withRuntimeExtensions([pinnedPermissionPath, promptRuntimePath]),
+    ],
+    [
+      "duplicated permission runtime",
+      withRuntimeExtensions([promptRuntimePath, pinnedPermissionPath, pinnedPermissionPath]),
+    ],
+    [
+      "extra runtime after permission runtime",
+      withRuntimeExtensions([promptRuntimePath, pinnedPermissionPath, "/evil/ext.js"]),
+    ],
+    [
+      "required child extension with permission runtime",
+      (value) => {
+        withRuntimeExtensions([promptRuntimePath, pinnedPermissionPath])(value);
+        (value.tools as Record<string, unknown>).requiredExtensionIds = ["sha256:0123456789abcdef"];
+      },
+    ],
+  ];
+  for (const [name, mutate] of cases) {
+    const bus = new FakeEventBus();
+    const executor = new ContextShuntExecutor({
+      loader: async () =>
+        modules(
+          async (input) => {
+            const fields = preflightFields(input);
+            return pi076Preflight(fields.runId as string, fields.cwd as string, mutate);
+          },
+          permissionAdmittedLists.map((list) => [...list]),
+        ),
+    });
+    assert.equal(
+      (await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }))
+        .kind,
+      "reader-unavailable",
+      name,
+    );
+    assert.equal(bus.emissions.length, 0, name);
+  }
+});
+
+test("sends the host session as the preflight parent and fails closed without one", async () => {
+  const bus = new FakeEventBus();
+  const parentSessions: unknown[] = [];
+  const executor = new ContextShuntExecutor({
+    loader: async () =>
+      modules(async (input) => {
+        const fields = preflightFields(input);
+        parentSessions.push(fields.parentSessionId);
+        return pi076Preflight(fields.runId as string, fields.cwd as string, (value) => {
+          if (fields.parentSessionId === "session-with-required-extension") {
+            (value.tools as Record<string, unknown>).requiredExtensionIds = [
+              "sha256:0123456789abcdef",
+            ];
+          }
+        });
+      }),
+  });
+  assert.equal(
+    (
+      await executor.execute(request, {
+        cwd: "/workspace",
+        sessionId: "session-with-required-extension",
+        events: bus,
+      })
+    ).kind,
+    "reader-unavailable",
+    "required extension for the host session",
+  );
+  assert.deepEqual(parentSessions, ["session-with-required-extension"]);
+  assert.equal(bus.emissions.length, 0, "no REQUEST for an admitted required extension");
+
+  for (const sessionId of ["", "   "]) {
+    let preflightCalls = 0;
+    const missing = new ContextShuntExecutor({
+      loader: async () =>
+        modules(async () => {
+          preflightCalls += 1;
+          return undefined;
+        }),
+    });
+    assert.equal(
+      (await missing.execute(request, { cwd: "/workspace", sessionId, events: bus })).kind,
+      "reader-unavailable",
+    );
+    assert.equal(preflightCalls, 0, `session ${JSON.stringify(sessionId)}`);
+  }
+});
+
 test("preflight and request payloads use their exact public parser fields and one inline source", async () => {
   const bus = new FakeEventBus();
   let preflightInput: Record<string, unknown> | undefined;
@@ -346,7 +616,11 @@ test("preflight and request payloads use their exact public parser fields and on
       return () => ids.shift() ?? "extra";
     })(),
   });
-  const pending = executor.execute(request, { cwd: "/workspace/./reader", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace/./reader",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   assert.ok(preflightInput);
   assert.deepEqual(Object.keys(preflightInput).sort(), [
@@ -359,11 +633,13 @@ test("preflight and request payloads use their exact public parser fields and on
     "model",
     "output",
     "outputSchema",
+    "parentSessionId",
     "runId",
     "skill",
     "task",
     "thinking",
   ]);
+  assert.equal(preflightInput.parentSessionId, "session-1");
   assert.equal(preflightInput.model, "example/reader");
   assert.equal(preflightInput.thinking, "low");
   assert.equal(preflightInput.output, false);
@@ -425,7 +701,11 @@ test("resolves every reader thinking level, including off, to a suffixed contrac
           return contract(fields.runId as string, fields.cwd as string, current);
         }),
     });
-    const pending = executor.execute(current, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(current, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     assert.equal(preflight?.thinking, thinking);
     start(bus, emitted);
@@ -445,7 +725,11 @@ test("accepts an installed package profile without packageName and rejects prove
   const executor = new ContextShuntExecutor({
     loader: async () => modules(validWithoutPackageName),
   });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   start(bus, emitted);
   bus.emit(events.responseEvent, completed(emitted));
@@ -472,7 +756,11 @@ test("accepts an installed package profile without packageName and rejects prove
         }),
     });
     assert.deepEqual(
-      await rejected.execute(request, { cwd: "/workspace", events: rejectedBus }),
+      await rejected.execute(request, {
+        cwd: "/workspace",
+        sessionId: "session-1",
+        events: rejectedBus,
+      }),
       {
         kind: "reader-unavailable",
       },
@@ -580,7 +868,7 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
         }),
     });
     assert.deepEqual(
-      await executor.execute(request, { cwd: "/workspace", events: bus }),
+      await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }),
       {
         kind: "reader-unavailable",
       },
@@ -599,7 +887,11 @@ test("accepts the pi-subagents 0.76.1 preflight and binds its terminal result", 
         return pi076Preflight(fields.runId as string, fields.cwd as string);
       }),
   });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   assert.deepEqual(emitted.intercomBridge, { mode: "off" });
   start(bus, emitted);
@@ -673,7 +965,7 @@ test("rejects pi-subagents 0.76.1 contract drift and widening before REQUEST", a
         }),
     });
     assert.deepEqual(
-      await executor.execute(request, { cwd: "/workspace", events: bus }),
+      await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }),
       { kind: "reader-unavailable" },
       name,
     );
@@ -695,7 +987,11 @@ test("synchronous STARTED arms only the terminal deadline and leaves delayed com
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
   });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   assert.deepEqual(
     timers.live().map((timer) => timer.delay),
@@ -726,7 +1022,8 @@ test("synchronous STARTED and RESPONSE complete without leaking timers", async (
     clearTimer: timers.clearTimer,
   });
   assert.equal(
-    (await executor.execute(request, { cwd: "/workspace", events: bus })).kind,
+    (await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }))
+      .kind,
     "completed",
   );
   assert.deepEqual(timers.live(), []);
@@ -746,7 +1043,11 @@ test("maps terminal statuses, validates optional metadata, and ignores spoofed p
   for (const [status, expected] of mappings) {
     const bus = new FakeEventBus();
     const executor = new ContextShuntExecutor({ loader: async () => modules() });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     start(bus, emitted);
     bus.emit(events.responseEvent, { ...tuple(emitted), status });
@@ -756,7 +1057,11 @@ test("maps terminal statuses, validates optional metadata, and ignores spoofed p
   for (const status of ["invalid_request", "unavailable_context", "duplicate_node"]) {
     const bus = new FakeEventBus();
     const executor = new ContextShuntExecutor({ loader: async () => modules() });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     bus.emit(events.responseEvent, { ...tuple(emitted), status, model: modelName() });
     assert.equal((await pending).kind, "reader-unavailable", status);
@@ -764,7 +1069,11 @@ test("maps terminal statuses, validates optional metadata, and ignores spoofed p
 
   const bus = new FakeEventBus();
   const executor = new ContextShuntExecutor({ loader: async () => modules() });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   for (const status of ["completed", "failed", "cancelled", "timed_out"]) {
     bus.emit(events.responseEvent, { ...tuple(emitted), status });
@@ -792,7 +1101,11 @@ test("fails completed metadata and wrapper mismatches, then ignores late and for
   ]) {
     const bus = new FakeEventBus();
     const executor = new ContextShuntExecutor({ loader: async () => modules() });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     start(bus, emitted);
     const response = completed(emitted);
@@ -805,7 +1118,11 @@ test("fails completed metadata and wrapper mismatches, then ignores late and for
 
   const bus = new FakeEventBus();
   const executor = new ContextShuntExecutor({ loader: async () => modules() });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   for (const field of ["requestId", "ownerRunId", "nodeId"] as const) {
     bus.emit(events.responseEvent, { ...tuple(emitted), [field]: "foreign", status: "failed" });
@@ -837,7 +1154,11 @@ test("loader and preflight availability deadlines and aborts settle without send
         return () => ids.shift() ?? "extra";
       })(),
     });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     timers.fire(READER_PREFLIGHT_TIMEOUT_MS);
     assert.equal((await pending).kind, "reader-unavailable", phase);
     release?.();
@@ -865,7 +1186,7 @@ test("loader and preflight availability deadlines and aborts settle without send
     const controller = new AbortController();
     const pending = executor.execute(
       request,
-      { cwd: "/workspace", events: bus },
+      { cwd: "/workspace", sessionId: "session-1", events: bus },
       controller.signal,
     );
     controller.abort();
@@ -885,7 +1206,11 @@ test("start availability and terminal deadlines each send one CANCEL and explici
       setTimer: timers.setTimer,
       clearTimer: timers.clearTimer,
     });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     if (started) start(bus, emitted);
     timers.fire(started ? READER_TERMINAL_TIMEOUT_MS : READER_PREFLIGHT_TIMEOUT_MS);
@@ -900,7 +1225,11 @@ test("start availability and terminal deadlines each send one CANCEL and explici
 
   const bus = new FakeEventBus();
   const executor = new ContextShuntExecutor({ loader: async () => modules() });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   await waitForRequest(bus);
   executor.cancel();
   executor.cancel();
@@ -957,7 +1286,11 @@ test("cancellation settles locally before a synchronous CANCEL response", async 
       setTimer: timers.setTimer,
       clearTimer: timers.clearTimer,
     });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     if (scenario.name !== "start availability deadline") start(bus, emitted);
     scenario.trigger(executor, timers, emitted, bus);
@@ -982,7 +1315,8 @@ test("request emit failure settles before a synchronous CANCEL response", async 
     clearTimer: timers.clearTimer,
   });
   assert.equal(
-    (await executor.execute(request, { cwd: "/workspace", events: bus })).kind,
+    (await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }))
+      .kind,
     "reader-unavailable",
   );
   assert.equal(cancelCount(bus), 1);
@@ -1000,12 +1334,20 @@ test("rotation and close cancel once, clean up, change owner identity, and close
       return () => ids.shift() ?? "extra";
     })(),
   });
-  const first = executor.execute(request, { cwd: "/workspace", events: bus });
+  const first = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const firstEmission = await waitForRequest(bus);
   executor.rotate();
   assert.equal((await first).kind, "cancelled");
   assert.equal(cancelCount(bus), 1);
-  const second = executor.execute(request, { cwd: "/workspace", events: bus });
+  const second = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   for (let attempt = 0; attempt < 20 && cancelCount(bus) < 1; attempt += 1) {
     await new Promise<void>((resolveTick) => setImmediate(resolveTick));
   }
@@ -1019,9 +1361,12 @@ test("rotation and close cancel once, clean up, change owner identity, and close
   executor.close();
   assert.equal((await second).kind, "cancelled");
   assert.equal(cancelCount(bus), 2);
-  assert.deepEqual(await executor.execute(request, { cwd: "/workspace", events: bus }), {
-    kind: "reader-unavailable",
-  });
+  assert.deepEqual(
+    await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }),
+    {
+      kind: "reader-unavailable",
+    },
+  );
 });
 
 test("request emit and cleanup failures remain bounded without exposing foreign errors", async () => {
@@ -1035,9 +1380,12 @@ test("request emit and cleanup failures remain bounded without exposing foreign 
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
   });
-  assert.deepEqual(await executor.execute(request, { cwd: "/workspace", events: bus }), {
-    kind: "reader-unavailable",
-  });
+  assert.deepEqual(
+    await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }),
+    {
+      kind: "reader-unavailable",
+    },
+  );
   assert.equal(cancelCount(bus), 1);
   assert.deepEqual(timers.live(), []);
   assert.equal(executor.busy, false);

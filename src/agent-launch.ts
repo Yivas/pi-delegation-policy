@@ -1,10 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 
 export const LAUNCH_PREFLIGHT_TIMEOUT_MS = 5_000;
 export const LAUNCH_TERMINAL_TIMEOUT_MS = 120_000;
 
 const PACKAGE_NAME = "pi-delegation-policy";
+/** The only `pi-permission-system` release whose runtime the reader admits: an exact pin, not a range. */
+const PERMISSION_PACKAGE_NAME = "@gotgenes/pi-permission-system";
+const PERMISSION_PACKAGE_VERSION = "33.0.3";
+/** Synthetic rules that only make `pi-subagents` report its permission runtime path; never sent or executed. */
+const PERMISSION_PROBE_RULES = { "pi-delegation-policy-probe": "deny" } as const;
+/** Directories searched upward from a runtime entry for the `package.json` that names it. */
+const PACKAGE_MANIFEST_SEARCH_DEPTH = 3;
 /** `pi-subagents` 0.76.1 `src/api/preflight.ts` and `src/shared/launch-contract.ts`. */
 const LAUNCH_CONTRACT_VERSION = 3;
 const DEFINITION_PROJECTION_VERSION = 2;
@@ -35,7 +43,12 @@ export type AgentLaunchEventBus = Readonly<{
   on(event: string, listener: (payload: unknown) => void): () => void;
   emit(event: string, payload: unknown): void;
 }>;
-export type AgentLaunchHost = Readonly<{ cwd: string; events: AgentLaunchEventBus }>;
+export type AgentLaunchHost = Readonly<{
+  cwd: string;
+  /** Parent session whose host-required child extensions the preflight must see. */
+  sessionId: string;
+  events: AgentLaunchEventBus;
+}>;
 
 export type AgentLaunchRequest = Readonly<{
   model: AgentLaunchModel;
@@ -49,10 +62,11 @@ export type AgentLaunchPreflight = (input: unknown) => Promise<unknown>;
 export type AgentLaunchModules = Readonly<{
   resolveSubagentLaunchContract: AgentLaunchPreflight;
   /**
-   * Runtime extension paths that `pi-subagents` gives a profile with no tools and no extensions.
-   * The contract must report exactly these, so a relabeled or added extension fails closed.
+   * Runtime extension lists `pi-subagents` may give a profile with no tools and no extensions: the
+   * prompt runtime alone, or that list plus the pinned permission runtime when the host adds it. The
+   * contract must report exactly one of these lists in both `runtimeExtensions` and `extensionArgs`.
    */
-  profileRuntimeExtensions: () => readonly string[];
+  admittedRuntimeExtensionLists: () => readonly (readonly string[])[];
   requestEvent: string;
   startedEvent: string;
   responseEvent: string;
@@ -200,15 +214,23 @@ export function createDefaultAgentLaunchLoader(
         // The same public resolver the child launch uses, given the profile's own inputs. Its
         // runtime list depends only on the installed package unless permissions, fast mode or
         // fanout are requested, and the profile requests none of them.
-        const profileRuntimeExtensions = (): readonly string[] =>
-          resolvePiLaunchToolPlan({
+        const admittedRuntimeExtensionLists = (): readonly (readonly string[])[] => {
+          const promptOnly: readonly string[] = resolvePiLaunchToolPlan({
             tools: [],
             extensions: [],
             structuredOutput: true,
           }).runtimeExtensions;
+          const permission = pinnedPermissionRuntime(
+            (input) => resolvePiLaunchToolPlan(input),
+            promptOnly,
+          );
+          return permission === undefined
+            ? [promptOnly]
+            : [promptOnly, [...promptOnly, permission]];
+        };
         return {
           resolveSubagentLaunchContract,
-          profileRuntimeExtensions,
+          admittedRuntimeExtensionLists,
           requestEvent,
           startedEvent,
           responseEvent,
@@ -218,17 +240,80 @@ export function createDefaultAgentLaunchLoader(
       .catch(() => undefined);
 }
 
+/**
+ * The permission runtime entry the host added, when the public probe reports exactly one extra path
+ * after the prompt runtime and that path is the pinned scoped package. Any other shape, a probe that
+ * throws, or a package that is absent or not pinned yields `undefined`, so prompt-only still works.
+ */
+function pinnedPermissionRuntime(
+  resolvePlan: (input: Record<string, unknown>) => { runtimeExtensions: unknown },
+  promptOnly: readonly string[],
+): string | undefined {
+  try {
+    const probed = resolvePlan({
+      tools: [],
+      extensions: [],
+      structuredOutput: true,
+      permissionRules: PERMISSION_PROBE_RULES,
+    }).runtimeExtensions;
+    if (
+      !Array.isArray(probed) ||
+      probed.length !== promptOnly.length + 1 ||
+      !exactStrings(probed.slice(0, promptOnly.length), promptOnly)
+    )
+      return undefined;
+    const entry = probed[promptOnly.length];
+    return typeof entry === "string" && isPinnedPermissionEntry(entry) ? entry : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads the nearest manifest above the entry and requires the scoped name, the pin and its declared entry. */
+function isPinnedPermissionEntry(entry: string): boolean {
+  try {
+    const entryPath = resolve(entry);
+    let directory = dirname(entryPath);
+    for (let depth = 0; depth < PACKAGE_MANIFEST_SEARCH_DEPTH; depth += 1) {
+      const manifestPath = resolve(directory, "package.json");
+      if (existsSync(manifestPath)) {
+        const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+        const declared =
+          isRecord(manifest) && isRecord(manifest.pi) && Array.isArray(manifest.pi.extensions)
+            ? manifest.pi.extensions[0]
+            : undefined;
+        return (
+          basename(directory) === "pi-permission-system" &&
+          basename(dirname(directory)) === "@gotgenes" &&
+          isRecord(manifest) &&
+          manifest.name === PERMISSION_PACKAGE_NAME &&
+          manifest.version === PERMISSION_PACKAGE_VERSION &&
+          typeof declared === "string" &&
+          resolve(directory, declared) === entryPath
+        );
+      }
+      const parent = dirname(directory);
+      if (parent === directory) return false;
+      directory = parent;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 const defaultLoader = createDefaultAgentLaunchLoader();
 
 function createPreflightInput<Request extends AgentLaunchRequest, Value>(
   request: Request,
-  cwd: string,
+  host: AgentLaunchHost,
   requestId: string,
   definition: AgentLaunchDefinition<Request, Value>,
 ): Record<string, unknown> {
   return {
     agent: definition.agentName,
-    cwd,
+    cwd: host.cwd,
+    parentSessionId: host.sessionId,
     task: definition.buildTask(request),
     context: "fresh",
     model: `${request.model.provider}/${request.model.id}`,
@@ -330,11 +415,16 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       contract.tools.runtimeExtensions.length === 0 ||
       !contract.tools.runtimeExtensions.every(
         (extension) => typeof extension === "string" && extension.length > 0,
-      ) ||
-      !exactStrings(contract.tools.runtimeExtensions, modules.profileRuntimeExtensions()) ||
-      !exactStrings(contract.tools.extensionArgs, modules.profileRuntimeExtensions())
+      )
     )
       return false;
+
+    // The host may add the pinned permission runtime, but only as one whole admitted list.
+    const tools = contract.tools;
+    const admitted = modules
+      .admittedRuntimeExtensionLists()
+      .find((list) => exactStrings(tools.runtimeExtensions, list));
+    if (!admitted || !exactStrings(tools.extensionArgs, admitted)) return false;
 
     if (
       !isRecord(contract.roots) ||
@@ -430,6 +520,10 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
   ): Promise<AgentLaunchResult<Value>> {
     if (this.closed) return Promise.resolve({ kind: "unavailable" });
     if (this.active) return Promise.resolve({ kind: "busy" });
+    // Without a host session the preflight could not bind required extensions; launch nothing.
+    if (typeof host.sessionId !== "string" || !host.sessionId.trim()) {
+      return Promise.resolve({ kind: "unavailable" });
+    }
     return new Promise((resolveResult) => {
       const active: ActiveRun<Value> = {
         generation: this.generation,
@@ -518,7 +612,7 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
     let resolved: unknown;
     try {
       resolved = await modules.resolveSubagentLaunchContract(
-        createPreflightInput(request, active.host.cwd, active.requestId, this.definition),
+        createPreflightInput(request, active.host, active.requestId, this.definition),
       );
     } catch {
       resolved = undefined;

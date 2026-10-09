@@ -134,7 +134,11 @@ class CountingAdapter extends ContextShuntAdapter {
 function model() {
   return { provider: reader.provider, id: reader.model, name: reader.model, reasoning: true };
 }
-function context(branch: unknown[] = [], cwd = "/project/context-shunt-tool") {
+function context(
+  branch: unknown[] = [],
+  cwd = "/project/context-shunt-tool",
+  getSessionId: () => string = () => "session-context-shunt-tool",
+) {
   const available = [model()];
   return {
     cwd,
@@ -142,7 +146,7 @@ function context(branch: unknown[] = [], cwd = "/project/context-shunt-tool") {
     mode: "rpc",
     signal: undefined,
     scopedModels: [],
-    sessionManager: { getBranch: () => branch },
+    sessionManager: { getBranch: () => branch, getSessionId },
     modelRegistry: {
       find: (provider: string, id: string) =>
         available.find((item) => item.provider === provider && item.id === id),
@@ -226,6 +230,24 @@ async function waitForSnapshot(adapter: CountingAdapter): Promise<void> {
   return waitFor(() => adapter.snapshotCalls > 0, "snapshot preparation did not start");
 }
 
+test("the reader binds to the tool session and launches nothing without one", async () => {
+  await withRuntime(defaults, async (run, ctx) => {
+    await start(run, ctx);
+    const id = await run.adapter.artifacts.archive(`one\n${sentinel}\n`);
+    assert.ok(id);
+    const sessionless = context(run.branch, undefined, () => {
+      throw new Error("session unavailable");
+    });
+    const result = await invoke(run, sessionless, {
+      artifactId: id,
+      question: "What is proved?",
+      thinking: "low",
+    });
+    assert.equal(code(result), "reader-unavailable");
+    assert.equal(run.executor.calls.length, 0);
+  });
+});
+
 // The integration seam keeps the external executor out of this test while exercising the real store.
 test("registers the delegate tool and preserves the exact request boundary", async () => {
   await withRuntime(defaults, async (run, ctx) => {
@@ -292,6 +314,7 @@ test("registers the delegate tool and preserves the exact request boundary", asy
     ]);
     assert.equal(run.executor.hosts[0].cwd, "/project/context-shunt-tool");
     assert.equal(run.executor.hosts[0].events, run.events);
+    assert.equal(run.executor.hosts[0].sessionId, "session-context-shunt-tool");
     assert.doesNotMatch(JSON.stringify(request), /cwd|path|config/);
     assert.equal(run.adapter.snapshotCalls, 1);
     assert.ok(run.adapter.revalidateCalls >= 1);
