@@ -5,7 +5,7 @@ models to use for Small, Medium, Large, and the optional Visual Design and Advis
 subagent runner: it never routes, supervises, or collects the results of delegated work.
 
 > **Docs:** [yivas.github.io/pi-delegation-policy](https://yivas.github.io/pi-delegation-policy/).
-> Version **0.19.0** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
+> Version **0.20.0** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
 > Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 >
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
@@ -14,7 +14,7 @@ subagent runner: it never routes, supervises, or collects the results of delegat
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.19.0
+pi install npm:pi-delegation-policy@0.20.0
 # restart Pi, or run /reload
 ```
 
