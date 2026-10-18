@@ -58,7 +58,7 @@ const theme = {
 };
 function context(
   branch: unknown[] = [],
-  available = [advisorModel],
+  available: Array<typeof advisorModel & { contextWindow?: number }> = [advisorModel],
   auth = true,
 ): ExtensionContext {
   return {
@@ -240,7 +240,7 @@ test("Advisor-only validates its exact model and thinking without ordinary roles
   assert.match(policy, /pi-delegation-policy\.advisor/);
   assert.match(policy, /example\/advisor:high/);
   assert.match(policy, /Advisor consultation:/);
-  assert.match(policy, /favor a brief second opinion/);
+  assert.match(policy, /At each advisor checkpoint/);
   assert.match(policy, /normal executor\/provider retention/);
   assert.doesNotMatch(
     policy,
@@ -351,8 +351,14 @@ test("Advisor commands and request hooks independently update and remove the own
       appendEntry: (customType: string, data?: unknown) =>
         branch.push({ type: "custom", customType, data }),
     };
-    const ctx = context(branch, [advisorModel, workerModel]);
+    const ctx = context(branch, [{ ...advisorModel, contextWindow: 400_000 }, workerModel]);
     ctx.ui.setStatus = (_key, value) => statuses.push(value);
+    let sessionTokens: number | null = 100_000;
+    ctx.getContextUsage = () => ({
+      tokens: sessionTokens,
+      contextWindow: 1_000_000,
+      percent: null,
+    });
     piDelegationPolicy(pi as never);
     const request = async (instructions: string) =>
       (await handlers.get("before_provider_request")!(
@@ -376,6 +382,18 @@ test("Advisor commands and request hooks independently update and remove the own
     };
     assert.match(projected.messages[0]!.sections!.addendum!, /Advisor consultation:/);
     assert.equal(messages[0]!.content, "Host instructions");
+    // Both request hooks name the same context mode; it follows the session's usage against the
+    // advisor window, holds while usage is unknown, and starts over on a new session tree.
+    const contextMode = (text: string) => /Context for this session: (fork|fresh)/.exec(text)?.[1];
+    assert.equal(contextMode(first.instructions), "fork");
+    assert.equal(contextMode(projected.messages[0]!.sections!.addendum!), "fork");
+    sessionTokens = 300_000;
+    assert.equal(contextMode((await request("Host instructions")).instructions), "fresh");
+    sessionTokens = null;
+    assert.equal(contextMode((await request("Host instructions")).instructions), "fresh");
+    await handlers.get("session_tree")!({}, ctx);
+    assert.equal(contextMode((await request("Host instructions")).instructions), "fork");
+    sessionTokens = 100_000;
     await command("off", ctx);
     assert.equal(statuses.at(-1), "D:OFF A:ON");
     for (const event of ["session_start", "session_tree"]) {

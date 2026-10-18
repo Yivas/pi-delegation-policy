@@ -17,7 +17,7 @@ import {
   readerToolError,
   type ReaderThinking,
 } from "./context-shunt-reader.ts";
-import { buildDelegationPolicy } from "./prompt.ts";
+import { type AdvisorContext, buildDelegationPolicy, selectAdvisorContext } from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
   advisorStatusLabel,
@@ -305,6 +305,25 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const executor = options.executor ?? new ContextShuntExecutor();
     let latestRuntime: RuntimeState | undefined;
     let readerEpoch = 0;
+    // Remembered per session so the advisor context line only changes when usage crosses a
+    // threshold; both request hooks see the same usage and therefore render the same policy.
+    let advisorContext: AdvisorContext | undefined;
+    let advisorContextModel: string | undefined;
+    const resolveAdvisorContext = (ctx: ExtensionContext, state: RuntimeState): AdvisorContext => {
+      const advisor = state.effective.advisor;
+      // A different advisor model has a different window, so its mode starts from scratch.
+      const model = advisor ? `${advisor.provider}/${advisor.model}` : undefined;
+      if (model !== advisorContextModel) {
+        advisorContextModel = model;
+        advisorContext = undefined;
+      }
+      const advisorWindow = advisor
+        ? ctx.modelRegistry?.find(advisor.provider, advisor.model)?.contextWindow
+        : undefined;
+      const sessionTokens = ctx.getContextUsage?.()?.tokens;
+      advisorContext = selectAdvisorContext(advisorContext, sessionTokens, advisorWindow);
+      return advisorContext;
+    };
     const invalidateReaderAuthorization = (): void => {
       readerEpoch += 1;
       executor.cancel();
@@ -545,17 +564,19 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         openEditor(pi, ctx, rememberRuntime, invalidateReaderAuthorization, shunt),
     });
     pi.on("session_start", async (_event, ctx) => {
+      advisorContext = undefined;
       await refreshRuntime(ctx);
     });
     pi.on("session_tree", async (_event, ctx) => {
       readerEpoch += 1;
       executor.rotate();
       shunt.clearPending();
+      advisorContext = undefined;
       await refreshRuntime(ctx);
     });
     pi.on("context_with_system", async (event, ctx) => {
       const state = await refreshRuntime(ctx);
-      const policy = buildDelegationPolicy(state);
+      const policy = buildDelegationPolicy(state, resolveAdvisorContext(ctx, state));
       const systemMessage = event.messages[0];
       if (
         !systemMessage ||
@@ -603,7 +624,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("before_provider_request", async (event, ctx) => {
       const state = await refreshProviderRuntime(ctx);
       if (!state) return event.payload;
-      return updateProviderPolicy(event.payload, buildDelegationPolicy(state));
+      return updateProviderPolicy(
+        event.payload,
+        buildDelegationPolicy(state, resolveAdvisorContext(ctx, state)),
+      );
     });
     pi.on("agent_end", async () => {
       shunt.clearConsumed();

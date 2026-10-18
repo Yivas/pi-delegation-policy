@@ -15,7 +15,7 @@ import type {
 } from "./types.ts";
 
 const LAUNCH_REQUIREMENTS =
-  "Before every delegated launch, name the selected role and take its exact combined provider/model base below. Choose thinking dynamically for that run from task demand, difficulty, quantity, risk, review cost, and the selected model's capabilities when the role's thinking policy is unset. A role with a fixed policy uses exactly that level for every launch and the main agent must not change it. A role with a range policy allows only a level inside its inclusive bounds. A fixed or range policy is binding: it is not an ambient launcher default and is not inherited by another role or by the main agent. Then transmit both through the launcher's per-run mechanism without changing the provider/model base. When the launcher encodes thinking as a model suffix, pass model: \"provider/model:LEVEL\", replacing LEVEL with that launch's level, or pass the literal level already shown in the role line. Do not omit the model or thinking choice, inherit an ambient launcher default for either, substitute an unlisted model, persist a per-run thinking choice, launch a disabled or unconfigured role, invent a role, or use a level that a bound policy or the selected model does not support.";
+  "Before every delegated launch, name the selected role and take its exact combined provider/model base below. Choose thinking dynamically for that run from task demand, difficulty, quantity, risk, review cost, and the selected model's capabilities when the role's thinking policy is unset. A role with a fixed policy uses exactly that level for every launch and the main agent must not change it. A role with a range policy allows only a level inside its inclusive bounds. A fixed or range policy is binding: it is not an ambient launcher default and is not inherited by another role or by the main agent. Then transmit both through the launcher's per-run mechanism without changing the provider/model base. When the launcher encodes thinking as a model suffix, pass model: \"provider/model:LEVEL\", replacing LEVEL with that launch's level, or pass the literal level already shown in the role line. Do not omit the model or thinking choice, inherit an ambient launcher default for either, substitute an unlisted model, persist a per-run thinking choice, launch a disabled or unconfigured role, invent a role, or use a level that a bound policy or the selected model does not support. Launch every subagent in the background unless the host or the user requires foreground, and put children that must run at the same time into one call: the host rejects a second foreground call while another is running. Consume each result before the decision that depends on it.";
 
 const NORMAL_POLICY =
   "Delegate substantial, separable work only when the expected benefit clearly outweighs briefing, supervision, review, and integration cost. Count parallelism as a benefit only when valuable work can advance now or elapsed time matters. A merely possible fresh perspective is not enough by itself. Keep borderline work with the main agent.";
@@ -62,7 +62,7 @@ const ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY =
   "In orchestrator, route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration responsibility, coordination, and final acceptance, but MUST delegate transferable integration mechanics and detailed review to a capable enabled ordinary role unless a named direct-work exception applies.";
 
 const ADVISOR_STEP =
-  "Before shaping or reconsidering a substantive choice — the approach, the scope, the acceptance criteria, a comparison between options, or the decision itself — favor a brief second opinion from the advisor. Judge this from the work, not from confidence: you do not need to recognize doubt, a proposal, or alternatives first, and you do not need to predict whether the answer will change the decision. Consult before the choice hardens, not to validate finished work, and do not postpone it until you have findings. The signals and limits are in the advisor section below.";
+  "At each advisor checkpoint — after orientation and before substantive work, when stuck, before changing approach, and before declaring a multi-step task done — consult the advisor before continuing. The checkpoints and how to launch it are in the advisor section below.";
 
 const DELEGATION_DECISION_STEPS = [
   "Decide under the active intensity whether this work should be delegated at all.",
@@ -73,15 +73,54 @@ const DELEGATION_DECISION_STEPS = [
   "Before every delegated launch, apply the launch requirements below without omitting the model or the thinking choice.",
 ];
 
-const ADVISOR_POLICY = `Advisor is a consultation role; it never executes work. When Advisor is configured, favor a brief contrast with it while you shape or reconsider a substantive choice: an approach, a scope, the acceptance criteria, a comparison between options, or a decision. Assess the choice from the work itself. You do not need to recognize doubt, a proposal, or alternatives first, and you do not need to predict whether the answer will change the decision; your own confidence does not make the consultation unnecessary. Viable approaches trading off explicit requirements, evidence supporting conflicting explanations that call for different actions, and changes with destructive data operations, difficult rollback, or compatibility breaks are examples, not a closed list. Consult early, with enough context to be useful: a finished plan or exhaustive research is not required, and a decisive local fact — the code, the file, the command output — is verified under the active intensity's rules instead of guessed. Keep one concrete limit: a local detail with no effect on an approach or a solution that is already fixed does not need a call. These are signals and limits, not a threshold that requires a call and not a quota.
+/**
+ * How the advisor receives context. `fork` lets the host branch the whole session, the way Claude
+ * Code's advisor sees the full transcript; `fresh` asks for a short self-contained brief instead.
+ */
+export type AdvisorContext = "fork" | "fresh";
 
-Launch it as a normal subagent with the bundled profile "pi-delegation-policy.advisor" and the exact model and thinking of its role line; do not substitute either.
+// Fork only while the session fills at most half of the advisor's window, leaving room for its own
+// prompt, its reasoning and tokenizer differences between models. Switching back needs a clear drop
+// (for example after compaction) so the policy line does not flap and break provider prompt caching.
+const FORK_MAX_SHARE = 0.5;
+const FORK_RESUME_SHARE = 0.35;
 
-The advisor knows only what you send: it cannot see this conversation, read files or use tools. Put the objective, the constraints, the facts, and the open choice first, and your proposal and its reasons after, if you have one. Do not hide decisive data. Ask for an approach, criteria, or critical assumptions, not approval and not a forced list of defects. A short reply can be enough. Every brief must stand on its own: the objective and the decision, the constraints, the current state and the relevant evidence, including code, errors or results where they matter, the options and their consequences, what you tried or propose and why, and the uncertainty you need resolved. Separate facts from assumptions. Do not omit what it needs, and do not dump what it cannot use.
+export function selectAdvisorContext(
+  previous: AdvisorContext | undefined,
+  sessionTokens: number | null | undefined,
+  advisorContextWindow: number | undefined,
+): AdvisorContext {
+  if (!advisorContextWindow || advisorContextWindow <= 0) return "fresh";
+  // Pi reports null right after compaction or before the first response; keep the last mode then.
+  if (typeof sessionTokens !== "number" || !Number.isFinite(sessionTokens) || sessionTokens < 0)
+    return previous ?? "fork";
+  const share = sessionTokens / advisorContextWindow;
+  if (share > FORK_MAX_SHARE) return "fresh";
+  if (share < FORK_RESUME_SHARE) return "fork";
+  return previous ?? "fork";
+}
 
-Reuse the advice while the decision and its assumptions stay valid. Continue the same thread with the host's resume mechanism when a material discrepancy or relevant material gap remains, and do not restart the thread for the same matter; one answer often ends it, and there is no obligation to keep a dialogue or to ask again until it agrees. Reopen the consultation when new relevant evidence appears, not on every turn, phase, or tool call.
+const ADVISOR_CONTEXT_GUIDANCE: Record<AdvisorContext, string> = {
+  fork: `Context for this session: fork. Launch it with context "fork": the advisor receives this whole conversation, so the task is only the question — the decision, the options you see and the uncertainty — in a few lines. Fork sends the conversation to the advisor's provider. If the host rejects the fork because the conversation does not fit, retry once with context "fresh" and a self-contained brief; do not repeat a consultation that may already be running.`,
+  fresh: `Context for this session: fresh. Launch it with context "fresh": the conversation is too large for the advisor's window or its size is unknown. Write a short self-contained brief: the objective and constraints; the relevant facts, with code, errors or results where they matter; the options and your proposal; the uncertainty to resolve. Separate facts from assumptions.`,
+};
 
-Distinguish what you are deciding: choosing a solution, executing a decision that is already fixed, checking a verifiable fact, and preferences or authorizations reserved to the user. The advisor helps you compare, recommend and decide; the decision and the responsibility stay with you. Decisions that belong to the user stay with the user; consider consulting the advisor before asking the user when its advice could improve the options, trade-offs or recommendation you present. Weigh its advice against the evidence and check verifiable claims before relying on them, and never hand it implementation, tool-dependent checks or your own responsibility to decide. Do not seek approval for a decision already taken: its value is spotting weak assumptions, comparing options and challenging reasoning, not acting as an authority or a formality.`;
+function advisorPolicy(context: AdvisorContext): string {
+  return `Advisor is a consultation role: it gives advice and never executes work. The user enabled it in this extension's settings, so consulting it is part of this policy; it is advice, not delegated execution, and host guidance that makes direct work the default does not rule it out. Consult it at these checkpoints:
+- after orientation and before substantive work. Orientation — finding and reading files, fetching a source, seeing what is there — is not substantive work. Writing, editing, running a state-changing command, committing to an interpretation or an approach, building on an assumption, and declaring an answer are;
+- when stuck: the same error recurs, the approach is not converging, or results do not fit;
+- before changing approach;
+- before declaring a multi-step task done. Make the result durable first, then ask for remaining correctness risks or overlooked assumptions, not for approval.
+On tasks longer than a few steps, consult at least once before committing to an approach and once before declaring done. When your answer would be analysis or a recommendation with no other tool call, consult first. Short reactive steps whose next action is dictated by output you just read, and mechanical work inside an approach that is already settled, need no new call: the advisor adds most of its value before the approach hardens.
+
+Launch it with the host's subagent tool using agent "pi-delegation-policy.advisor" exactly — not a host agent or alias named "advisor" or "oracle" — with the exact model and thinking of its role line, in the background like every subagent.
+
+${ADVISOR_CONTEXT_GUIDANCE[context]}
+
+Give the advice serious weight. Adapt only when a recommended step fails when tried or primary evidence — the file, the command output — contradicts a specific claim; a passing self-test does not show that the advice is wrong. If your evidence and the advice point different ways, do not switch silently: resume the same advisor thread once with what you found, what it suggests and which constraint should break the tie. Reuse the advice while the decision and its assumptions hold, and consult again at the next checkpoint or when new relevant evidence appears.
+
+The decision and the responsibility stay with you, and decisions reserved to the user stay with the user; consider consulting before asking the user when the advice could improve the options you present. Never hand the advisor implementation or tool-dependent checks.`;
+}
 
 function hasSmallMedium(enabled: readonly ModelRole[]): boolean {
   return enabled.includes("small") && enabled.includes("medium");
@@ -207,7 +246,10 @@ export function buildPolicyPreview(effective: EffectiveDelegateState): string[] 
   ];
 }
 
-export function buildDelegationPolicy(state: RuntimeState): string | undefined {
+export function buildDelegationPolicy(
+  state: RuntimeState,
+  advisorContext: AdvisorContext = "fresh",
+): string | undefined {
   const { effective } = state;
   const advisorEnabled = isAdvisorEnabled(effective) && !hasAdvisorError(state);
   const advisorThinking = roleThinking(effective.thinking.advisor);
@@ -229,7 +271,7 @@ Decision order:
 1. ${ADVISOR_STEP}
 
 Advisor consultation:
-${ADVISOR_POLICY.replace("under the active intensity's rules", "under the applicable execution rules")}
+${advisorPolicy(advisorContext)}
 
 Launch requirements:
 ${LAUNCH_REQUIREMENTS}
@@ -238,8 +280,8 @@ Roles:${advisorRoleLine}
 
 Limits:
 The extension does not launch or supervise Advisor. The main agent uses an authorized host
-launcher and remains responsible for the decision. A consultation sends the written brief to
-another model and can incur latency, token usage and normal executor/provider retention.
+launcher and remains responsible for the decision. A consultation sends the brief or, with fork, this
+conversation to another model and can incur latency, token usage and normal executor/provider retention.
 </delegation_policy>`;
   }
   const { enabled, disabled } = rolesByState(effective);
@@ -264,7 +306,9 @@ another model and can incur latency, token usage and normal executor/provider re
       ? `${VISUAL_DESIGN_POLICY}\n\n${ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY}`
       : `${VISUAL_DESIGN_POLICY}\n\n${LEGACY_VISUAL_DESIGN_ROUTING_POLICY}`;
   // The consultation rule belongs to the decision procedure, not to the intensity paragraph.
-  const advisorSection = advisorEnabled ? `\n\nAdvisor consultation:\n${ADVISOR_POLICY}` : "";
+  const advisorSection = advisorEnabled
+    ? `\n\nAdvisor consultation:\n${advisorPolicy(advisorContext)}`
+    : "";
   const decisionSteps = advisorEnabled
     ? [ADVISOR_STEP, ...DELEGATION_DECISION_STEPS]
     : DELEGATION_DECISION_STEPS;
