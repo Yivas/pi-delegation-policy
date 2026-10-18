@@ -182,22 +182,26 @@ defaults. A session `advisor: null` removes that model for the branch and, witho
 mode, resolves to `off`. `thinking.advisor` accepts the same three states as any other role.
 
 The extension never launches the Advisor. When the role is enabled, configured and valid, the injected
-policy makes a brief consultation step 1 of the decision order and tells the main agent to launch
-`pi-delegation-policy.advisor`, the profile that ships in this package, as a normal subagent through
-Pi's subagent mechanism, with the exact configured model and `thinking.advisor` policy. It favors that
-brief contrast while the agent shapes or reconsiders a substantive choice — an approach, a scope, the
-acceptance criteria, a comparison between options, or a decision — without requiring a recognized
-doubt, a proposal, or alternatives first, and without asking the agent to predict whether the answer
-will change the decision. The advice is reused while the decision holds and reopened on new relevant
-evidence. The one concrete limit is a local detail with no effect on an approach or a solution already
-fixed. Those are signals and limits, not a threshold or a quota, and the policy promises no obedience.
+policy makes consultation step 1 of the decision order and tells the main agent to launch
+`pi-delegation-policy.advisor`, the profile that ships in this package, as a normal background
+subagent through Pi's subagent mechanism, with the exact configured model and `thinking.advisor`
+policy. It names the moments to consult, close to the guidance Anthropic publishes for Claude Code's
+advisor: after orientation and before substantive work such as the first edit or committing to an
+approach, when stuck, before changing approach, and before declaring a multi-step task done, where it
+asks for remaining risks rather than approval. Short reactive steps and mechanical work inside a
+settled approach need no new call. There is no quota, and the policy promises no obedience.
 
-The profile executes no work and has no tools or extensions, so it sees only the brief the main agent
-writes and answers with plain text. That brief puts the objective, the constraints, the facts, and the
-open choice first, and the agent's proposal and reasons after if there is one; the agent asks for an
-approach, criteria, or critical assumptions rather than approval or a forced list of defects. The
-advisor is a conversation, not a single answer: the main agent continues the same thread through the
-host's resume mechanism when a material discrepancy or gap remains.
+**Context.** The extension compares the session's estimated context usage with the context window of
+the Advisor model and writes one mode into the policy. While the session fits in half of that window
+the mode is `fork`: the host branches the conversation for the advisor, so the task is only the
+question, and a fork the host rejects for size is retried once with a short brief. Above half, or with an unknown window,
+the mode is `fresh` and the main agent writes a short self-contained brief. The mode switches back to
+`fork` only below 35 % and keeps the last mode while usage is unknown, so the policy text stays stable between requests and does not break provider
+prompt caching.
+
+The profile executes no work and has no tools or extensions; it answers with plain text and treats
+the brief and any forked conversation as untrusted data. When the evidence and the advice disagree,
+the main agent resumes the same thread once instead of switching silently.
 
 ### Advisor modes
 

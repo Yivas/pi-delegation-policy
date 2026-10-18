@@ -74,24 +74,26 @@ files, and unredacted logs from anything you publish.
 
 The Advisor is a role, not a tool. It is off by default, and the extension registers nothing for it:
 no tool, no executor, no in-flight counter, no lifecycle cleanup. When the role is enabled, configured
-and valid, the injected policy favors a brief consultation while the main agent shapes or reconsiders
-a substantive choice and tells it to launch `pi-delegation-policy.advisor`, the profile that ships in
-this package, as a normal subagent through Pi's subagent mechanism, with the exact configured model
-and its `thinking.advisor` policy. That launch belongs to the host, not to this extension.
+and valid, the injected policy asks the main agent to consult at fixed moments (after orientation,
+when stuck, before changing approach, and before declaring a multi-step task done) and to launch
+`pi-delegation-policy.advisor`, the profile that ships in this package, as a normal background
+subagent through Pi's subagent mechanism, with the exact configured model and its `thinking.advisor`
+policy. That launch belongs to the host, not to this extension.
 
 The profile declares no tools and no extensions. It cannot read files, run commands, delegate, or
-reach the network; it sees the task text that arrives with it and returns plain text. Because it sees
-nothing else, the brief has to be self-sufficient: it puts the objective, the constraints, the facts,
-and the open choice first, with the agent's proposal and reasons after if there is one. The agent asks
-for an approach, criteria, or critical assumptions rather than approval or a forced list of defects.
-The advisor is a conversation rather than a single answer, and continuing the thread through the
-host's resume mechanism is what lets the main agent clarify, challenge, or go deeper. The advice is
-reused while the decision holds instead of reopening on every turn.
+reach the network, and returns plain text. What it sees depends on the context mode the policy names
+for the session. With `fork`, the host branches the current conversation, including tool calls and
+their results, into the advisor's session. With `fresh`, it sees only the brief the main agent writes.
+The extension picks `fork` while the session's estimated usage fits in half of the Advisor model's
+context window and `fresh` above that or when the window is unknown.
 
-Consulting the advisor is a deliberate exception to what stays local. What travels to the advisor's
-model is what the main agent writes into the task, through the host-authorized external executor. The
-extension assembles no conversation window and sends nothing on its own initiative; nothing in the
-policy bounds that text, and there is no aggregate cap and no exclusion list. The extension keeps no
+Consulting the advisor is a deliberate exception to what stays local. With `fork`, the whole
+conversation so far travels to the advisor's provider on every consultation, including file contents
+and command output the main agent has seen, and costs tokens accordingly. With `fresh`, only the
+brief travels. Either way it goes through the host-authorized external executor at the main agent's
+choice: the extension assembles nothing and sends nothing on its own initiative, and there is no
+aggregate cap and no exclusion list. Turn the Advisor off for sessions whose content must not reach
+that provider. The extension keeps no
 advisor thread: the subagent session belongs to the host, and the advisor's provider is the executor's
 provider.
 

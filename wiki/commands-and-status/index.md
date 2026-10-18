@@ -103,16 +103,16 @@ role or by the main agent.
 
 ## 5. Read the footer and status output
 
-| Label    | Meaning                                                                | What to do                                                                |
-| -------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive.           | Choose an active intensity only when the roles are ready.                 |
-| `D:NORM` | A valid `normal` configuration is active.                              | Delegate only with a clear expected benefit.                              |
-| `D:AGG`  | A valid `aggressive` configuration is active.                          | Delegate suitable substantial work unless coupling or overhead dominates. |
-| `D:ORCH` | A valid `orchestrator` configuration is active.                        | Delegate all transferable execution first and retain final acceptance.    |
-| `D:ERR`  | Execution-delegation settings are invalid; a valid Advisor can remain. | Inspect `/delegate status` and correct the role or thinking policy.       |
-| `A:OFF`  | No Advisor guidance is injected.                                       | Enable the mode or configure a model if consultation is wanted.           |
-| `A:ON`   | Advisor guidance is injected with a valid configured model.            | Consultation may send a brief to that model and incur latency and cost.   |
-| `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model or its thinking policy. |
+| Label    | Meaning                                                                | What to do                                                                  |
+| -------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive.           | Choose an active intensity only when the roles are ready.                   |
+| `D:NORM` | A valid `normal` configuration is active.                              | Delegate only with a clear expected benefit.                                |
+| `D:AGG`  | A valid `aggressive` configuration is active.                          | Delegate suitable substantial work unless coupling or overhead dominates.   |
+| `D:ORCH` | A valid `orchestrator` configuration is active.                        | Delegate all transferable execution first and retain final acceptance.      |
+| `D:ERR`  | Execution-delegation settings are invalid; a valid Advisor can remain. | Inspect `/delegate status` and correct the role or thinking policy.         |
+| `A:OFF`  | No Advisor guidance is injected.                                       | Enable the mode or configure a model if consultation is wanted.             |
+| `A:ON`   | Advisor guidance is injected with a valid configured model.            | Consultation may send a brief or the conversation to that model, with cost. |
+| `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model or its thinking policy.   |
 
 `/delegate status` keeps stable tokens and reports exact effective references and sources, for
 example:

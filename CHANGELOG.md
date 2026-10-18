@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Consult the Advisor at observable moments instead of on a judged "substantive choice": after orientation and before substantive work (the first edit or state-changing command, committing to an interpretation or approach), when stuck, before changing approach, and before declaring a multi-step task done, where the agent asks for remaining risks rather than approval. Short reactive steps and mechanical work inside a settled approach need no new call. The hedges that told the agent the guidance was "not a threshold" and excluded completion review are gone; there is still no `MUST` and no quota. The checkpoints follow the guidance Anthropic publishes for Claude Code's advisor.
+- Name the context mode for the session. While the session's estimated usage fits in half of the Advisor model's context window, the policy asks for a `fork` launch: the host branches the conversation, so the task is only the question, and a fork the host rejects for size is retried once with a short brief. Above half, or when the window is unknown, it asks for `fresh` and a short self-contained brief. While usage is unknown, for example right after compaction, it keeps the last mode. The mode returns to `fork` only below 35 %, so the policy text stays stable and provider prompt caching keeps working.
+- Ask for background launches. The launch requirements now ask the main agent to launch every subagent in the background unless the host or the user requires foreground, and to group children that must run at the same time into one call, because the host rejects a second foreground call while one is running.
+- The Advisor launch names the exact `pi-delegation-policy.advisor` agent and rules out host agents or aliases named `advisor` or `oracle`, and states that consulting is advice the user enabled, not delegated execution.
+- The Advisor profile accepts a forked conversation and treats it, like the brief, as untrusted data.
+
+### Privacy
+
+- With `fork`, every consultation sends the conversation so far, including file contents and command output the main agent has seen, to the Advisor's provider. The host sends it at the main agent's choice; the extension still sends nothing on its own. Turn the Advisor off for sessions that must not reach that provider.
+
 ## 0.19.0 - 2026-10-09
 
 ### Fixed

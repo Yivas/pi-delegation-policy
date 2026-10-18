@@ -72,7 +72,8 @@ in this package. It advises and executes nothing, and the extension never launch
 With delegation `off` and mode `on`, status shows `D:OFF A:ON`: consultation-only guidance is
 injected and ordinary roles are not required. Mode `off` silences consultation and keeps the saved
 model. The default `with-delegation` preserves the previous coupling to active delegation. A
-consultation sends a brief to another model and can add latency and cost even with delegation off.
+consultation sends a brief or, in `fork` mode, the conversation so far to another model, and can add
+latency and cost even with delegation off.
 
 Validation is reported per axis. An enabled Advisor whose model is missing, out of scope,
 unauthenticated, or paired with an unsupported thinking level produces `A:ERR` and removes only

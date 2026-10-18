@@ -69,9 +69,12 @@ stored. With `pi-subagents` the launcher form is `model: "provider/model:LEVEL"`
 Advisor is an optional consultation role, off by default and outside the ordinary-role minimum. It
 advises and executes nothing. The extension never launches it: when the role is enabled the injected
 policy tells the main agent to launch the packaged `pi-delegation-policy.advisor` profile as a normal
-subagent, with the exact configured model and `thinking.advisor` policy. The profile has no tools and
-no extensions, so it reads no files, runs no commands, and reaches no network; it sees only the brief
-the main agent writes, and the reply is plain text.
+background subagent, with the exact configured model and `thinking.advisor` policy, at fixed moments:
+after orientation and before substantive work, when stuck, before changing approach, and before
+declaring a multi-step task done. The profile has no tools and no extensions, so it reads no files,
+runs no commands, and reaches no network; the reply is plain text. While the session fits in half of
+the Advisor model's context window, the policy asks for a `fork` launch, so the advisor sees the
+conversation so far and that conversation reaches its provider. Otherwise it gets a short brief.
 
 **Advisor mode** is an independent axis you set in the panel or with `/delegate advisor …`:
 
@@ -94,9 +97,9 @@ while it is readable and valid, so the next save repairs that pair. A corrupt or
 cannot supply Advisor settings. Settings still present in a legacy delegation file are retained;
 otherwise, configure the Advisor model and thinking policy again.
 
-Consulting sends a brief to another model and can incur latency and cost, including with delegation
-off. What travels is what the main agent writes into that task; the extension itself sends no
-conversation. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
+Consulting sends a brief, or with `fork` the conversation so far, to another model and can incur
+latency and cost, including with delegation off. The host sends it at the main agent's choice; the
+extension itself sends nothing. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
 ## Where settings live
