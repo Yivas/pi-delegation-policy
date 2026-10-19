@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.21.0 - 2026-10-19
 
 ### Added
 
@@ -10,7 +10,7 @@
 
 ### Compatibility and privacy
 
-- Schemas 2–8 resolve in memory without rewriting files. The legacy companion keeps Advisor 1 readable by 0.17–0.20 in role mode; 0.16 keeps delegation without Advisor. A separately paired extension holds Advisor 2 and launch mode. Three atomic replacements are not a transaction; a stale extension falls back to Advisor 1 and role launch.
+- Schemas 2–8 resolve in memory without rewriting files. The legacy companion keeps Advisor 1 readable by 0.17–0.20 in role mode; 0.16 keeps delegation without Advisor. A separately paired extension holds Advisor 2 and launch mode. Three atomic replacements are not a transaction; a missing or stale extension falls back to Advisor 1 with the inherited launch mode.
 - Fork sends the conversation to each advisor provider. Normal executor/provider retention, latency and cost remain; no deletion, external TTL or generation ceiling is promised. One pending call per tool permits one reader plus an Advisor group of up to two children.
 
 ## 0.20.0 - 2026-10-18
