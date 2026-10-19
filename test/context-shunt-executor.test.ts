@@ -274,6 +274,8 @@ test("default loader accepts only the approved delegation event protocol", async
   });
   const valid = await validLoader();
   assert.equal(typeof valid?.resolveSubagentLaunchContract, "function");
+  // That stub exports no fork wrapper, so the optional normalizer stays absent.
+  assert.equal(valid?.normalizeForkTask, undefined);
   assert.deepEqual(valid?.admittedRuntimeExtensionLists(), [[promptRuntimePath]]);
   assert.deepEqual(
     valid && [valid.requestEvent, valid.startedEvent, valid.responseEvent, valid.cancelEvent],
@@ -307,6 +309,40 @@ test("default loader accepts only the approved delegation event protocol", async
       };
     });
     assert.equal(await loader(), undefined, exportName);
+  }
+});
+
+test("default loader keeps the public fork task wrapper optional", async () => {
+  const loaderWithSharedTypes = (sharedTypes: () => Promise<unknown>) =>
+    createDefaultReaderExecutorLoader(async (specifier) => {
+      if (specifier === "pi-subagents/preflight") {
+        return { resolveSubagentLaunchContract: async () => undefined };
+      }
+      if (specifier === "pi-subagents/child-tool-plan") {
+        return { resolvePiLaunchToolPlan: () => ({ runtimeExtensions: [promptRuntimePath] }) };
+      }
+      if (specifier === "pi-subagents/shared-types") return sharedTypes();
+      return {
+        SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
+        SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
+        SUBAGENT_DELEGATION_RESPONSE_EVENT: "prompt-template:subagent:response",
+        SUBAGENT_DELEGATION_CANCEL_EVENT: "prompt-template:subagent:cancel",
+      };
+    });
+  const wrapForkTask = (task: string) => `fork preamble\n\nTask:\n${task}`;
+  const withWrapper = await loaderWithSharedTypes(async () => ({ wrapForkTask }))();
+  assert.equal(withWrapper?.normalizeForkTask?.("task"), wrapForkTask("task"));
+  assert.equal(typeof withWrapper?.resolveSubagentLaunchContract, "function");
+  for (const sharedTypes of [
+    async () => ({}),
+    async () => ({ wrapForkTask: "not-a-function" }),
+    async () => {
+      throw new Error("shared types unavailable");
+    },
+  ]) {
+    const loaded = await loaderWithSharedTypes(sharedTypes)();
+    assert.equal(typeof loaded?.resolveSubagentLaunchContract, "function");
+    assert.equal(loaded?.normalizeForkTask, undefined);
   }
 });
 

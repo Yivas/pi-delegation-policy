@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -68,6 +69,17 @@ const events = {
   cancelEvent: "CANCEL",
 };
 const sentinel = "PRIVATE-QUESTION-BRIEF-ANSWER-CONVERSATION-SENTINEL";
+const hostErrorSentinel = "RAW-HOST-ERROR https://provider.invalid/secret /private/session/path";
+// `pi-subagents` 0.76.1 wraps a fork task before hashing the launch binding, so the preflight must
+// hash this exact prefix instead of the raw task the request still carries.
+const forkPreamble =
+  "You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.";
+const forkTask = (task: string) => {
+  const prefix = `${forkPreamble}\n\nTask:\n`;
+  return task.startsWith(prefix) ? task : `${prefix}${task}`;
+};
+const launchTaskDigest = (task: string) =>
+  createHash("sha256").update(JSON.stringify(task)).digest("hex");
 type Payload = Record<string, unknown>;
 type Handler = (event: never, context: never) => unknown;
 type Tool = {
@@ -86,6 +98,9 @@ class Bus {
   requests: Payload[] = [];
   cancels: Payload[] = [];
   respond: ((payload: Payload) => void) | undefined;
+  /** The host wraps a fork task before it launches the child and binds that wrapped task. */
+  wrapForExecution: (task: string) => string = forkTask;
+  failRequestEmit = false;
   on(event: string, listener: (payload: unknown) => void) {
     const listeners = this.listeners.get(event) ?? new Set();
     listeners.add(listener);
@@ -95,6 +110,7 @@ class Bus {
     };
   }
   emit(event: string, payload: unknown) {
+    if (this.failRequestEmit && event === events.requestEvent) throw new Error(hostErrorSentinel);
     const fields = payload as Payload;
     if (event === events.requestEvent) {
       this.requests.push(fields);
@@ -103,7 +119,9 @@ class Bus {
     if (event === events.cancelEvent) this.cancels.push(fields);
     for (const listener of this.listeners.get(event) ?? []) listener(payload);
   }
-  finish(request: Payload, status = "completed", answer = sentinel) {
+  finish(request: Payload, status = "completed", answer: unknown = sentinel, error?: string) {
+    const task = request.task as string;
+    const executionTask = request.context === "fork" ? this.wrapForExecution(task) : task;
     this.emit(events.startedEvent, request);
     this.emit(events.responseEvent, {
       requestId: request.requestId,
@@ -113,12 +131,15 @@ class Bus {
       agent: ADVISOR_AGENT_NAME,
       model: `${request.model}:${request.thinking}`,
       thinking: request.thinking,
-      launchContractDigest: digest,
+      launchContractDigest: launchTaskDigest(executionTask),
       result: { kind: "text", text: answer },
+      ...(error === undefined ? {} : { error }),
     });
   }
 }
-async function fakeModules(): Promise<AgentLaunchModules> {
+async function fakeModules(
+  preflight: "valid" | "throw" | "undefined" | "invalid" = "valid",
+): Promise<AgentLaunchModules> {
   const fixture = JSON.parse(
     await readFile(
       new URL("./fixtures/pi-subagents-0.76.1/preflight-contract.json", import.meta.url),
@@ -128,7 +149,11 @@ async function fakeModules(): Promise<AgentLaunchModules> {
   return {
     ...events,
     admittedRuntimeExtensionLists: () => [["prompt-runtime"]],
+    normalizeForkTask: forkTask,
     resolveSubagentLaunchContract: async (input) => {
+      if (preflight === "throw") throw new Error(hostErrorSentinel);
+      if (preflight === "undefined") return undefined;
+      if (preflight === "invalid") return { ok: false };
       const fields = input as Payload;
       const contract = structuredClone(fixture.contract);
       contract.runId = fields.runId;
@@ -144,7 +169,9 @@ async function fakeModules(): Promise<AgentLaunchModules> {
       contract.model = `${fields.model}:${fields.thinking}`;
       contract.thinking = fields.thinking;
       contract.digest = digest;
-      contract.launchContractDigest = digest;
+      // The real preflight hashes the task it received, which the extension must already have
+      // wrapped for a fork.
+      contract.launchContractDigest = launchTaskDigest(fields.task as string);
       const tools = contract.tools as Payload;
       tools.effectiveAllowlist = [];
       tools.requiredChildTools = [];
@@ -156,7 +183,12 @@ async function fakeModules(): Promise<AgentLaunchModules> {
     },
   };
 }
-async function harness(value = base, available = models, tokens: number | null = 10_000) {
+async function harness(
+  value = base,
+  available = models,
+  tokens: number | null = 10_000,
+  options: { forkTaskNormalizer?: boolean; preflight?: "throw" | "undefined" | "invalid" } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "advisor-tool-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
@@ -188,7 +220,9 @@ async function harness(value = base, available = models, tokens: number | null =
       notify: (message: string, type: string) => notifications.push({ message, type }),
     },
   };
-  const modules = await fakeModules();
+  const loaded = await fakeModules(options.preflight);
+  const modules: AgentLaunchModules =
+    options.forkTaskNormalizer === false ? { ...loaded, normalizeForkTask: undefined } : loaded;
   const executor = new AdvisorExecutor({ loader: async () => modules });
   const logPath = join(directory, "events.jsonl");
   const log = new AdvisorLog(logPath);
@@ -539,17 +573,106 @@ test("tool starts both exact models in parallel, preserves a partial answer and 
       ],
     );
     assert.match(await run.call(), /Advisor busy/);
-    run.bus.finish(run.bus.requests[1]!, "failed");
+    run.bus.finish(run.bus.requests[1]!, "failed", sentinel, hostErrorSentinel);
     run.bus.finish(run.bus.requests[0]!);
     const answer = await call;
     assert.match(answer, /example\/first \[fork\]/);
     assert.match(answer, new RegExp(sentinel));
-    assert.match(answer, /example\/second \[fork\]:\nAdvisor failed/);
+    assert.match(
+      answer,
+      /example\/second \[fork\]:\nThe host ended the Advisor run with status failed and supplied no safe detail/,
+    );
+    assert.doesNotMatch(answer, /RAW-HOST-ERROR|provider\.invalid|private\/session/);
     const policy = (await run.hook("before_provider_request", {
       payload: { model: "example", stream: true, store: false, instructions: "host" },
     })) as { instructions: string };
+    await run.log.flush();
+    assert.doesNotMatch(
+      await readFile(run.logPath, "utf8"),
+      /RAW-HOST-ERROR|provider\.invalid|private\/session/,
+    );
     assert.match(policy.instructions, /Call consult_advisor/);
     assert.doesNotMatch(policy.instructions, /Launch it with the host's subagent tool/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("terminal results must match the bound digest and carry usable text", async () => {
+  {
+    const run = await harness();
+    try {
+      // A host that reports the raw fork task binds a digest the preflight never saw.
+      run.bus.wrapForExecution = (task) => task;
+      run.bus.respond = (request) => run.bus.finish(request);
+      const answer = await run.call();
+      assert.match(
+        answer,
+        /example\/first \[fork\]:\nThe host returned an Advisor reply whose launch contract digest did not match the preflight contract, so the reply was discarded/,
+      );
+      assert.doesNotMatch(answer, new RegExp(sentinel));
+    } finally {
+      await run.close();
+    }
+  }
+  {
+    const run = await harness();
+    try {
+      run.bus.respond = (request) => run.bus.finish(request, "completed", 42, hostErrorSentinel);
+      const answer = await run.call();
+      assert.match(answer, /completion without a usable text answer, so the result was discarded/);
+      assert.doesNotMatch(answer, /RAW-HOST-ERROR|provider\.invalid|private\/session/);
+    } finally {
+      await run.close();
+    }
+  }
+});
+
+test("fork fails closed without the public task normalizer and fresh still works", async () => {
+  const run = await harness(base, models, 10_000, { forkTaskNormalizer: false });
+  try {
+    const forkAnswer = await run.call();
+    assert.match(forkAnswer, /does not export wrapForkTask/);
+    // A brief cannot switch this session to fresh, so the cause must not promise that fallback.
+    assert.doesNotMatch(forkAnswer, /Call again with brief/);
+    assert.match(forkAnswer, /0\.76\.1/);
+    assert.equal(run.bus.requests.length, 0);
+    run.ctx.getContextUsage = () => ({ tokens: 60_000 });
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call({ question: sentinel, brief: sentinel }), new RegExp(sentinel));
+    assert.deepEqual(
+      [run.bus.requests[0]?.context, run.bus.requests[0]?.task],
+      ["fresh", JSON.stringify({ question: sentinel, brief: sentinel })],
+    );
+  } finally {
+    await run.close();
+  }
+});
+
+test("preflight failures differ from an invalid contract and render safe causes", async () => {
+  for (const [preflight, expected, rejected] of [
+    ["throw", /preflight returned no launch contract/, /Reinstall this package/],
+    ["undefined", /preflight returned no launch contract/, /Reinstall this package/],
+    ["invalid", /launch contract was rejected/, /preflight returned no launch contract/],
+  ] as const) {
+    const run = await harness(base, models, 10_000, { preflight });
+    try {
+      const answer = await run.call();
+      assert.match(answer, expected);
+      assert.doesNotMatch(answer, rejected);
+      assert.doesNotMatch(answer, /RAW-HOST-ERROR|provider\.invalid|private\/session/);
+      assert.equal(run.bus.requests.length, 0);
+    } finally {
+      await run.close();
+    }
+  }
+  const run = await harness();
+  try {
+    run.bus.failRequestEmit = true;
+    const answer = await run.call();
+    assert.match(answer, /host could not set up or send the Advisor launch event/);
+    assert.doesNotMatch(answer, /RAW-HOST-ERROR|provider\.invalid|private\/session/);
+    assert.equal(run.executor.busy, false);
   } finally {
     await run.close();
   }

@@ -3,11 +3,16 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AgentLaunch,
+  LAUNCH_PREFLIGHT_TIMEOUT_MS,
+  LAUNCH_TERMINAL_TIMEOUT_MS,
   type AgentLaunchDefinition,
   type AgentLaunchDependencies,
+  type AgentLaunchFailure,
   type AgentLaunchHost,
   type AgentLaunchRequest,
   type AgentLaunchResult,
+  type AgentLaunchTerminalField,
+  type AgentLaunchTerminalStatus,
 } from "./agent-launch.ts";
 import type { AdvisorContext } from "./prompt.ts";
 import type { AdvisorSetting, ThinkingLevelName } from "./types.ts";
@@ -47,6 +52,115 @@ export function advisorThinking(setting: AdvisorSetting, model: Model<Api>): Thi
     return "level" in setting.thinking ? setting.thinking.level : setting.thinking.max;
   const supported = getSupportedThinkingLevels(model);
   return supported.includes("high") ? "high" : supported[0]!;
+}
+
+type AdvisorFailureResult = Exclude<AgentLaunchResult<string>, { kind: "completed" }>;
+
+function terminalFieldText(field: AgentLaunchTerminalField | undefined): string {
+  switch (field) {
+    case "agent":
+      return "agent profile";
+    case "model":
+      return "model";
+    case "thinking":
+      return "thinking level";
+    case "launchContractDigest":
+      return "launch contract digest";
+    default:
+      return "terminal metadata";
+  }
+}
+
+function hostStatusText(status: AgentLaunchTerminalStatus | undefined): string {
+  switch (status) {
+    case "invalid_request":
+      return "The host rejected the launch as an invalid request. Retry once; if it repeats, check the question and the packaged Advisor profile.";
+    case "unavailable_context":
+      return "The host could not supply the requested context. Call again with brief for a fresh consultation.";
+    case "duplicate_node":
+      return "The host treated this launch as a duplicate. Retry once.";
+    case "turn_budget_exhausted":
+      return "The host ended the Advisor run at its turn limit before answering. Retry once with a narrower question.";
+    case "tool_budget_exhausted":
+      return "The host ended the Advisor run at its tool limit before answering. Retry once with a narrower question.";
+    case "structured_output_failed":
+      return "The host ended the Advisor run while collecting its structured result. Retry once; if it repeats, inspect host diagnostics and check the compatibility of the installed pi-delegation-policy and pi-subagents 0.76.1 build.";
+    case "acceptance_failed":
+      return "The host ended the Advisor run at its acceptance check. Retry once; if it repeats, inspect host diagnostics and check the compatibility of the installed pi-delegation-policy and pi-subagents 0.76.1 build.";
+    case "failed":
+      return "The host ended the Advisor run with status failed and supplied no safe detail. Retry once; if it repeats, check the installed pi-subagents version.";
+    default:
+      return "The host ended the Advisor run and supplied no safe detail. Retry once; if it repeats, check the installed pi-subagents version.";
+  }
+}
+
+function unavailableFailureText(reason: AgentLaunchFailure | undefined): string {
+  const preflightSeconds = LAUNCH_PREFLIGHT_TIMEOUT_MS / 1000;
+  switch (reason?.code) {
+    case "fork-task-normalizer-unavailable":
+      return "Fork launch is unavailable: the installed pi-subagents does not export wrapForkTask, so a fork task cannot be bound to the child. Retrying or supplying a brief will not switch this session to fresh; install the compatible pi-subagents 0.76.1 build and reload the session.";
+    case "modules-unavailable":
+      return "Advisor launch is unavailable: the pi-subagents 0.76.1 exports this extension requires were not found. Install the compatible pi-subagents 0.76.1 build, then reload the session.";
+    case "preflight-unavailable":
+      return "Advisor preflight returned no launch contract. Retry once; if it repeats, check the compatible pi-subagents 0.76.1 build and the packaged Advisor profile.";
+    case "preflight-timeout":
+      return `Advisor preflight did not finish within ${preflightSeconds} seconds. Retry once; if it repeats, check the installed pi-subagents version.`;
+    case "contract-rejected":
+      return "Advisor launch contract was rejected: preflight did not confirm the required profile, model, thinking, and tool set. Inspect host diagnostics and check the installed package versions and profile; no child was launched.";
+    case "request-start-timeout":
+      return `The host did not start the Advisor within ${preflightSeconds} seconds. Retry once; if it repeats, check the installed pi-subagents version.`;
+    case "request-emit-failed":
+      return "The host could not set up or send the Advisor launch event. Reload the session, then retry; if it repeats, check the installed extension against the compatible pi-subagents 0.76.1 build.";
+    case "host-session-missing":
+      return "Advisor unavailable: the host supplied no session identity.";
+    case "fork-not-allowed":
+      return "This launch cannot use fork context: the packaged profile does not allow it, and a brief does not change that. Check the installed package version and reload the session.";
+    case "launch-closed":
+      return "Advisor launch is closed for this session. Reload the session, then retry.";
+    case "host-terminal-status":
+      return hostStatusText(reason.status);
+    case "host-status-unrecognized":
+      return "The host ended the Advisor run with a status this extension does not recognize and supplied no safe detail. Retry once; if it repeats, check the installed pi-subagents version.";
+    default:
+      return "Advisor launch failed without a classified cause, and the host supplied no safe detail. Retry once; if it repeats, check the installed pi-subagents version.";
+  }
+}
+
+function failedFailureText(reason: AgentLaunchFailure | undefined): string {
+  switch (reason?.code) {
+    case "terminal-metadata-mismatch":
+      return `The host returned an Advisor reply whose ${terminalFieldText(reason.field)} did not match the preflight contract, so the reply was discarded. Retry once; if it repeats, report the mismatch.`;
+    case "terminal-result-invalid":
+      return "The host reported completion without a usable text answer, so the result was discarded. Retry once; if it repeats, inspect host diagnostics and check the compatibility of the extension with the installed pi-subagents 0.76.1 build.";
+    case "host-terminal-status":
+      return hostStatusText(reason.status);
+    case "host-status-unrecognized":
+      return "The host ended the Advisor run with a status this extension does not recognize and supplied no safe detail. Retry once; if it repeats, check the installed pi-subagents version.";
+    default:
+      return "The Advisor run failed and the host supplied no safe detail. Retry once; if it repeats, check the installed pi-subagents version.";
+  }
+}
+
+/**
+ * Bounded English cause for a failed Advisor launch. It renders only closed reason codes and
+ * admitted protocol metadata, so host error text, prompts, URLs, paths and secrets never reach the
+ * transcript or the local log.
+ */
+export function advisorFailureText(result: AdvisorFailureResult): string {
+  switch (result.kind) {
+    case "unavailable-context":
+      return "Fork unavailable. Call again with brief for a fresh consultation.";
+    case "busy":
+      return "Advisor busy: another consultation group is already in flight.";
+    case "cancelled":
+      return "Advisor cancelled before replying. Call again when ready.";
+    case "timed-out":
+      return `Advisor did not reply within ${LAUNCH_TERMINAL_TIMEOUT_MS / 1000} seconds. Inspect host diagnostics before retrying; cancellation does not guarantee that external generation or cost has stopped.`;
+    case "unavailable":
+      return unavailableFailureText(result.reason);
+    case "failed":
+      return failedFailureText(result.reason);
+  }
 }
 
 /**

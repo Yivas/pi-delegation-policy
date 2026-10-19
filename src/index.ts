@@ -12,7 +12,12 @@ import {
   parseSessionState,
   type GuardedAppendResult,
 } from "./config.ts";
-import { AdvisorExecutor, advisorThinking, ADVISOR_AGENT_NAME } from "./advisor-executor.ts";
+import {
+  AdvisorExecutor,
+  advisorFailureText,
+  advisorThinking,
+  ADVISOR_AGENT_NAME,
+} from "./advisor-executor.ts";
 import { AdvisorLog } from "./advisor-log.ts";
 import { ContextShuntAdapter } from "./context-shunt-adapter.ts";
 import { ContextShuntExecutor } from "./context-shunt-executor.ts";
@@ -497,9 +502,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
                 `${result.model} [${result.context}]:\n${
                   result.result.kind === "completed"
                     ? result.result.value
-                    : result.result.kind === "unavailable-context"
-                      ? "Fork unavailable. Call again with brief for a fresh consultation."
-                      : `Advisor ${result.result.kind}.`
+                    : advisorFailureText(result.result)
                 }`,
             )
             .join("\n\n") +
