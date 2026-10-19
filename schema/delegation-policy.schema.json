@@ -5,22 +5,112 @@
   "type": "object",
   "required": ["schemaVersion"],
   "properties": {
-    "schemaVersion": { "enum": [7, 8] },
-    "intensity": { "enum": ["off", "normal", "aggressive", "orchestrator"] },
-    "preference": { "enum": ["efficient", "standard", "intensive"] },
-    "small": { "$ref": "#/$defs/ordinaryRole" },
-    "medium": { "$ref": "#/$defs/ordinaryRole" },
-    "large": { "$ref": "#/$defs/ordinaryRole" },
-    "uiDesign": { "$ref": "#/$defs/modelRef" },
-    "advisor": { "$ref": "#/$defs/modelRef" },
-    "advisorMode": { "enum": ["off", "on", "with-delegation"] },
-    "thinking": { "$ref": "#/$defs/thinking" },
-    "contextShunt": { "$ref": "#/$defs/contextShunt" }
+    "schemaVersion": {
+      "enum": [7, 8, 9]
+    },
+    "intensity": {
+      "enum": ["off", "normal", "aggressive", "orchestrator"]
+    },
+    "preference": {
+      "enum": ["efficient", "standard", "intensive"]
+    },
+    "small": {
+      "$ref": "#/$defs/ordinaryRole"
+    },
+    "medium": {
+      "$ref": "#/$defs/ordinaryRole"
+    },
+    "large": {
+      "$ref": "#/$defs/ordinaryRole"
+    },
+    "uiDesign": {
+      "$ref": "#/$defs/modelRef"
+    },
+    "advisor": {
+      "$ref": "#/$defs/modelRef",
+      "description": "Legacy single-advisor shorthand. Do not combine with advisors."
+    },
+    "advisorMode": {
+      "enum": ["off", "on", "with-delegation"]
+    },
+    "thinking": {
+      "$ref": "#/$defs/thinking"
+    },
+    "contextShunt": {
+      "$ref": "#/$defs/contextShunt"
+    },
+    "advisors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/advisorEntry"
+      },
+      "description": "Ordered advisors; consult every valid entry. Replaces legacy advisor and thinking.advisor."
+    },
+    "advisorLaunch": {
+      "enum": ["role", "tool"],
+      "default": "role"
+    }
   },
   "allOf": [
     {
-      "if": { "properties": { "schemaVersion": { "const": 7 } } },
-      "then": { "not": { "required": ["advisorMode"] } }
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "const": 7
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": ["advisorMode"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "enum": [7, 8]
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": ["advisors"]
+            },
+            {
+              "required": ["advisorLaunch"]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["advisors"]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": ["advisor"]
+            },
+            {
+              "required": ["thinking"],
+              "properties": {
+                "thinking": {
+                  "required": ["advisor"],
+                  "type": "object"
+                }
+              }
+            }
+          ]
+        }
+      }
     }
   ],
   "$defs": {
@@ -28,12 +118,27 @@
       "type": "object",
       "required": ["provider", "model"],
       "properties": {
-        "provider": { "type": "string", "minLength": 1 },
-        "model": { "type": "string", "minLength": 1 }
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
-    "ordinaryRole": { "anyOf": [{ "$ref": "#/$defs/modelRef" }, { "type": "null" }] },
+    "ordinaryRole": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/modelRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "thinkingLevel": {
       "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
     },
@@ -42,15 +147,23 @@
         {
           "type": "object",
           "required": ["level"],
-          "properties": { "level": { "$ref": "#/$defs/thinkingLevel" } },
+          "properties": {
+            "level": {
+              "$ref": "#/$defs/thinkingLevel"
+            }
+          },
           "additionalProperties": false
         },
         {
           "type": "object",
           "required": ["min", "max"],
           "properties": {
-            "min": { "$ref": "#/$defs/thinkingLevel" },
-            "max": { "$ref": "#/$defs/thinkingLevel" }
+            "min": {
+              "$ref": "#/$defs/thinkingLevel"
+            },
+            "max": {
+              "$ref": "#/$defs/thinkingLevel"
+            }
           },
           "additionalProperties": false
         }
@@ -59,15 +172,29 @@
     "thinking": {
       "type": "object",
       "properties": {
-        "small": { "$ref": "#/$defs/roleThinking" },
-        "medium": { "$ref": "#/$defs/roleThinking" },
-        "large": { "$ref": "#/$defs/roleThinking" },
-        "uiDesign": { "$ref": "#/$defs/roleThinking" },
-        "advisor": { "$ref": "#/$defs/roleThinking" }
+        "small": {
+          "$ref": "#/$defs/roleThinking"
+        },
+        "medium": {
+          "$ref": "#/$defs/roleThinking"
+        },
+        "large": {
+          "$ref": "#/$defs/roleThinking"
+        },
+        "uiDesign": {
+          "$ref": "#/$defs/roleThinking"
+        },
+        "advisor": {
+          "$ref": "#/$defs/roleThinking"
+        }
       },
       "additionalProperties": false
     },
-    "positiveLimit": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+    "positiveLimit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
     "patterns": {
       "type": "array",
       "maxItems": 32,
@@ -81,24 +208,68 @@
     "contextShunt": {
       "type": "object",
       "properties": {
-        "mode": { "enum": ["off", "observe", "enforce"] },
-        "readerEnabled": { "type": "boolean" },
-        "readerRole": { "enum": ["small", "medium", "large"] },
-        "answerMaxBytes": { "type": "integer", "minimum": 1024, "maximum": 16384 },
+        "mode": {
+          "enum": ["off", "observe", "enforce"]
+        },
+        "readerEnabled": {
+          "type": "boolean"
+        },
+        "readerRole": {
+          "enum": ["small", "medium", "large"]
+        },
+        "answerMaxBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 16384
+        },
         "limits": {
           "type": "object",
           "properties": {
-            "fullReadLines": { "$ref": "#/$defs/positiveLimit" },
-            "fullReadBytes": { "$ref": "#/$defs/positiveLimit" },
-            "targetedReadLines": { "$ref": "#/$defs/positiveLimit" },
-            "targetedReadBytes": { "$ref": "#/$defs/positiveLimit" }
+            "fullReadLines": {
+              "$ref": "#/$defs/positiveLimit"
+            },
+            "fullReadBytes": {
+              "$ref": "#/$defs/positiveLimit"
+            },
+            "targetedReadLines": {
+              "$ref": "#/$defs/positiveLimit"
+            },
+            "targetedReadBytes": {
+              "$ref": "#/$defs/positiveLimit"
+            }
           },
           "additionalProperties": false
         },
-        "shell": { "const": "conservative" },
-        "metrics": { "const": "memory" },
-        "exceptionPatterns": { "$ref": "#/$defs/patterns" },
-        "delegationHintPatterns": { "$ref": "#/$defs/patterns" }
+        "shell": {
+          "const": "conservative"
+        },
+        "metrics": {
+          "const": "memory"
+        },
+        "exceptionPatterns": {
+          "$ref": "#/$defs/patterns"
+        },
+        "delegationHintPatterns": {
+          "$ref": "#/$defs/patterns"
+        }
+      },
+      "additionalProperties": false
+    },
+    "advisorEntry": {
+      "type": "object",
+      "required": ["provider", "model"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thinking": {
+          "$ref": "#/$defs/roleThinking"
+        }
       },
       "additionalProperties": false
     }

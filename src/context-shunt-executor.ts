@@ -124,6 +124,7 @@ function readerResult(result: AgentLaunchResult<ReaderAnswer>): ReaderExecutorRe
     case "completed":
       return { kind: "completed", value: result.value };
     case "unavailable":
+    case "unavailable-context":
       return { kind: "reader-unavailable" };
     case "busy":
       return { kind: "reader-busy" };

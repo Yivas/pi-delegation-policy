@@ -8,6 +8,7 @@ import {
   type ConfigDiagnostic,
 } from "./config.ts";
 import {
+  type AdvisorSetting,
   MODEL_ROLES,
   ROLE_LABELS,
   type EffectiveDelegateState,
@@ -30,6 +31,12 @@ export type RuntimeState = {
   modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
   advisorErrors?: string[];
+  advisorEntries?: Array<{
+    index: number;
+    setting: AdvisorSetting;
+    status: ModelStatus;
+    errors: string[];
+  }>;
 };
 
 export function isAdvisorEnabled(effective: EffectiveDelegateState): boolean {
@@ -37,14 +44,14 @@ export function isAdvisorEnabled(effective: EffectiveDelegateState): boolean {
     effective.advisorMode === "on" ||
     (effective.advisorMode === "with-delegation" &&
       effective.intensity !== "off" &&
-      !!effective.advisor)
+      effective.advisors.length > 0)
   );
 }
 
 export function advisorStatusLabel(state: RuntimeState): string {
   if (hasAdvisorError(state)) return "A:ERR";
   if (!isAdvisorEnabled(state.effective)) return "A:OFF";
-  return "A:ON";
+  return (state.advisorErrors?.length ?? 0) > 0 ? "A:PART" : "A:ON";
 }
 
 export function isRoleEnabled(setting: OrdinaryRoleSetting | undefined): setting is ModelRef {
@@ -203,17 +210,34 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
       // An unusable Advisor state is only an error while Advisor is on; otherwise the diagnostic
       // stays informative in `details=` and the footer keeps reporting A:OFF.
       if (advisorEnabled) state.advisorErrors.push(diagnostic.message);
-    } else if (state.effective.intensity !== "off") {
+    } else if (diagnostic.scope !== "advisor-extension" && state.effective.intensity !== "off") {
       // Every other diagnostic belongs to the delegation axis, so a valid enabled Advisor keeps
       // working while delegation is reported broken.
       state.runtimeErrors.push(diagnostic.message);
     }
   }
   if (state.effective.intensity === "off" && !advisorEnabled) return;
+  state.advisorEntries = [];
   if (advisorEnabled) {
-    if (state.effective.advisor)
-      validateEnabledRole(ctx, state, "advisor", state.effective.advisor);
-    else state.advisorErrors.push("Advisor model is not configured.");
+    if (!state.effective.advisors.length)
+      state.advisorErrors.push("Advisor model is not configured.");
+    for (const [index, setting] of state.effective.advisors.entries()) {
+      const status = validateModelReference(ctx, setting);
+      const errors: string[] = [];
+      const label = index === 0 ? "Advisor" : "Advisor 2";
+      if (status.kind !== "available") errors.push(`${label} model ${statusDetail(status)}.`);
+      else if (setting.thinking) {
+        for (const level of policyLevels(setting.thinking)) {
+          if (!getSupportedThinkingLevels(status.model).includes(level))
+            errors.push(
+              `${label} thinking level "${level}" is not supported by ${setting.provider}/${setting.model}.`,
+            );
+        }
+      }
+      if (index === 0) state.modelStatuses.set("advisor", status);
+      state.advisorEntries.push({ index, setting, status, errors });
+      state.advisorErrors.push(...errors);
+    }
   }
   if (state.effective.intensity === "off") return;
   for (const role of MODEL_ROLES) {
@@ -237,7 +261,25 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
 }
 
 export function hasAdvisorError(state: RuntimeState): boolean {
-  return (state.advisorErrors?.length ?? 0) > 0;
+  return (state.advisorErrors?.length ?? 0) > 0 && validAdvisors(state).length === 0;
+}
+
+export function validAdvisors(
+  state: RuntimeState,
+): Array<{ index: number; setting: AdvisorSetting; model: Model<Api> }> {
+  if (!isAdvisorEnabled(state.effective) || state.diagnostics.some((d) => d.scope === "advisor"))
+    return [];
+  if (state.advisorEntries)
+    return state.advisorEntries.flatMap((entry) =>
+      entry.status.kind === "available" && !entry.errors.length
+        ? [{ index: entry.index, setting: entry.setting, model: entry.status.model }]
+        : [],
+    );
+  // Callers that construct a validated single-advisor state directly use the original map.
+  const status = state.modelStatuses.get("advisor");
+  return status?.kind === "available" && !state.advisorErrors?.length && state.effective.advisors[0]
+    ? [{ index: 0, setting: state.effective.advisors[0], model: status.model }]
+    : [];
 }
 
 export function hasRuntimeError(state: RuntimeState): boolean {

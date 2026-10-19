@@ -251,10 +251,10 @@ test("the reader binds to the tool session and launches nothing without one", as
 // The integration seam keeps the external executor out of this test while exercising the real store.
 test("registers the delegate tool and preserves the exact request boundary", async () => {
   await withRuntime(defaults, async (run, ctx) => {
-    // The plugin registers exactly the two ContextShunt tools; the reader's boundary is the only
-    // launch of its own.
-    assert.equal(run.tools.size, 2);
+    // Both explicit launch tools and recovery are always registered; availability is per call.
+    assert.equal(run.tools.size, 3);
     assert.deepEqual([...run.tools.keys()].sort(), [
+      "consult_advisor",
       "context_shunt_delegate",
       "context_shunt_recover",
     ]);

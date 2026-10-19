@@ -1,0 +1,140 @@
+import type { Api, Model } from "@earendil-works/pi-ai";
+
+export const CURRENT_SCHEMA_VERSION = 8 as const;
+
+export const INTENSITIES = ["off", "normal", "aggressive", "orchestrator"] as const;
+export const ADVISOR_MODES = ["off", "on", "with-delegation"] as const;
+export type AdvisorMode = (typeof ADVISOR_MODES)[number];
+export type Intensity = (typeof INTENSITIES)[number];
+export const PREFERENCES = ["efficient", "standard", "intensive"] as const;
+export type Preference = (typeof PREFERENCES)[number];
+export const MODEL_ROLES = ["small", "medium", "large"] as const;
+export type ModelRole = (typeof MODEL_ROLES)[number];
+export type ModelConfigKey = ModelRole | "uiDesign" | "advisor";
+export type OptionalRoleKey = "uiDesign" | "advisor";
+export const ROLE_LABELS: Record<ModelConfigKey, string> = {
+  small: "Small",
+  medium: "Medium",
+  large: "Large",
+  uiDesign: "Visual Design",
+  advisor: "Advisor",
+};
+
+export type ModelRef = { provider: string; model: string };
+export type OrdinaryRoleSetting = ModelRef | null;
+export const THINKING_ROLE_KEYS: readonly ModelConfigKey[] = [
+  ...MODEL_ROLES,
+  "uiDesign",
+  "advisor",
+];
+/** Level names the host recognizes. Single canonical copy for the whole product. */
+export const THINKING_LEVEL_NAMES = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type ThinkingLevelName = (typeof THINKING_LEVEL_NAMES)[number];
+export type ThinkingPolicy =
+  { level: ThinkingLevelName } | { min: ThinkingLevelName; max: ThinkingLevelName };
+export type ThinkingSettings = Partial<Record<ModelConfigKey, ThinkingPolicy>>;
+export type SessionThinkingSettings = Partial<Record<ModelConfigKey, ThinkingPolicy | null>>;
+export const CONTEXT_SHUNT_MODES = ["off", "observe", "enforce"] as const;
+export type ContextShuntMode = (typeof CONTEXT_SHUNT_MODES)[number];
+export type ContextShuntLimits = {
+  fullReadLines?: number;
+  fullReadBytes?: number;
+  targetedReadLines?: number;
+  targetedReadBytes?: number;
+};
+export type ContextShuntSettings = {
+  mode?: ContextShuntMode;
+  readerEnabled?: boolean;
+  readerRole?: ModelRole;
+  answerMaxBytes?: number;
+  limits?: ContextShuntLimits;
+  shell?: "conservative";
+  metrics?: "memory";
+  exceptionPatterns?: string[];
+  delegationHintPatterns?: string[];
+};
+export type GlobalDefaults = {
+  schemaVersion: typeof CURRENT_SCHEMA_VERSION;
+  intensity?: Intensity;
+  preference?: Preference;
+  small?: OrdinaryRoleSetting;
+  medium?: OrdinaryRoleSetting;
+  large?: OrdinaryRoleSetting;
+  uiDesign?: ModelRef;
+  advisor?: ModelRef;
+  advisorMode?: AdvisorMode;
+  thinking?: ThinkingSettings;
+  contextShunt?: ContextShuntSettings;
+};
+export type SessionDelegateState = {
+  schemaVersion: typeof CURRENT_SCHEMA_VERSION;
+  intensity?: Intensity;
+  preference?: Preference;
+  small?: OrdinaryRoleSetting;
+  medium?: OrdinaryRoleSetting;
+  large?: OrdinaryRoleSetting;
+  uiDesign?: ModelRef | null;
+  advisor?: ModelRef | null;
+  advisorMode?: AdvisorMode;
+  thinking?: SessionThinkingSettings;
+  contextShunt?: ContextShuntSettings;
+};
+export type ValueSource = "default" | "global" | "session";
+export type EffectiveContextShunt = {
+  mode: ContextShuntMode;
+  configuredMode: ContextShuntMode;
+  readerEnabled: boolean;
+  readerRole: ModelRole;
+  answerMaxBytes: number;
+  limits: Required<ContextShuntLimits>;
+  shell: "conservative";
+  metrics: "memory";
+  exceptionPatterns: string[];
+  delegationHintPatterns: string[];
+  suspended: boolean;
+  source: Record<keyof Required<ContextShuntSettings>, ValueSource>;
+};
+export type EffectiveDelegateState = {
+  intensity: Intensity;
+  preference: Preference;
+  small?: OrdinaryRoleSetting;
+  medium?: OrdinaryRoleSetting;
+  large?: OrdinaryRoleSetting;
+  uiDesign?: ModelRef;
+  advisor?: ModelRef;
+  advisorMode: AdvisorMode;
+  thinking: ThinkingSettings;
+  contextShunt: EffectiveContextShunt;
+  source: {
+    intensity: ValueSource;
+    preference: ValueSource;
+    small: ValueSource;
+    medium: ValueSource;
+    large: ValueSource;
+    uiDesign: ValueSource;
+    advisor: ValueSource;
+    advisorMode: ValueSource;
+    thinking: Record<ModelConfigKey, ValueSource>;
+  };
+};
+export type ModelStatus =
+  | { kind: "available"; model: Model<Api> }
+  | { kind: "missing-model" }
+  | { kind: "outside-scope" }
+  | { kind: "unavailable" }
+  | { kind: "no-credentials" };
+
+export function emptyGlobalDefaults(): GlobalDefaults {
+  return { schemaVersion: CURRENT_SCHEMA_VERSION };
+}
+export function emptySessionState(): SessionDelegateState {
+  return { schemaVersion: CURRENT_SCHEMA_VERSION };
+}

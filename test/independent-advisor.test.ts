@@ -433,7 +433,17 @@ test("Advisor commands and request hooks independently update and remove the own
     assert.deepEqual(parseCommand(input), { kind: "invalid" });
   assert.deepEqual(
     getArgumentCompletions("advisor ")?.map(({ value }) => value),
-    ["advisor off", "advisor on", "advisor with-delegation"],
+    [
+      "advisor off",
+      "advisor on",
+      "advisor with-delegation",
+      "advisor launch role",
+      "advisor launch tool",
+      "advisor 1 model",
+      "advisor 2 model",
+      "advisor 1 thinking",
+      "advisor 2 thinking",
+    ],
   );
 });
 
@@ -475,7 +485,7 @@ test("Advisor mode supports keyboard selection, inheritance, bounded render and 
   send(enter, down, down, enter);
   assert.equal(panel.getDraft().advisorMode, "on");
   send(home, ...Array.from({ length: 12 }, () => down), enter, home, down, enter);
-  assert.equal(panel.getDraft().advisor, null);
+  assert.equal(panel.getDraft().advisors, null);
   assert.equal(panel.getDraft().advisorMode, "off");
   send(end, up, enter);
   assert.equal(panel.getDraft().advisorMode, "off");
@@ -544,10 +554,13 @@ test("a stale Advisor companion keeps its model and thinking while delegation wi
       resolveDelegateState(loaded.defaults, { ...empty, advisorMode: "on" }),
     );
     assert.equal(saved.intensity, "aggressive");
-    assert.deepEqual(saved.advisor, advisor);
-    assert.deepEqual(saved.thinking?.advisor, { level: "high" });
+    assert.deepEqual(saved.advisors?.[0], { ...advisor, thinking: { level: "high" } });
+    assert.equal(saved.thinking?.advisor, undefined);
     assert.equal(await writeConfig(path, saved), "saved");
-    assert.deepEqual((await readConfig(path)).defaults, saved);
+    assert.deepEqual(
+      defaultsFromEffectiveState(resolveDelegateState((await readConfig(path)).defaults, empty)),
+      saved,
+    );
   });
 });
 
@@ -687,7 +700,7 @@ test("session companions are adjacent, matched, and committed only after both gu
     medium: null,
     large: null,
   };
-  for (const failAt of [1, 2, 3]) {
+  for (const failAt of [1, 2, 3, 4]) {
     const branch: unknown[] = [
       {
         type: "custom",
@@ -719,8 +732,8 @@ test("session companions are adjacent, matched, and committed only after both gu
     next,
   );
   assert.deepEqual(restoreSessionState(branch), next);
-  assert.equal(branch[1]?.customType, ADVISOR_SESSION_ENTRY_TYPE);
-  branch[1]!.data = { ...next, intensity: "aggressive" };
+  assert.equal(branch[2]?.customType, ADVISOR_SESSION_ENTRY_TYPE);
+  branch[2]!.data = { ...next, schemaVersion: 8, intensity: "aggressive" };
   const invalid = restoreSessionStateWithDiagnostics(branch);
   assert.equal(invalid.session.intensity, "normal");
   assert.equal(invalid.session.advisorMode, "off");
@@ -746,4 +759,106 @@ test("Advisor can stay available when delegation alone is invalid", () => {
     buildDelegationPolicy(current) ?? "",
     /Enabled ordinary roles:|Role selection:/,
   );
+});
+
+test("panel removing Advisor 1 clears both entries and turns Advisor off", () => {
+  for (const advisors of [[advisor], [advisor, ordinary]]) {
+    const panel = new DelegatePanel({
+      tui: { terminal: { rows: 30 }, requestRender: () => undefined } as never,
+      theme: theme as never,
+      global: { ...empty, advisors, advisorMode: "on" },
+      session: empty,
+      candidates: [advisorModel as never, workerModel as never],
+      diagnostics: [],
+      hasRuntimeError: false,
+      onApply: async () => true,
+      onSaveDefaults: async () => ({ kind: "unchanged" }),
+      onDone: () => undefined,
+    });
+    panel.render(100);
+    const down = "\u001b[B",
+      up = "\u001b[A",
+      enter = "\r";
+    for (const key of [
+      "\u001b[H",
+      ...Array.from({ length: 12 }, () => down),
+      enter,
+      up,
+      up,
+      up,
+      down,
+      enter,
+    ])
+      panel.handleInput(key);
+    assert.equal(panel.getDraft().advisors, null);
+    assert.equal(panel.getDraft().advisorMode, "off");
+    const state = runtime({ ...empty, advisors, advisorMode: "on" }, panel.getDraft());
+    assert.deepEqual(state.effective.advisors, []);
+    assert.equal(advisorStatusLabel(state), "A:OFF");
+  }
+});
+
+test("panel preview counts only the available advisor when Advisor 1 is invalid", () => {
+  const panel = new DelegatePanel({
+    tui: { terminal: { rows: 40 }, requestRender: () => undefined } as never,
+    theme: theme as never,
+    global: { ...empty, advisors: [advisor, ordinary], advisorMode: "on" },
+    session: empty,
+    candidates: [workerModel as never],
+    diagnostics: [],
+    hasRuntimeError: false,
+    onApply: async () => true,
+    onSaveDefaults: async () => ({ kind: "unchanged" }),
+    onDone: () => undefined,
+  });
+  assert.match(panel.render(100).join("\n"), /1 of 2 advisors valid/);
+});
+
+test("Advisor 2 and tool launch use the native keyboard selectors and stage one ordered list", () => {
+  const panel = new DelegatePanel({
+    tui: { terminal: { rows: 30 }, requestRender: () => undefined } as never,
+    theme: theme as never,
+    global: { ...empty, advisors: [advisor], advisorMode: "on" },
+    session: empty,
+    candidates: [advisorModel as never, workerModel as never],
+    diagnostics: [],
+    hasRuntimeError: false,
+    onApply: async () => true,
+    onSaveDefaults: async () => ({ kind: "unchanged" }),
+    onDone: () => undefined,
+  });
+  const down = String.fromCharCode(27) + "[B",
+    enter = String.fromCharCode(13),
+    home = String.fromCharCode(27) + "[H",
+    end = String.fromCharCode(27) + "[F";
+  const send = (...keys: string[]) => {
+    for (const key of keys) panel.handleInput(key);
+  };
+  const focus = (index: number) => send(home, ...Array.from({ length: index }, () => down));
+  panel.render(100);
+  focus(16);
+  assert.match(panel.render(100).join(String.fromCharCode(10)), /Advisor 2/);
+  send(enter, down, down, down, enter);
+  assert.deepEqual(panel.getDraft().advisors, [advisor, ordinary]);
+  focus(17);
+  send(enter, home, down, down, enter, end, enter);
+  assert.deepEqual(panel.getDraft().advisors?.[1]?.thinking, { level: "high" });
+  focus(15);
+  send(enter, down, down, enter);
+  assert.equal(panel.getDraft().advisorLaunch, "tool");
+  focus(16);
+  send(enter, String.fromCharCode(27) + "[A", String.fromCharCode(27) + "[A", enter);
+  assert.deepEqual(panel.getDraft().advisors, [advisor]);
+  for (const width of [100, 60, 40]) {
+    const lines = panel.render(width);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    assert.ok(lines.length <= 30);
+  }
+  assert.deepEqual(parseCommand("advisor launch tool"), { kind: "advisor-launch", launch: "tool" });
+  assert.deepEqual(parseCommand("advisor 2 model Example/CaseSensitive"), {
+    kind: "advisor-config",
+    index: 1,
+    setting: "model",
+    values: ["Example/CaseSensitive"],
+  });
 });

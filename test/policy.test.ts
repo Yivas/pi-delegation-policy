@@ -34,6 +34,7 @@ import {
   restoreSessionStateWithDiagnostics,
   SESSION_ENTRY_TYPE,
   ADVISOR_SESSION_ENTRY_TYPE,
+  ADVISOR_EXTENSION_ENTRY_TYPE,
   writeConfig,
 } from "../src/config.ts";
 import { buildDelegationPolicy, buildPolicyPreview, selectAdvisorContext } from "../src/prompt.ts";
@@ -1610,7 +1611,10 @@ test("advisor is an optional tri-state role on schema 7 without rewriting schema
   assert.deepEqual(configured.advisor, advisor);
   assert.equal(configured.source.advisor, "global");
   assert.deepEqual(configured.thinking.advisor, { level: "high" });
-  assert.deepEqual(defaultsFromEffectiveState(configured).advisor, advisor);
+  assert.deepEqual(defaultsFromEffectiveState(configured).advisors?.[0], {
+    ...advisor,
+    thinking: { level: "high" },
+  });
 
   const overridden = resolveDelegateState(
     { schemaVersion: CURRENT_SCHEMA_VERSION, advisor },
@@ -1650,7 +1654,14 @@ test("advisor is an optional tri-state role on schema 7 without rewriting schema
     );
     const savedDefaults = defaultsFromEffectiveState(effective);
     await writeConfig(path, savedDefaults);
-    assert.deepEqual((await readConfig(path)).defaults, savedDefaults);
+    assert.deepEqual(
+      defaultsFromEffectiveState(
+        resolveDelegateState((await readConfig(path)).defaults, {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+        }),
+      ),
+      savedDefaults,
+    );
     const reloaded = (await readConfig(path)).defaults;
     assert.equal(reloaded.schemaVersion, CURRENT_SCHEMA_VERSION);
     assert.deepEqual(reloaded.advisor, advisor);
@@ -1834,7 +1845,10 @@ test("an ordinary configuration diagnostic never disables a valid enabled Adviso
 
 test("the editor keeps an ordinary diagnostic visible when only Advisor is active", async () => {
   await withAgentDirectory(async (directory) => {
-    await writeFile(getGlobalConfigPath(directory), JSON.stringify({ schemaVersion: 9 }));
+    await writeFile(
+      getGlobalConfigPath(directory),
+      JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION + 1 }),
+    );
     const branch: unknown[] = [];
     assert.equal(
       appendGuardedSessionState(
@@ -1865,12 +1879,12 @@ test("the advisor rows end the settings list and stage the same tri-state", () =
 
   focus(12);
   const advisorRow = harness.panel.render(100).join("\n");
-  assert.match(advisorRow, /^> Advisor model\s+disabled\s*$/m);
-  assert.match(advisorRow, /Optional advice model consulted on demand; it executes no work/);
+  assert.match(advisorRow, /^> Advisor 1\s+disabled\s*$/m);
+  assert.match(advisorRow, /First advice model; executes no work/);
   assert.match(advisorRow, /built-in disabled/);
 
   sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
-  assert.equal(harness.panel.getDraft().advisor, null);
+  assert.equal(harness.panel.getDraft().advisors, null);
   assert.equal(harness.panel.isDirty(), true);
 
   sendKeys(harness.panel, KEY_DOWN, KEY_ENTER);
@@ -2542,10 +2556,11 @@ test("reader settings inherit independently and persist through guarded Apply an
   sendKeys(apply.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER, "1", "6", "3", "8", "4", KEY_ENTER);
   sendKeys(apply.panel, KEY_ESCAPE, "a");
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(entries.length, 3);
+  assert.equal(entries.length, 4);
   assert.equal(entries[0]?.type, SESSION_ENTRY_TYPE);
-  assert.equal(entries[1]?.type, ADVISOR_SESSION_ENTRY_TYPE);
-  assert.equal(entries[2]?.type, SESSION_ENTRY_TYPE);
+  assert.equal(entries[1]?.type, ADVISOR_EXTENSION_ENTRY_TYPE);
+  assert.equal(entries[2]?.type, ADVISOR_SESSION_ENTRY_TYPE);
+  assert.equal(entries[3]?.type, SESSION_ENTRY_TYPE);
   assert.deepEqual(
     restoreSessionState(
       entries.map(({ type, data }) => ({ type: "custom", customType: type, data })),
@@ -2696,6 +2711,8 @@ test("the interactive editor reports its TUI requirement in RPC mode", async () 
 
 test("source code keeps ContextShunt bounded to public hooks without a runner, model control, or network client", async () => {
   const sourceFiles = [
+    "advisor-executor.ts",
+    "advisor-log.ts",
     "agent-launch.ts",
     "config.ts",
     "context-shunt.ts",
@@ -2789,6 +2806,8 @@ test("public package contents exclude private planning, tests, archives, and old
     "package.json",
     "schema/delegation-policy.schema.json",
     "src/agent-launch.ts",
+    "src/advisor-executor.ts",
+    "src/advisor-log.ts",
     "src/config.ts",
     "src/context-shunt-adapter.ts",
     "src/context-shunt-executor.ts",
@@ -2930,6 +2949,7 @@ test("schema 2 and schema 3 migrate in memory while schema 4 preserves ordinary 
     schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "off",
     advisorMode: "with-delegation",
+    advisorLaunch: "role",
     preference: "standard",
     small: null,
     medium,
@@ -3134,7 +3154,8 @@ test("guarded session writes preserve an off downgrade guard and fail safely", (
   assert.equal(appendGuardedSessionState(writer, next), "success");
   assert.deepEqual(entries, [
     { schemaVersion: 2, intensity: "off" },
-    next,
+    { schemaVersion: 1, base: { ...next, schemaVersion: 8 } },
+    { ...next, schemaVersion: 8 },
     { ...next, schemaVersion: 7, advisor: null },
   ]);
   assert.equal(
@@ -3268,7 +3289,11 @@ test("guarded session writes use the extension type and leave only the guard aft
   );
   assert.deepEqual(calls, [
     { type: SESSION_ENTRY_TYPE, data: { schemaVersion: 2, intensity: "off" } },
-    { type: ADVISOR_SESSION_ENTRY_TYPE, data: next },
+    {
+      type: ADVISOR_EXTENSION_ENTRY_TYPE,
+      data: { schemaVersion: 1, base: { ...next, schemaVersion: 8 } },
+    },
+    { type: ADVISOR_SESSION_ENTRY_TYPE, data: { ...next, schemaVersion: 8 } },
     { type: SESSION_ENTRY_TYPE, data: { ...next, schemaVersion: 7, advisor: null } },
   ]);
 

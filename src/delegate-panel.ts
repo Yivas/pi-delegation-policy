@@ -11,10 +11,12 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { isThinkingLevelName, resolveDelegateState } from "./config.ts";
+import { configuredAdvisors, isThinkingLevelName, resolveDelegateState } from "./config.ts";
 import { isAdvisorEnabled } from "./runtime.ts";
 import { buildPolicyPreview } from "./prompt.ts";
 import {
+  ADVISOR_LAUNCH_MODES,
+  type AdvisorLaunch,
   ADVISOR_MODES,
   type AdvisorMode,
   CONTEXT_SHUNT_MODES,
@@ -57,6 +59,9 @@ const FIELD_IDS = [
   "advisor",
   "thinkingAdvisor",
   "advisorMode",
+  "advisorLaunch",
+  "advisor2",
+  "thinkingAdvisor2",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
 const THINKING_FIELDS = [
@@ -65,14 +70,17 @@ const THINKING_FIELDS = [
   "thinkingLarge",
   "thinkingUiDesign",
   "thinkingAdvisor",
+  "thinkingAdvisor2",
 ] as const;
 type ThinkingField = (typeof THINKING_FIELDS)[number];
-const THINKING_FIELD_KEYS: Record<ThinkingField, ModelConfigKey> = {
+type ModelField = ModelConfigKey | "advisor2";
+const THINKING_FIELD_KEYS: Record<ThinkingField, ModelField> = {
   thinkingSmall: "small",
   thinkingMedium: "medium",
   thinkingLarge: "large",
   thinkingUiDesign: "uiDesign",
   thinkingAdvisor: "advisor",
+  thinkingAdvisor2: "advisor2",
 };
 function isThinkingField(field: string): field is ThinkingField {
   return (THINKING_FIELDS as readonly string[]).includes(field);
@@ -80,7 +88,7 @@ function isThinkingField(field: string): field is ThinkingField {
 function isDelegateField(item: string): item is DelegateField {
   return (FIELD_IDS as readonly string[]).includes(item);
 }
-type EnumField = "intensity" | "preference" | "contextShunt" | "advisorMode";
+type EnumField = "intensity" | "preference" | "contextShunt" | "advisorMode" | "advisorLaunch";
 type PanelAction = "apply" | "save-defaults" | "reset" | "cancel";
 type SettingsItem = DelegateField | PanelAction;
 const ADVANCED_FIELDS = [
@@ -116,7 +124,7 @@ function isLimitField(field: AdvancedField | EditableAdvancedField): field is Li
 type PanelMode =
   | { kind: "settings" }
   | { kind: "enum"; field: EnumField; selected: number }
-  | { kind: "model"; field: ModelConfigKey; selected: number; query: string }
+  | { kind: "model"; field: ModelField; selected: number; query: string }
   | { kind: "advanced"; selected: number }
   | { kind: "advanced-reader-enabled"; selected: number }
   | { kind: "advanced-reader-role"; selected: number }
@@ -191,7 +199,10 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   thinkingMedium: "Medium thinking",
   thinkingLarge: "Large thinking",
   thinkingUiDesign: "Visual Design thinking",
-  advisor: "Advisor model",
+  advisor: "Advisor 1",
+  advisor2: "Advisor 2 (optional)",
+  advisorLaunch: "Advisor launch",
+  thinkingAdvisor2: "Advisor 2 thinking",
   advisorMode: "Advisor mode",
   thinkingAdvisor: "Advisor thinking",
 };
@@ -222,7 +233,11 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
   advisorMode:
     "On works independently of delegation; off disables advice; with-delegation preserves legacy behavior. Consultations may incur cost.",
-  advisor: "Optional advice model consulted on demand; it executes no work.",
+  advisor: "First advice model; executes no work. Removing it removes both advisors.",
+  advisor2: "Add a second model consulted alongside Advisor 1, or remove it with Disable.",
+  advisorLaunch:
+    "Role asks the main agent to launch; tool uses explicit consult_advisor. Neither launches from hooks.",
+  thinkingAdvisor2: "Optional fixed level or inclusive range for Advisor 2.",
   thinkingAdvisor:
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
 };
@@ -273,6 +288,8 @@ export function sameSessionState(left: SessionDelegateState, right: SessionDeleg
   return (
     left.intensity === right.intensity &&
     left.advisorMode === right.advisorMode &&
+    left.advisorLaunch === right.advisorLaunch &&
+    JSON.stringify(left.advisors) === JSON.stringify(right.advisors) &&
     left.preference === right.preference &&
     sameModel(left.small, right.small) &&
     sameModel(left.medium, right.medium) &&
@@ -623,7 +640,12 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string {
     if (isThinkingField(field)) return this.thinkingValue(field);
-    if (field === "intensity" || field === "preference" || field === "advisorMode")
+    if (
+      field === "intensity" ||
+      field === "preference" ||
+      field === "advisorMode" ||
+      field === "advisorLaunch"
+    )
       return effective[field];
     if (field === "contextShunt")
       return effective.contextShunt.suspended
@@ -631,6 +653,7 @@ export class DelegatePanel implements Component, Focusable {
         : effective.contextShunt.mode;
     if (field === "contextAdvanced")
       return `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`;
+    if (field === "advisor2") return modelText(effective.advisors[1]);
     if (field === "uiDesign" || field === "advisor")
       return effective[field] ? modelText(effective[field]) : "disabled";
     return rawModelText(effective[field], "not configured");
@@ -665,8 +688,21 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string[] {
     const delegationError = this.hasRuntimeError && effective.intensity !== "off";
+    const validAdvisorCount = effective.advisors.filter((setting, index) => {
+      const available = this.thinkingAvailability(
+        index === 0 ? "thinkingAdvisor" : "thinkingAdvisor2",
+      );
+      if (!("levels" in available)) return false;
+      const policy = setting.thinking;
+      return (
+        !policy ||
+        ("level" in policy ? [policy.level] : [policy.min, policy.max]).every((level) =>
+          available.levels.includes(level),
+        )
+      );
+    }).length;
     const lines = this.isDirty()
-      ? buildPolicyPreview(effective)
+      ? buildPolicyPreview(effective, validAdvisorCount)
       : [
           ...(delegationError
             ? ["D:ERR · delegation unavailable; fix the reported role diagnostics"]
@@ -680,6 +716,7 @@ export class DelegatePanel implements Component, Focusable {
               : []
             : buildPolicyPreview(
                 this.hasAdvisorError ? { ...effective, advisorMode: "off" } : effective,
+                validAdvisorCount,
               )),
         ];
     const maximum =
@@ -689,15 +726,30 @@ export class DelegatePanel implements Component, Focusable {
       .map((line) => truncateToWidth(this.theme.fg("dim", line), width, "…"));
   }
 
+  private modelSetting(
+    state: GlobalDefaults | SessionDelegateState,
+    field: ModelField,
+  ): ModelRef | null | undefined {
+    if (field !== "advisor" && field !== "advisor2") return state[field];
+    const advisors = configuredAdvisors(state);
+    return advisors === null ? null : advisors?.[field === "advisor" ? 0 : 1];
+  }
+
+  private thinkingSetting(
+    state: GlobalDefaults | SessionDelegateState,
+    key: ModelField,
+  ): ThinkingPolicy | null | undefined {
+    if (key !== "advisor" && key !== "advisor2") return state.thinking?.[key];
+    if (state.advisors !== undefined)
+      return state.advisors?.[key === "advisor" ? 0 : 1]?.thinking ?? null;
+    return key === "advisor" ? state.thinking?.advisor : undefined;
+  }
+
   private thinkingValue(field: ThinkingField): string {
     const key = THINKING_FIELD_KEYS[field];
-    const local = this.draft.thinking;
-    if (local && Object.hasOwn(local, key)) {
-      const policy = local[key];
-      return policy ? thinkingSummary(policy) : "unset";
-    }
-    const global = this.global.thinking?.[key];
-    return global ? thinkingSummary(global) : "unset";
+    const local = this.thinkingSetting(this.draft, key);
+    const policy = local === undefined ? this.thinkingSetting(this.global, key) : local;
+    return policy ? thinkingSummary(policy) : "unset";
   }
 
   /** The selectable thinking levels come from the role's resolved model only. */
@@ -706,21 +758,25 @@ export class DelegatePanel implements Component, Focusable {
   ): { levels: ThinkingLevelName[] } | { reason: string } {
     const key = THINKING_FIELD_KEYS[field];
     const state = resolveDelegateState(this.global, this.draft);
-    if ((key === "uiDesign" || key === "advisor") && this.draft[key] === null)
+    if (this.modelSetting(this.draft, key) === null)
       return {
-        reason: `${ROLE_LABELS[key]} is disabled for this session; levels cannot be listed.`,
+        reason: `${key === "advisor2" ? "Advisor 2" : ROLE_LABELS[key]} is disabled for this session; levels cannot be listed.`,
       };
-    const reference = key === "uiDesign" ? state.uiDesign : state[key];
+    const reference = key === "advisor2" ? state.advisors[1] : state[key];
     if (reference === null)
-      return { reason: `${ROLE_LABELS[key]} is disabled; levels cannot be listed.` };
+      return {
+        reason: `${key === "advisor2" ? "Advisor 2" : ROLE_LABELS[key]} is disabled; levels cannot be listed.`,
+      };
     if (reference === undefined)
-      return { reason: `${ROLE_LABELS[key]} is not configured; levels cannot be listed.` };
+      return {
+        reason: `${key === "advisor2" ? "Advisor 2" : ROLE_LABELS[key]} is not configured; levels cannot be listed.`,
+      };
     const model = this.candidates.find(
       (candidate) => candidate.provider === reference.provider && candidate.id === reference.model,
     );
     if (!model)
       return {
-        reason: `${ROLE_LABELS[key]} model ${reference.provider}/${reference.model} is not available; levels cannot be listed.`,
+        reason: `${key === "advisor2" ? "Advisor 2" : ROLE_LABELS[key]} model ${reference.provider}/${reference.model} is not available; levels cannot be listed.`,
       };
     return {
       levels: getSupportedThinkingLevels(model).filter(isThinkingLevelName),
@@ -729,12 +785,15 @@ export class DelegatePanel implements Component, Focusable {
 
   private thinkingChoices(field: ThinkingField): ThinkingChoice[] {
     const key = THINKING_FIELD_KEYS[field];
-    const global = this.global.thinking?.[key];
+    const global = this.thinkingSetting(this.global, key);
     const availability = this.thinkingAvailability(field);
     return [
       {
         label: `${USE_GLOBAL_DEFAULT} (${global ? thinkingSummary(global) : "none"})`,
-        description: "Drop this session override and keep the global policy, if any.",
+        description:
+          key === "advisor" || key === "advisor2"
+            ? "Copy the current global entry policy; applying an advisor list overrides the whole list."
+            : "Drop this session override and keep the global policy, if any.",
         action: "inherit",
       },
       {
@@ -876,6 +935,12 @@ export class DelegatePanel implements Component, Focusable {
         `patterns ${context.exceptionPatterns.length} exempt, ${context.delegationHintPatterns.length} hint`,
       ];
     }
+    if (field === "advisorLaunch")
+      return [
+        "built-in role",
+        `global ${this.global.advisorLaunch ?? "—"}`,
+        `session ${this.draft.advisorLaunch ?? "inherit"}`,
+      ];
     if (field === "advisorMode") {
       return [
         "built-in with-delegation",
@@ -890,33 +955,27 @@ export class DelegatePanel implements Component, Focusable {
         `session ${this.draft.preference ?? "inherit"}`,
       ];
     }
-    if (field === "uiDesign" || field === "advisor") {
+    if (field === "uiDesign" || field === "advisor" || field === "advisor2") {
       return [
         "built-in disabled",
-        `global ${rawModelText(this.global[field], "—")}`,
-        `session ${rawModelText(this.draft[field], "inherit")}`,
+        `global ${rawModelText(this.modelSetting(this.global, field), "—")}`,
+        `session ${rawModelText(this.modelSetting(this.draft, field), "inherit")}`,
       ];
     }
     if (isThinkingField(field)) {
       const key = THINKING_FIELD_KEYS[field];
-      const global = this.global.thinking?.[key];
-      const local = this.draft.thinking;
+      const global = this.thinkingSetting(this.global, key);
+      const local = this.thinkingSetting(this.draft, key);
       return [
         "built-in unset",
         `global ${global ? thinkingSummary(global) : "—"}`,
-        `session ${
-          local && Object.hasOwn(local, key)
-            ? local[key]
-              ? thinkingSummary(local[key])
-              : "unset"
-            : "inherit"
-        }`,
+        `session ${local !== undefined ? (local ? thinkingSummary(local) : "unset") : "inherit"}`,
       ];
     }
     return [
       "built-in not configured",
-      `global ${rawModelText(this.global[field], "—")}`,
-      `session ${rawModelText(this.draft[field], "inherit")}`,
+      `global ${rawModelText(this.modelSetting(this.global, field), "—")}`,
+      `session ${rawModelText(this.modelSetting(this.draft, field), "inherit")}`,
     ];
   }
 
@@ -930,9 +989,11 @@ export class DelegatePanel implements Component, Focusable {
         ? INTENSITIES
         : mode.field === "preference"
           ? PREFERENCES
-          : mode.field === "advisorMode"
-            ? ADVISOR_MODES
-            : CONTEXT_SHUNT_MODES;
+          : mode.field === "advisorLaunch"
+            ? ADVISOR_LAUNCH_MODES
+            : mode.field === "advisorMode"
+              ? ADVISOR_MODES
+              : CONTEXT_SHUNT_MODES;
     const descriptions =
       mode.field === "intensity"
         ? {
@@ -947,27 +1008,34 @@ export class DelegatePanel implements Component, Focusable {
               standard: "No extra Small or Medium bias.",
               intensive: "Tie-break comparable fits toward Medium.",
             }
-          : mode.field === "advisorMode"
+          : mode.field === "advisorLaunch"
             ? {
-                off: "No Advisor guidance; keep the saved model.",
-                on: "Consult even with delegation off. Sends briefs to another model and may incur cost.",
-                "with-delegation":
-                  "Consult only while delegation is active; preserves existing behavior.",
+                role: "Main agent launches all advisors in one background call.",
+                tool: "Explicit consult_advisor launches through the host executor, never from hooks.",
               }
-            : {
-                off: "No classification, metrics, archive, or interception.",
-                observe: "Record would-block decisions without changing calls or results.",
-                enforce: "Block only declared excess and protect known textual results.",
-              };
+            : mode.field === "advisorMode"
+              ? {
+                  off: "No Advisor guidance; keep the saved model.",
+                  on: "Consult even with delegation off. Sends briefs to another model and may incur cost.",
+                  "with-delegation":
+                    "Consult only while delegation is active; preserves existing behavior.",
+                }
+              : {
+                  off: "No classification, metrics, archive, or interception.",
+                  observe: "Record would-block decisions without changing calls or results.",
+                  enforce: "Block only declared excess and protect known textual results.",
+                };
     const globalValue =
       mode.field === "contextShunt"
         ? (this.global.contextShunt?.mode ?? "off")
         : (this.global[mode.field] ??
           (mode.field === "intensity"
             ? "off"
-            : mode.field === "advisorMode"
-              ? "with-delegation"
-              : "standard"));
+            : mode.field === "advisorLaunch"
+              ? "role"
+              : mode.field === "advisorMode"
+                ? "with-delegation"
+                : "standard"));
     const options = [
       {
         label: `${USE_GLOBAL_DEFAULT} (${globalValue})`,
@@ -1266,16 +1334,19 @@ export class DelegatePanel implements Component, Focusable {
       item === "intensity" ||
       item === "preference" ||
       item === "contextShunt" ||
-      item === "advisorMode"
+      item === "advisorMode" ||
+      item === "advisorLaunch"
     ) {
       const values =
         item === "intensity"
           ? INTENSITIES
           : item === "preference"
             ? PREFERENCES
-            : item === "advisorMode"
-              ? ADVISOR_MODES
-              : CONTEXT_SHUNT_MODES;
+            : item === "advisorLaunch"
+              ? ADVISOR_LAUNCH_MODES
+              : item === "advisorMode"
+                ? ADVISOR_MODES
+                : CONTEXT_SHUNT_MODES;
       const current = item === "contextShunt" ? this.draft.contextShunt?.mode : this.draft[item];
       this.mode = {
         kind: "enum",
@@ -1289,7 +1360,8 @@ export class DelegatePanel implements Component, Focusable {
       item === "medium" ||
       item === "large" ||
       item === "uiDesign" ||
-      item === "advisor"
+      item === "advisor" ||
+      item === "advisor2"
     ) {
       this.openModelSelector(item);
       return;
@@ -1312,9 +1384,11 @@ export class DelegatePanel implements Component, Focusable {
         ? INTENSITIES
         : this.mode.field === "preference"
           ? PREFERENCES
-          : this.mode.field === "advisorMode"
-            ? ADVISOR_MODES
-            : CONTEXT_SHUNT_MODES;
+          : this.mode.field === "advisorLaunch"
+            ? ADVISOR_LAUNCH_MODES
+            : this.mode.field === "advisorMode"
+              ? ADVISOR_MODES
+              : CONTEXT_SHUNT_MODES;
     const count = values.length + 1;
     if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
     else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
@@ -1333,6 +1407,8 @@ export class DelegatePanel implements Component, Focusable {
         } else delete this.draft[field];
       } else if (field === "intensity") this.draft.intensity = values[selected - 1] as Intensity;
       else if (field === "preference") this.draft.preference = values[selected - 1] as Preference;
+      else if (field === "advisorLaunch")
+        this.draft.advisorLaunch = values[selected - 1] as AdvisorLaunch;
       else if (field === "advisorMode")
         this.draft.advisorMode = values[selected - 1] as AdvisorMode;
       else
@@ -1346,9 +1422,8 @@ export class DelegatePanel implements Component, Focusable {
 
   private thinkingSelection(field: ThinkingField): number {
     const key = THINKING_FIELD_KEYS[field];
-    const local = this.draft.thinking;
-    if (!local || !Object.hasOwn(local, key)) return 0;
-    const policy = local[key];
+    const policy = this.thinkingSetting(this.draft, key);
+    if (policy === undefined) return 0;
     if (!policy) return 1;
     const choices = this.thinkingChoices(field);
     const wanted: ThinkingAction = "level" in policy ? "fixed" : "range";
@@ -1397,7 +1472,7 @@ export class DelegatePanel implements Component, Focusable {
     minimum?: ThinkingLevelName,
   ): number {
     const key = THINKING_FIELD_KEYS[field];
-    const policy = this.draft.thinking?.[key] ?? this.global.thinking?.[key];
+    const policy = this.thinkingSetting(this.draft, key) ?? this.thinkingSetting(this.global, key);
     const levels = this.availableThinkingLevels({
       kind: "thinking-level",
       field,
@@ -1469,6 +1544,18 @@ export class DelegatePanel implements Component, Focusable {
 
   private setThinkingPolicy(field: ThinkingField, policy: ThinkingPolicy | null | undefined): void {
     const key = THINKING_FIELD_KEYS[field];
+    if (key === "advisor" || key === "advisor2") {
+      const index = key === "advisor" ? 0 : 1;
+      const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
+      const entry = entries[index];
+      if (!entry) return;
+      const inherited =
+        policy === undefined ? configuredAdvisors(this.global)?.[index]?.thinking : policy;
+      if (inherited) entry.thinking = inherited;
+      else delete entry.thinking;
+      this.replaceAdvisors(entries);
+      return;
+    }
     const thinking: SessionThinkingSettings = { ...(this.draft.thinking ?? {}) };
     if (policy === undefined) delete thinking[key];
     else thinking[key] = policy;
@@ -1672,10 +1759,10 @@ export class DelegatePanel implements Component, Focusable {
     else delete this.draft.contextShunt;
   }
 
-  private openModelSelector(field: ModelConfigKey): void {
+  private openModelSelector(field: ModelField): void {
     this.searchInput.setValue("");
     const choices = this.modelChoices(field, "");
-    const current = this.draft[field];
+    const current = this.modelSetting(this.draft, field);
     let selected = 0;
     if (current === null) selected = choices.findIndex((choice) => choice.kind === "disabled");
     else if (current) selected = choices.findIndex((choice) => choice.key === modelKey(current));
@@ -1726,18 +1813,53 @@ export class DelegatePanel implements Component, Focusable {
   private chooseModel(choice: ModelChoice | undefined): void {
     if (!choice || this.mode.kind !== "model") return;
     const field = this.mode.field;
+    if (field === "advisor" || field === "advisor2") {
+      const index = field === "advisor" ? 0 : 1;
+      const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
+      const reference =
+        choice.kind === "global"
+          ? configuredAdvisors(this.global)?.[index]
+          : choice.kind === "model"
+            ? choice.reference
+            : undefined;
+      if (index === 1 && !entries[0] && reference) {
+        this.message = { kind: "error", text: "Configure Advisor 1 before adding Advisor 2." };
+        return;
+      }
+      if (!reference) {
+        if (index === 0) entries.length = 0;
+        else entries.splice(index, 1);
+      } else
+        entries[index] = {
+          ...reference,
+          ...(entries[index]?.thinking ? { thinking: entries[index]!.thinking } : {}),
+        };
+      if (choice.kind === "global" && index === 0) {
+        delete this.draft.advisors;
+        delete this.draft.advisor;
+        if (this.draft.thinking) delete this.draft.thinking.advisor;
+      } else this.replaceAdvisors(entries);
+      if (!entries.length && choice.kind === "disabled") this.draft.advisorMode = "off";
+      this.mode = { kind: "settings" };
+      return;
+    }
     if (choice.kind === "global") delete this.draft[field];
     else if (choice.kind === "disabled") {
       this.draft[field] = null;
-      if (field === "advisor") this.draft.advisorMode = "off";
     } else if (choice.kind === "model") this.draft[field] = { ...choice.reference };
     this.mode = { kind: "settings" };
   }
 
-  private modelChoices(field: ModelConfigKey, query: string): ModelChoice[] {
-    const global = this.global[field];
+  private replaceAdvisors(entries: NonNullable<GlobalDefaults["advisors"]>): void {
+    delete this.draft.advisor;
+    if (this.draft.thinking) delete this.draft.thinking.advisor;
+    this.draft.advisors = entries.length ? entries : null;
+  }
+
+  private modelChoices(field: ModelField, query: string): ModelChoice[] {
+    const global = this.modelSetting(this.global, field);
     const globalDescription =
-      field === "uiDesign" || field === "advisor"
+      field === "uiDesign" || field === "advisor" || field === "advisor2"
         ? global
           ? modelText(global)
           : "disabled"

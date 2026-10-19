@@ -639,6 +639,7 @@ test("preflight and request payloads use their exact public parser fields and on
     "task",
     "thinking",
   ]);
+  assert.equal(preflightInput.context, "fresh");
   assert.equal(preflightInput.parentSessionId, "session-1");
   assert.equal(preflightInput.model, "example/reader");
   assert.equal(preflightInput.thinking, "low");
@@ -662,6 +663,7 @@ test("preflight and request payloads use their exact public parser fields and on
     "thinking",
     "timeoutMs",
   ]);
+  assert.equal(emitted.context, "fresh");
   assert.equal(emitted.timeoutMs, READER_TERMINAL_TIMEOUT_MS);
   for (const forbidden of [
     "output",
@@ -793,6 +795,7 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
     ],
     ["launch digest", (value) => (value.launchContractDigest = "short")],
     ["context", (value) => (value.context = "shared")],
+    ["fork context", (value) => (value.context = "fork")],
     ["model", (value) => (value.model = "example/reader")],
     // `pi-subagents` 0.68.0 dropped `modelCandidates` with same-launch model switching, so a
     // second model can only reach us as a different resolved `model`. This is the surviving

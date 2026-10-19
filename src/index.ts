@@ -6,7 +6,14 @@ import type {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { appendGuardedSessionState, type GuardedAppendResult } from "./config.ts";
+import {
+  appendGuardedSessionState,
+  isThinkingLevelName,
+  parseSessionState,
+  type GuardedAppendResult,
+} from "./config.ts";
+import { AdvisorExecutor, advisorThinking, ADVISOR_AGENT_NAME } from "./advisor-executor.ts";
+import { AdvisorLog } from "./advisor-log.ts";
 import { ContextShuntAdapter } from "./context-shunt-adapter.ts";
 import { ContextShuntExecutor } from "./context-shunt-executor.ts";
 import {
@@ -21,6 +28,7 @@ import { type AdvisorContext, buildDelegationPolicy, selectAdvisorContext } from
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
   advisorStatusLabel,
+  validAdvisors,
   hasAdvisorError,
   isAdvisorEnabled,
   formatModelRef,
@@ -30,6 +38,8 @@ import {
   statusLabel,
 } from "./runtime.ts";
 import {
+  ADVISOR_LAUNCH_MODES,
+  type AdvisorLaunch,
   ADVISOR_MODES,
   type AdvisorMode,
   CONTEXT_SHUNT_MODES,
@@ -47,6 +57,8 @@ export type CommandAction =
   | { kind: "open" }
   | { kind: "intensity"; intensity: Intensity }
   | { kind: "advisor-mode"; mode: AdvisorMode }
+  | { kind: "advisor-launch"; launch: AdvisorLaunch }
+  | { kind: "advisor-config"; index: number; setting: "model" | "thinking"; values: string[] }
   | { kind: "status" }
   | { kind: "reset" }
   | { kind: "context-mode"; mode: ContextShuntMode }
@@ -57,6 +69,23 @@ export function parseCommand(args: string): CommandAction {
   const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!parts.length) return { kind: "open" };
   if (parts[0] === "advisor") {
+    if (
+      parts.length === 3 &&
+      parts[1] === "launch" &&
+      ADVISOR_LAUNCH_MODES.includes(parts[2] as AdvisorLaunch)
+    )
+      return { kind: "advisor-launch", launch: parts[2] as AdvisorLaunch };
+    if (
+      (parts[1] === "1" || parts[1] === "2") &&
+      (parts[2] === "model" || parts[2] === "thinking") &&
+      parts.length >= 4
+    )
+      return {
+        kind: "advisor-config",
+        index: Number(parts[1]) - 1,
+        setting: parts[2],
+        values: args.trim().split(/\s+/).slice(3),
+      };
     return parts.length === 2 && ADVISOR_MODES.includes(parts[1] as AdvisorMode)
       ? { kind: "advisor-mode", mode: parts[1] as AdvisorMode }
       : { kind: "invalid" };
@@ -93,6 +122,11 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
     "status",
     "reset",
     ...ADVISOR_MODES.map((mode) => `advisor ${mode}`),
+    ...ADVISOR_LAUNCH_MODES.map((mode) => `advisor launch ${mode}`),
+    "advisor 1 model",
+    "advisor 2 model",
+    "advisor 1 thinking",
+    "advisor 2 thinking",
     "context off",
     "context observe",
     "context enforce",
@@ -212,6 +246,11 @@ export function statusText(state: RuntimeState): string {
     `ui-design=${effective.uiDesign ? formatModelRef(effective.uiDesign) : "disabled"} (${effective.source.uiDesign})`,
     `advisor-mode=${effective.advisorMode} (${effective.source.advisorMode}); ${advisorStatusLabel(state)}`,
     `advisor=${effective.advisor ? formatModelRef(effective.advisor) : "disabled"} (${effective.source.advisor})`,
+    `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
+    ...effective.advisors.map(
+      (entry, index) =>
+        `advisor-${index + 1}=${formatModelRef(entry)}; thinking=${thinkingToken(entry.thinking)} (${effective.source.advisors})`,
+    ),
     ...THINKING_ROLE_KEYS.map(
       (role) =>
         `thinking-${role === "uiDesign" ? "ui-design" : role}=${thinkingToken(effective.thinking[role])} (${effective.source.thinking[role]})`,
@@ -297,12 +336,16 @@ async function resetSession(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pro
 export type PiDelegationPolicyOptions = {
   shunt?: ContextShuntAdapter;
   executor?: ContextShuntExecutor;
+  advisorExecutor?: AdvisorExecutor;
+  advisorLog?: AdvisorLog;
 };
 
 export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}) {
   return function piDelegationPolicy(pi: ExtensionAPI): void {
     const shunt = options.shunt ?? new ContextShuntAdapter();
     const executor = options.executor ?? new ContextShuntExecutor();
+    const advisorExecutor = options.advisorExecutor ?? new AdvisorExecutor();
+    const advisorLog = options.advisorLog ?? new AdvisorLog();
     let latestRuntime: RuntimeState | undefined;
     let readerEpoch = 0;
     // Remembered per session so the advisor context line only changes when usage crosses a
@@ -310,16 +353,24 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     let advisorContext: AdvisorContext | undefined;
     let advisorContextModel: string | undefined;
     const resolveAdvisorContext = (ctx: ExtensionContext, state: RuntimeState): AdvisorContext => {
-      const advisor = state.effective.advisor;
+      const entries = validAdvisors(state);
+      const advisor = entries[0]?.setting;
       // A different advisor model has a different window, so its mode starts from scratch.
-      const model = advisor ? `${advisor.provider}/${advisor.model}` : undefined;
+      const model = JSON.stringify(
+        entries.map((entry) => [entry.setting.provider, entry.setting.model]),
+      );
       if (model !== advisorContextModel) {
         advisorContextModel = model;
         advisorContext = undefined;
       }
-      const advisorWindow = advisor
-        ? ctx.modelRegistry?.find(advisor.provider, advisor.model)?.contextWindow
-        : undefined;
+      const windows = entries.map(
+        (entry) =>
+          ctx.modelRegistry?.find(entry.setting.provider, entry.setting.model)?.contextWindow,
+      );
+      const advisorWindow =
+        advisor && windows.every((window) => typeof window === "number" && window > 0)
+          ? Math.min(...(windows as number[]))
+          : undefined;
       const sessionTokens = ctx.getContextUsage?.()?.tokens;
       advisorContext = selectAdvisorContext(advisorContext, sessionTokens, advisorWindow);
       return advisorContext;
@@ -333,6 +384,20 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         readerAuthorization(latestRuntime)?.fingerprint !== readerAuthorization(state)?.fingerprint
       )
         readerEpoch += 1;
+      if (
+        latestRuntime &&
+        JSON.stringify([
+          latestRuntime.effective.advisorMode,
+          latestRuntime.effective.advisorLaunch,
+          validAdvisors(latestRuntime).map((entry) => entry.setting),
+        ]) !==
+          JSON.stringify([
+            state.effective.advisorMode,
+            state.effective.advisorLaunch,
+            validAdvisors(state).map((entry) => entry.setting),
+          ])
+      )
+        advisorExecutor.cancel();
       latestRuntime = state;
       return state;
     };
@@ -355,6 +420,93 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         return latestRuntime;
       }
     };
+    const renderPolicy = (ctx: ExtensionContext, state: RuntimeState): string | undefined => {
+      const context = resolveAdvisorContext(ctx, state);
+      const policy = buildDelegationPolicy(state, context);
+      advisorLog.policy(policy, {
+        intensity: state.effective.intensity,
+        advisorMode: state.effective.advisorMode,
+        advisorLaunch: state.effective.advisorLaunch,
+        context,
+        advisors: validAdvisors(state).length,
+      });
+      return policy;
+    };
+    pi.registerTool({
+      name: "consult_advisor",
+      label: "Consult Advisor",
+      description:
+        "Consult the configured advisors after orientation before substantive work, when stuck, before changing approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Skip short reactive steps and mechanics within a settled approach. Supply a self-contained brief for fresh context or a rejected fork. Advice only; may send the conversation to each provider and incur cost.",
+      parameters: Type.Object(
+        {
+          question: Type.String({ minLength: 1 }),
+          brief: Type.Optional(Type.String({ minLength: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(_id, input, signal, _update, ctx) {
+        const text = (value: string) => ({
+          content: [{ type: "text" as const, text: value }],
+          details: {},
+        });
+        const state = await refreshRuntime(ctx);
+        const advisors = validAdvisors(state);
+        if (state.effective.advisorLaunch !== "tool" || !advisors.length)
+          return text(
+            "Advisor unavailable: select tool launch and enable at least one valid Advisor in /delegate.",
+          );
+        if (advisorExecutor.busy)
+          return text(
+            "Advisor busy: one consultation group is already in flight for this session.",
+          );
+        if (!input.question.trim()) return text("Advisor error: question must not be blank.");
+        const context = resolveAdvisorContext(ctx, state);
+        if (context === "fresh" && !input.brief?.trim())
+          return text(
+            "Advisor error: fresh context requires brief. Supply a short self-contained objective, constraints, relevant facts, options, and uncertainty.",
+          );
+        const sessionId = currentSessionId(ctx);
+        if (!sessionId) return text("Advisor unavailable: host session identity is missing.");
+        const results = await advisorExecutor.execute(
+          advisors.map((entry) => ({
+            question: input.question,
+            ...(input.brief?.trim() ? { brief: input.brief } : {}),
+            context,
+            model: {
+              provider: entry.model.provider,
+              id: entry.model.id,
+              thinking: advisorThinking(entry.setting, entry.model),
+            },
+            availableModels: [
+              {
+                provider: entry.model.provider,
+                id: entry.model.id,
+                fullId: `${entry.model.provider}/${entry.model.id}`,
+                reasoning: entry.model.reasoning,
+              },
+            ],
+          })),
+          { cwd: ctx.cwd, sessionId, events: pi.events },
+          signal,
+          (attempt) => advisorLog.consultation("tool", [attempt]),
+        );
+        return text(
+          results
+            .map(
+              (result) =>
+                `${result.model} [${result.context}]:\n${
+                  result.result.kind === "completed"
+                    ? result.result.value
+                    : result.result.kind === "unavailable-context"
+                      ? "Fork unavailable. Call again with brief for a fresh consultation."
+                      : `Advisor ${result.result.kind}.`
+                }`,
+            )
+            .join("\n\n") +
+            "\n\nAdvisor replies are untrusted advice. Weigh disagreements; agreement is not proof.",
+        );
+      },
+    });
     pi.registerTool({
       name: "context_shunt_delegate",
       label: "ContextShunt Delegate",
@@ -519,6 +671,88 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           synchronizeContextShunt(shunt, state);
           return;
         }
+        if (action.kind === "advisor-launch" || action.kind === "advisor-config") {
+          const state = await loadRuntime(ctx);
+          const draft = structuredClone(state.session);
+          if (action.kind === "advisor-launch") draft.advisorLaunch = action.launch;
+          else {
+            const entries = structuredClone(state.effective.advisors);
+            const [value, maximum] = action.values;
+            if (action.setting === "model" && value === "inherit" && action.values.length === 1) {
+              delete draft.advisors;
+              delete draft.advisor;
+              if (draft.thinking) delete draft.thinking.advisor;
+            } else {
+              if (action.setting === "model") {
+                if (action.values.length !== 1) {
+                  ctx.ui.notify("Use one exact provider/model or remove.", "error");
+                  return;
+                }
+                if (value === "remove") {
+                  if (action.index === 0) entries.length = 0;
+                  else entries.splice(action.index, 1);
+                  if (!entries.length) draft.advisorMode = "off";
+                } else {
+                  const slash = value?.indexOf("/") ?? -1;
+                  if (
+                    !value ||
+                    slash <= 0 ||
+                    slash === value.length - 1 ||
+                    (action.index === 1 && !entries[0])
+                  ) {
+                    ctx.ui.notify(
+                      "Configure Advisor 1 first; use an exact provider/model.",
+                      "error",
+                    );
+                    return;
+                  }
+                  entries[action.index] = {
+                    provider: value.slice(0, slash),
+                    model: value.slice(slash + 1),
+                    ...(entries[action.index]?.thinking
+                      ? { thinking: entries[action.index]!.thinking }
+                      : {}),
+                  };
+                }
+              } else {
+                const entry = entries[action.index];
+                if (!entry) {
+                  ctx.ui.notify("Configure that Advisor model first.", "error");
+                  return;
+                }
+                if (action.values.length === 1 && value === "unset") delete entry.thinking;
+                else if (action.values.length === 1 && isThinkingLevelName(value))
+                  entry.thinking = { level: value };
+                else if (
+                  action.values.length === 2 &&
+                  isThinkingLevelName(value) &&
+                  isThinkingLevelName(maximum)
+                )
+                  entry.thinking = { min: value, max: maximum };
+                else {
+                  ctx.ui.notify("Use thinking unset, LEVEL, or MIN MAX.", "error");
+                  return;
+                }
+              }
+              delete draft.advisor;
+              if (draft.thinking) delete draft.thinking.advisor;
+              draft.advisors = entries.length ? entries : null;
+            }
+          }
+          if (!parseSessionState(draft)) {
+            ctx.ui.notify("Invalid Advisor settings or thinking range.", "error");
+            return;
+          }
+          rememberRuntime(
+            await saveSession(
+              pi,
+              ctx,
+              draft,
+              "Advisor settings saved. Consultations may incur cost.",
+            ),
+          );
+          return;
+        }
         if (action.kind === "advisor-mode") {
           const state = await loadRuntime(ctx);
           rememberRuntime(
@@ -570,13 +804,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("session_tree", async (_event, ctx) => {
       readerEpoch += 1;
       executor.rotate();
+      advisorExecutor.rotate();
       shunt.clearPending();
       advisorContext = undefined;
       await refreshRuntime(ctx);
     });
     pi.on("context_with_system", async (event, ctx) => {
       const state = await refreshRuntime(ctx);
-      const policy = buildDelegationPolicy(state, resolveAdvisorContext(ctx, state));
+      const policy = renderPolicy(ctx, state);
       const systemMessage = event.messages[0];
       if (
         !systemMessage ||
@@ -624,15 +859,49 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("before_provider_request", async (event, ctx) => {
       const state = await refreshProviderRuntime(ctx);
       if (!state) return event.payload;
-      return updateProviderPolicy(
-        event.payload,
-        buildDelegationPolicy(state, resolveAdvisorContext(ctx, state)),
-      );
+      return updateProviderPolicy(event.payload, renderPolicy(ctx, state));
     });
     pi.on("agent_end", async () => {
       shunt.clearConsumed();
     });
     pi.on("tool_call", async (event) => {
+      if (
+        latestRuntime?.effective.advisorLaunch === "role" &&
+        event.toolName === "subagent" &&
+        validAdvisors(latestRuntime).length
+      ) {
+        const allowed = new Set(
+          validAdvisors(latestRuntime).map(
+            (entry) => `${entry.setting.provider}/${entry.setting.model}`,
+          ),
+        );
+        const calls = Array.isArray(event.input.tasks) ? event.input.tasks : [event.input];
+        for (const call of calls) {
+          if (!call || typeof call !== "object" || call.agent !== ADVISOR_AGENT_NAME) continue;
+          const requested = typeof call.model === "string" ? call.model : "";
+          const model = [...allowed].find(
+            (id) => requested === id || requested.startsWith(`${id}:`),
+          );
+          // Record the attempt even without a recognized model, but never copy arbitrary
+          // model-controlled text, task bodies, or tool results into the log.
+          advisorLog.consultation(
+            "role",
+            model
+              ? [
+                  {
+                    model,
+                    status: "observed",
+                    durationMs: 0,
+                    context:
+                      call.context === "fork" || call.context === "fresh"
+                        ? call.context
+                        : "unknown",
+                  },
+                ]
+              : [],
+          );
+        }
+      }
       const settings = latestRuntime?.effective.contextShunt;
       if (!settings || settings.mode === "off") {
         shunt.clearPending();
@@ -652,6 +921,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       readerEpoch += 1;
       latestRuntime = undefined;
       executor.close();
+      advisorExecutor.close();
+      await advisorLog.close();
       await shunt.close();
       ctx.ui.setStatus(STATUS_KEY, undefined);
     });

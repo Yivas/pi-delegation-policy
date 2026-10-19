@@ -53,6 +53,7 @@ export type AgentLaunchHost = Readonly<{
 export type AgentLaunchRequest = Readonly<{
   model: AgentLaunchModel;
   availableModels: readonly [AgentLaunchAvailableModel];
+  context?: "fresh" | "fork";
 }>;
 
 export type AgentLaunchJsonSchema = Readonly<Record<string, unknown>>;
@@ -76,6 +77,7 @@ export type AgentLaunchModules = Readonly<{
 export type AgentLaunchResult<Value> =
   | { kind: "completed"; value: Value }
   | { kind: "unavailable" }
+  | { kind: "unavailable-context" }
   | { kind: "busy" }
   | { kind: "cancelled" }
   | { kind: "timed-out" }
@@ -101,6 +103,8 @@ export type AgentLaunchResultExpectation<Request, Value> =
 export type AgentLaunchDefinition<Request extends AgentLaunchRequest, Value> = Readonly<{
   agentName: string;
   agentPath: string;
+  /** Only the advisor may send a fork; reader requests remain fresh-only. */
+  allowFork?: boolean;
   protocolVersion: string;
   /**
    * Builtin tools the child must expose. A profile that declares no tools and no
@@ -315,7 +319,7 @@ function createPreflightInput<Request extends AgentLaunchRequest, Value>(
     cwd: host.cwd,
     parentSessionId: host.sessionId,
     task: definition.buildTask(request),
-    context: "fresh",
+    context: definition.allowFork ? (request.context ?? "fresh") : "fresh",
     model: `${request.model.provider}/${request.model.id}`,
     thinking: request.model.thinking,
     availableModels: request.availableModels,
@@ -366,7 +370,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
     const resolvedModel = modelName(request.model);
     if (
       !isLowerHexDigest(contract.launchContractDigest) ||
-      contract.context !== "fresh" ||
+      contract.context !== (definition.allowFork ? (request.context ?? "fresh") : "fresh") ||
       // The contract used to carry `modelCandidates`, pinned here as exactly `[resolvedModel]`.
       // `pi-subagents` 0.68.0 removed it along with `fallbackModels` and every same-launch model
       // switch ("each launch uses one resolved model instead of switching models automatically"),
@@ -464,7 +468,7 @@ function requestPayload<Request extends AgentLaunchRequest, Value>(
     agent: definition.agentName,
     cwd: active.host.cwd,
     task: definition.buildTask(request),
-    context: "fresh",
+    context: definition.allowFork ? (request.context ?? "fresh") : "fresh",
     model: `${request.model.provider}/${request.model.id}`,
     thinking: request.model.thinking,
     timeoutMs: LAUNCH_TERMINAL_TIMEOUT_MS,
@@ -518,7 +522,8 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
     host: AgentLaunchHost,
     signal?: AbortSignal,
   ): Promise<AgentLaunchResult<Value>> {
-    if (this.closed) return Promise.resolve({ kind: "unavailable" });
+    if (this.closed || (request.context === "fork" && !this.definition.allowFork))
+      return Promise.resolve({ kind: "unavailable" });
     if (this.active) return Promise.resolve({ kind: "busy" });
     // Without a host session the preflight could not bind required extensions; launch nothing.
     if (typeof host.sessionId !== "string" || !host.sessionId.trim()) {
@@ -716,7 +721,12 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
       if (!earlyUnavailable) return;
       active.settle(
         this.terminalMetadataMatches(payload, contract, request, false)
-          ? { kind: "unavailable" }
+          ? {
+              kind:
+                status === "unavailable_context" && this.definition.allowFork
+                  ? "unavailable-context"
+                  : "unavailable",
+            }
           : { kind: "failed" },
       );
       return;
@@ -752,7 +762,12 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
       status === "invalid_request" ||
       status === "duplicate_node"
     ) {
-      active.settle({ kind: "unavailable" });
+      active.settle({
+        kind:
+          status === "unavailable_context" && this.definition.allowFork
+            ? "unavailable-context"
+            : "unavailable",
+      });
       return;
     }
     if (

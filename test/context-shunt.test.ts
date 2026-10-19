@@ -782,103 +782,109 @@ test("the registered editor Apply revokes ContextShunt state across off and on",
       });
 
     piDelegationPolicy(pi as never);
-    await handlers.get("session_start")?.({ type: "session_start" }, context);
+    try {
+      await handlers.get("session_start")?.({ type: "session_start" }, context);
 
-    const input = { path: "large", limit: 999 };
-    const blocked = (await handlers.get("tool_call")?.({ toolName: "read", input }, context)) as
-      { reason: string } | undefined;
-    assert.ok(blocked);
-    const token = /context allow ([0-9a-f-]+)/.exec(blocked.reason)?.[1];
-    assert.ok(token);
-    await commands.get("delegate")?.handler(`context allow ${token} 999 80000`, context);
-    assert.equal(
-      await handlers.get("tool_call")?.(
-        { toolCallId: "consumed-before-ui", toolName: "read", input },
-        context,
-      ),
-      undefined,
-    );
-    assert.equal(
-      await handlers.get("tool_result")?.(
-        {
-          toolCallId: "consumed-before-ui",
-          toolName: "read",
-          input,
-          isError: false,
-          content: [{ type: "text", text: "line\n".repeat(400) }],
-        },
-        context,
-      ),
-      undefined,
-    );
+      const input = { path: "large", limit: 999 };
+      const blocked = (await handlers.get("tool_call")?.({ toolName: "read", input }, context)) as
+        { reason: string } | undefined;
+      assert.ok(blocked);
+      const token = /context allow ([0-9a-f-]+)/.exec(blocked.reason)?.[1];
+      assert.ok(token);
+      await commands.get("delegate")?.handler(`context allow ${token} 999 80000`, context);
+      assert.equal(
+        await handlers.get("tool_call")?.(
+          { toolCallId: "consumed-before-ui", toolName: "read", input },
+          context,
+        ),
+        undefined,
+      );
+      assert.equal(
+        await handlers.get("tool_result")?.(
+          {
+            toolCallId: "consumed-before-ui",
+            toolName: "read",
+            input,
+            isError: false,
+            content: [{ type: "text", text: "line\n".repeat(400) }],
+          },
+          context,
+        ),
+        undefined,
+      );
 
-    const secondBlocked = (await handlers.get("tool_call")?.(
-      { toolName: "read", input },
-      context,
-    )) as { reason: string } | undefined;
-    assert.ok(secondBlocked);
-    const secondToken = /context allow ([0-9a-f-]+)/.exec(secondBlocked.reason)?.[1];
-    assert.ok(secondToken);
-    await commands.get("delegate")?.handler(`context allow ${secondToken} 999 80000`, context);
-    assert.equal(
-      await handlers.get("tool_call")?.(
-        { toolCallId: "consumed-before-ui", toolName: "read", input },
+      const secondBlocked = (await handlers.get("tool_call")?.(
+        { toolName: "read", input },
         context,
-      ),
-      undefined,
-    );
-    assert.equal(
-      await handlers.get("tool_result")?.(
-        {
-          toolCallId: "consumed-before-ui",
-          toolName: "read",
-          input,
-          isError: false,
-          content: [{ type: "text", text: "line\n".repeat(400) }],
-        },
+      )) as { reason: string } | undefined;
+      assert.ok(secondBlocked);
+      const secondToken = /context allow ([0-9a-f-]+)/.exec(secondBlocked.reason)?.[1];
+      assert.ok(secondToken);
+      await commands.get("delegate")?.handler(`context allow ${secondToken} 999 80000`, context);
+      assert.equal(
+        await handlers.get("tool_call")?.(
+          { toolCallId: "consumed-before-ui", toolName: "read", input },
+          context,
+        ),
+        undefined,
+      );
+      assert.equal(
+        await handlers.get("tool_result")?.(
+          {
+            toolCallId: "consumed-before-ui",
+            toolName: "read",
+            input,
+            isError: false,
+            content: [{ type: "text", text: "line\n".repeat(400) }],
+          },
+          context,
+        ),
+        undefined,
+      );
+
+      const pendingInput = { path: "pending", limit: 999 };
+      const pendingBlocked = (await handlers.get("tool_call")?.(
+        { toolName: "read", input: pendingInput },
         context,
-      ),
-      undefined,
-    );
+      )) as { reason: string } | undefined;
+      assert.ok(pendingBlocked);
+      const pendingToken = /context allow ([0-9a-f-]+)/.exec(pendingBlocked.reason)?.[1];
+      assert.ok(pendingToken);
 
-    const pendingInput = { path: "pending", limit: 999 };
-    const pendingBlocked = (await handlers.get("tool_call")?.(
-      { toolName: "read", input: pendingInput },
-      context,
-    )) as { reason: string } | undefined;
-    assert.ok(pendingBlocked);
-    const pendingToken = /context allow ([0-9a-f-]+)/.exec(pendingBlocked.reason)?.[1];
-    assert.ok(pendingToken);
+      const uiBlocked = (await handlers.get("tool_call")?.(
+        { toolName: "read", input },
+        context,
+      )) as { reason: string } | undefined;
+      assert.ok(uiBlocked);
+      const uiToken = /context allow ([0-9a-f-]+)/.exec(uiBlocked.reason)?.[1];
+      assert.ok(uiToken);
+      await commands.get("delegate")?.handler(`context allow ${uiToken} 999 80000`, context);
+      assert.equal(
+        await handlers.get("tool_call")?.(
+          { toolCallId: "ui-consumed", toolName: "read", input },
+          context,
+        ),
+        undefined,
+      );
 
-    const uiBlocked = (await handlers.get("tool_call")?.({ toolName: "read", input }, context)) as
-      { reason: string } | undefined;
-    assert.ok(uiBlocked);
-    const uiToken = /context allow ([0-9a-f-]+)/.exec(uiBlocked.reason)?.[1];
-    assert.ok(uiToken);
-    await commands.get("delegate")?.handler(`context allow ${uiToken} 999 80000`, context);
-    assert.equal(
-      await handlers.get("tool_call")?.(
+      await commands.get("delegate")?.handler("", context);
+      assert.equal((branch.at(-1) as { data?: { intensity?: string } }).data?.intensity, "off");
+      await commands.get("delegate")?.handler("", context);
+      assert.equal((branch.at(-1) as { data?: { intensity?: string } }).data?.intensity, "normal");
+
+      const afterReenable = (await handlers.get("tool_call")?.(
         { toolCallId: "ui-consumed", toolName: "read", input },
         context,
-      ),
-      undefined,
-    );
-
-    await commands.get("delegate")?.handler("", context);
-    assert.equal((branch.at(-1) as { data?: { intensity?: string } }).data?.intensity, "off");
-    await commands.get("delegate")?.handler("", context);
-    assert.equal((branch.at(-1) as { data?: { intensity?: string } }).data?.intensity, "normal");
-
-    const afterReenable = (await handlers.get("tool_call")?.(
-      { toolCallId: "ui-consumed", toolName: "read", input },
-      context,
-    )) as { reason: string } | undefined;
-    assert.ok(afterReenable);
-    assert.match(afterReenable.reason, /context allow/);
-    await commands.get("delegate")?.handler(`context allow ${pendingToken} 999 80000`, context);
-    assert.ok(
-      await handlers.get("tool_call")?.({ toolName: "read", input: pendingInput }, context),
-    );
+      )) as { reason: string } | undefined;
+      assert.ok(afterReenable);
+      assert.match(afterReenable.reason, /context allow/);
+      await commands.get("delegate")?.handler(`context allow ${pendingToken} 999 80000`, context);
+      assert.ok(
+        await handlers.get("tool_call")?.({ toolName: "read", input: pendingInput }, context),
+      );
+    } finally {
+      await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context);
+    }
   });
 });
 
