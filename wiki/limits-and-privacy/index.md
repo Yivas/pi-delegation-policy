@@ -19,17 +19,11 @@ afterwards cannot drop it; a payload whose shape is not recognized is left untou
 delegation and Advisor off removes only that block. The host system message, tools, context, other
 extension sections, and conversation are preserved.
 
-The extension does not route, supervise, or collect delegated work, and it never launches anything
-from a hook. Its only launch belongs to one explicit tool, `context_shunt_delegate`, which asks the
-host-authorized external executor for one bounded answer about an already-preserved text artifact.
-The optional Advisor is a role the main agent launches as a subagent, not a launch of this extension.
-Neither replaces delegation, the launcher, tool permissions, or a remote backend, and neither changes
-Pi's main model or thinking level.
-
-It has no presets, project configuration, external skill loading, telemetry, credential storage, or
-network request of its own; the external executor performs the reader call, and the host's subagent
-mechanism performs the Advisor launch. The extension cannot make another system follow a configured
-role or thinking choice.
+The extension never launches children from hooks. Only explicit tools launch through the authorized
+external executor: `context_shunt_delegate` for a preserved artifact, and `consult_advisor` in tool
+mode. Default role mode leaves Advisor launches to the main agent. Neither replaces permissions,
+backends, delegation, or Pi's main model or thinking. There is no network telemetry or direct network
+client; the executor performs model calls. A content-free local log is described below.
 
 ## Fail-closed behavior
 
@@ -41,7 +35,8 @@ validated too. When one of these is wrong, the ordinary-role minimum is not met 
 closed; the ContextShunt reader is unauthorized until the configuration is corrected.
 
 Delegation and Advisor are validated separately. An enabled Advisor whose model, scope,
-authentication, or thinking level is wrong produces `A:ERR` and removes only consultation, leaving
+authentication, or thinking level is wrong produces `A:ERR` when none is valid (`A:PART` when one
+of two is valid), leaving
 valid delegation and an otherwise authorized reader available; invalid delegation does not suppress a
 valid enabled Advisor. With Advisor off, an unusable Advisor state is reported as a diagnostic while
 the footer keeps `A:OFF`. See
@@ -56,7 +51,8 @@ is stored and inert and adds no error.
 
 If the latest stored session entry is malformed or from a newer schema, restoration forces both
 delegation and Advisor off and keeps only a sanitized warning. Changes affect the next LLM request,
-not one already in progress, and never cancel a subagent the host already launched.
+not one already in progress. Role subagents remain host-owned; detected tool authorization changes
+cancel the extension-owned group.
 
 ## Local data and privacy
 
@@ -72,36 +68,60 @@ files, and unredacted logs from anything you publish.
 
 ## Advisor role
 
-The Advisor is a role, not a tool. It is off by default, and the extension registers nothing for it:
-no tool, no executor, no in-flight counter, no lifecycle cleanup. When the role is enabled, configured
-and valid, the injected policy asks the main agent to consult at fixed moments (after orientation,
-when stuck, before changing approach, and before declaring a multi-step task done) and to launch
-`pi-delegation-policy.advisor`, the profile that ships in this package, as a normal background
-subagent through Pi's subagent mechanism, with the exact configured model and its `thinking.advisor`
-policy. That launch belongs to the host, not to this extension.
+Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**
+and optional **Advisor 2**, each with an exact model and thinking policy. Every valid advisor gets the
+same question. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
+`pi-delegation-policy.advisor` profile advises and executes nothing.
 
-The profile declares no tools and no extensions. It cannot read files, run commands, delegate, or
-reach the network, and returns plain text. What it sees depends on the context mode the policy names
-for the session. With `fork`, the host branches the current conversation, including tool calls and
-their results, into the advisor's session. With `fresh`, it sees only the brief the main agent writes.
-The extension picks `fork` while the session's estimated usage fits in half of the Advisor model's
-context window and `fresh` above that or when the window is unknown.
+**Advisor launch** inherits globally or per branch, defaulting to `role`:
 
-Consulting the advisor is a deliberate exception to what stays local. With `fork`, the whole
-conversation so far travels to the advisor's provider on every consultation, including file contents
-and command output the main agent has seen, and costs tokens accordingly. With `fresh`, only the
-brief travels. Either way it goes through the host-authorized external executor at the main agent's
-choice: the extension assembles nothing and sends nothing on its own initiative, and there is no
-aggregate cap and no exclusion list. Turn the Advisor off for sessions whose content must not reach
-that provider. The extension keeps no
-advisor thread: the subagent session belongs to the host, and the advisor's provider is the executor's
-provider.
+- `role`: the main agent launches every valid advisor in one background subagent call, with exact
+  models and thinking. The extension observes matching attempts but does not launch them.
+- `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
+  advisor in parallel through the public `pi-subagents` delegation API, pinned to `0.76.1`. Otherwise
+  it returns unavailable text. No model, provider or executor fallback is added.
+
+Both modes ask for consultation after orientation before substantive work, when stuck, before changing
+approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
+reactive steps and mechanics in a settled approach need no new call.
+
+Context is `fork` while the session fits in half of every valid advisor's window, `fresh` above that or
+with an unknown window, and returns to fork below 35%. Unknown token usage keeps the last mode. Fork
+sends the conversation to each provider, with only the question as the task. Fresh requires a short
+self-contained `brief`: objective, constraints, relevant facts, options and uncertainty. The tool
+retries only an explicitly rejected fork, once with fresh and only with a supplied brief. Fixed thinking
+uses its exact level; a range uses its maximum; unset uses `high` if supported, otherwise the first
+supported level. Role mode leaves range/unset selection to the main agent.
+
+One pending call per tool: an advisor group launches one child per configured valid advisor, while the
+independent reader can run alongside it (at most three children). Abort, branch change, shutdown and
+detected authorization changes cancel the tool group. Partial results preserve a successful answer.
+Local timeouts and cancellation do not cap external generation, retries or cost.
+
+### Local content-free log
+
+Records are written only while a policy block is active; both delegation and Advisor off produce no events.
+Content-free events go to `~/.pi/agent/delegation-policy.events.jsonl` (or Pi's configured agent dir):
+time, extension version, SHA-256 policy-block hash when it changes, intensity, Advisor modes, context
+and count; consultation model IDs, status, context and duration. Role observations are attempts, not
+proof of completion; duration zero means unknown. Questions, briefs, answers, conversations, project
+paths and raw errors are excluded. Writes are serialized, rotate at 256 KiB to one `.1` backup, and
+failures never break a request. Shutdown drains queued writes for at most five seconds, then drops
+remaining work. An in-flight filesystem operation may finish later, but starts no further operation.
+No network telemetry is sent; model identifiers can still be sensitive.
+
+The writer serializes within one process, not across processes; concurrent sessions share no lock.
+Role observations cover exact packaged agent targets, including tasks arrays, not arbitrary workflows.
+Preflight binds the tool session identity; the public request API cannot prove that the live executor
+uses the same session. Terminal mismatch can reject an answer only after context exposure. This
+check validates a declared contract, not a sandbox or an executor signature.
 
 ### Retention
 
-The task text and the reply may persist in the executor's argv, temporary files, sessions, and
-lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and
-no absence of cost. Consultations can add latency and cost even with delegation off.
+Questions, briefs, forked conversation and replies can persist in executor argv, temporary files,
+sessions, lifecycle records and at each provider. No deletion, external TTL or absence of cost is
+promised. Turn Advisor off when session content must not reach those providers. Local log rotation
+is not an external retention policy.
 
 ## ContextShunt limits
 

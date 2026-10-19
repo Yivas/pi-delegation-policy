@@ -30,6 +30,19 @@ available. The editor requires TUI mode, while these arguments also work in othe
 | `/delegate context enforce`         | Enforce recognized budgets and bounded recovery.                          |
 | `/delegate context status`          | Show the effective ContextShunt state.                                    |
 
+Advisor configuration also works without the panel:
+
+```text
+/delegate advisor launch role|tool
+/delegate advisor 1|2 model PROVIDER/MODEL
+/delegate advisor 1|2 model remove
+/delegate advisor 1|2 model inherit
+/delegate advisor 1|2 thinking unset|LEVEL|MIN MAX
+```
+
+Configure entry 1 before adding entry 2. Removing entry 1 removes both. `model inherit` returns the
+whole list to global inheritance; an explicit list replaces entries and thinking together.
+
 There is no separate off shortcut: run `/delegate off` or choose `off` in the editor. Quick commands
 write the session branch directly. **Reset draft to off** only changes the draft until Apply.
 
@@ -58,8 +71,8 @@ contain only the levels the role's configured model supports. When the role is d
 configured, or its model is not selectable, the panel states the reason and offers only the unset
 actions. Fixed and range are distinguishable from their text, not only from colour.
 
-The Advisor rows close the list, including **Advisor mode**, which offers inheritance, `off`, `on`,
-and `with-delegation`.
+The Advisor rows include **Advisor 1**, **Advisor 2 (optional)**, per-entry thinking,
+**Advisor mode** (inheritance, `off`, `on`, `with-delegation`) and **Advisor launch** (`role` or `tool`).
 
 The panel keeps one explicit draft:
 
@@ -92,7 +105,7 @@ falls back silently to an unbounded or alternate editor.
 
 The policy block is rebuilt before each LLM request, so a change made during a turn applies to that
 turn's next request. A request already in progress keeps the state it started with, and subagents
-already launched by the host are not cancelled or reconfigured; turning everything off removes the
+already launched in role mode remain host-owned; tool groups cancel on detected authorization changes; turning everything off removes the
 block when the extension next applies its policy.
 
 Before every delegated launch, use the selected exact `provider/model` base and that role's thinking
@@ -111,7 +124,8 @@ role or by the main agent.
 | `D:ORCH` | A valid `orchestrator` configuration is active.                        | Delegate all transferable execution first and retain final acceptance.      |
 | `D:ERR`  | Execution-delegation settings are invalid; a valid Advisor can remain. | Inspect `/delegate status` and correct the role or thinking policy.         |
 | `A:OFF`  | No Advisor guidance is injected.                                       | Enable the mode or configure a model if consultation is wanted.             |
-| `A:ON`   | Advisor guidance is injected with a valid configured model.            | Consultation may send a brief or the conversation to that model, with cost. |
+| `A:ON`   | All configured advisors are valid.                                     | Consultation may send a brief or the conversation to that model, with cost. |
+| `A:PART` | One of two advisors is valid; consult only that entry.                 | Correct or remove the other entry.                                          |
 | `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model or its thinking policy.   |
 
 `/delegate status` keeps stable tokens and reports exact effective references and sources, for
@@ -140,6 +154,19 @@ these labels proves that a launch happened or that another system followed the g
 A sanitized restoration warning can accompany `D:OFF` when the latest stored session state is invalid
 or from a future schema, including a malformed `thinking` entry; it neither enables injection nor
 reveals session content.
+
+### Consult Advisor tool
+
+`consult_advisor({ question, brief? })` is always registered but unavailable outside tool launch mode
+or without an enabled valid advisor. Fresh needs a self-contained brief; fork sends only the question
+as task and the host supplies the conversation. Only an explicitly rejected fork retries once, with
+brief and fresh context. Labelled answers survive the other advisor's failure. One pending call per
+tool: an advisor group launches one child per valid configured advisor; the reader remains independent.
+Abort, branch changes, shutdown and detected authorization changes cancel the group.
+
+Status adds `advisor-launch=`, `advisor-1=` and `advisor-2=` with thinking and sources. In tool mode
+policy text asks for this tool, not the generic subagent launcher, and stays stable across context
+changes. See [privacy](/limits-and-privacy/#local-content-free-log) for the local metadata log.
 
 ## 6. Use ContextShunt safely
 

@@ -2,7 +2,8 @@
 
 A local Pi extension that guides the main agent on **when delegation is worth it** and which exact
 models to use for Small, Medium, Large, and the optional Visual Design and Advisor roles. It is not a
-subagent runner: it never routes, supervises, or collects the results of delegated work.
+general subagent runner. Only explicit tools can request reader work or Advisor consultations through
+the authorized host executor; hooks never launch children.
 
 > **Docs:** [yivas.github.io/pi-delegation-policy](https://yivas.github.io/pi-delegation-policy/).
 > Version **0.20.0** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
@@ -66,15 +67,35 @@ stored. With `pi-subagents` the launcher form is `model: "provider/model:LEVEL"`
 
 ## Advisor
 
-Advisor is an optional consultation role, off by default and outside the ordinary-role minimum. It
-advises and executes nothing. The extension never launches it: when the role is enabled the injected
-policy tells the main agent to launch the packaged `pi-delegation-policy.advisor` profile as a normal
-background subagent, with the exact configured model and `thinking.advisor` policy, at fixed moments:
-after orientation and before substantive work, when stuck, before changing approach, and before
-declaring a multi-step task done. The profile has no tools and no extensions, so it reads no files,
-runs no commands, and reaches no network; the reply is plain text. While the session fits in half of
-the Advisor model's context window, the policy asks for a `fork` launch, so the advisor sees the
-conversation so far and that conversation reaches its provider. Otherwise it gets a short brief.
+Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**
+and optional **Advisor 2**, each with an exact model and thinking policy. Every valid advisor gets the
+same question. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
+`pi-delegation-policy.advisor` profile advises and executes nothing.
+
+**Advisor launch** inherits globally or per branch, defaulting to `role`:
+
+- `role`: the main agent launches every valid advisor in one background subagent call, with exact
+  models and thinking. The extension observes matching attempts but does not launch them.
+- `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
+  advisor in parallel through the public `pi-subagents` delegation API, pinned to `0.76.1`. Otherwise
+  it returns unavailable text. No model, provider or executor fallback is added.
+
+Both modes ask for consultation after orientation before substantive work, when stuck, before changing
+approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
+reactive steps and mechanics in a settled approach need no new call.
+
+Context is `fork` while the session fits in half of every valid advisor's window, `fresh` above that or
+with an unknown window, and returns to fork below 35%. Unknown token usage keeps the last mode. Fork
+sends the conversation to each provider, with only the question as the task. Fresh requires a short
+self-contained `brief`: objective, constraints, relevant facts, options and uncertainty. The tool
+retries only an explicitly rejected fork, once with fresh and only with a supplied brief. Fixed thinking
+uses its exact level; a range uses its maximum; unset uses `high` if supported, otherwise the first
+supported level. Role mode leaves range/unset selection to the main agent.
+
+One pending call per tool: an advisor group launches one child per configured valid advisor, while the
+independent reader can run alongside it (at most three children). Abort, branch change, shutdown and
+detected authorization changes cancel the tool group. Partial results preserve a successful answer.
+Local timeouts and cancellation do not cap external generation, retries or cost.
 
 **Advisor mode** is an independent axis you set in the panel or with `/delegate advisor …`:
 
@@ -87,9 +108,8 @@ conversation so far and that conversation reaches its provider. Otherwise it get
 `D:OFF A:ON` shows consultation-only guidance; `D:OFF A:OFF` shows nothing injected. `/delegate reset`
 turns both off for the branch; `/delegate off` leaves an independently enabled Advisor active.
 
-Errors are reported per axis. An enabled Advisor whose model is missing, out of scope,
-unauthenticated, or paired with an unsupported thinking level produces `A:ERR` and removes only
-consultation: valid delegation and an otherwise authorized ContextShunt reader keep working.
+Errors are reported per axis. Each entry validates independently: `A:ON` means all valid, `A:PART` means one of two valid
+(consult that one), and `A:ERR` means none usable and removes only consultation: valid delegation and an otherwise authorized ContextShunt reader keep working.
 `D:ERR` removes delegation guidance and leaves a valid enabled Advisor alone. A malformed main
 delegation file still fails closed, and a malformed or stale Advisor companion affects only Advisor:
 delegation from the main file wins, and the companion keeps its saved model and thinking policy only
@@ -98,8 +118,7 @@ cannot supply Advisor settings. Settings still present in a legacy delegation fi
 otherwise, configure the Advisor model and thinking policy again.
 
 Consulting sends a brief, or with `fork` the conversation so far, to another model and can incur
-latency and cost, including with delegation off. The host sends it at the main agent's choice; the
-extension itself sends nothing. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
+latency and cost, including with delegation off. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
 ## Where settings live
@@ -108,26 +127,36 @@ The extension stores only policy: intensity, preference, Advisor mode, model ref
 ContextShunt configuration, and the thinking policies you configure. It stores no credentials, no
 prompts, and never the thinking level of an individual run.
 
-- Global defaults: `~/.pi/agent/delegation-policy.json`, written in schema 7 so version `0.16.0`
-  keeps reading delegation after a downgrade.
-- Advisor companion: `delegation-policy.advisor.json`, holding the current state in schema 8.
-- Session: each Apply writes a schema 2 `off` guard, the Advisor entry, and the schema 7 delegation
-  entry; the last one commits, and a failure leaves the guard authoritative, so both features stay
-  off.
+- Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7 delegation only.
+- Legacy companion: `delegation-policy.advisor.json`, envelope 1 with schema 8 state for Advisor 1.
+  Versions `0.17–0.20` see its mode, model and thinking in role mode; `0.16` sees delegation without
+  Advisor. None of those versions sees Advisor 2 or tool launch.
+- Advisor extension: `delegation-policy.advisor-extension.json`, envelope 1 with normalized schema-8
+  `base`, optional `advisor2` (including thinking), and `advisorLaunch`. Missing, invalid, unreadable
+  or mismatched state falls back to Advisor 1 and role launch with a diagnostic, not `A:ERR` for a
+  valid first advisor. Older versions ignore it.
+- Session Apply: schema 2 off guard, extension entry, schema-8 companion, then schema-7 delegation
+  commit. The legacy companion remains adjacent to that commit. A failure leaves both axes off.
 
-Schemas 2 through 8 are read and normalized in memory without rewriting the file, and loading never
-migrates anything on disk. The extension accepts the companion only while its delegation state
-matches the delegation file; a reformatted or hand-edited delegation file does not invalidate it. A
-version that cannot read a setting never activates it silently.
+Schema 9 accepts ordered `advisors: [{provider, model, thinking?}]` with 1–2 entries and inherited
+`advisorLaunch: role|tool`. An omitted list inherits; a list replaces both entries and their thinking;
+session `advisors: null` disables. Legacy `advisor` and `thinking.advisor` are single-advisor shorthand,
+not combinable with `advisors`. Schemas 2–8 resolve into the effective list in memory without writing.
 
-Each of the two global files is replaced atomically, but the pair is not a filesystem transaction.
-The companion is written last, so an interrupted save cannot activate a new Advisor state. A save that
-cannot read one of the two previous files stops before writing and reports that nothing changed. If
-the companion write fails, the extension attempts to restore the previous delegation file, then checks
-both files. It reports no changes only when that check succeeds; otherwise it reports a partial save,
-the panel reloads what is on disk, and `/delegate status` explains the diagnostic. A hard stop between
-the two replacements can leave the files out of step until the next save, and these checks are not a
-lock: another writer can change either file between a check and a replacement.
+Global saves replace delegation, companion, then extension, individually atomically, not as a
+transaction. All three previous files must be readable or absent. On failure, restore and verify only
+our committed prefix, never a detected foreign write; otherwise report partial save and reload disk.
+Checks are not locks. A crash can leave Advisor off or Advisor 1 only in role mode until repaired.
+
+Records are written only while a policy block is active; both delegation and Advisor off produce no events.
+Content-free events go to `~/.pi/agent/delegation-policy.events.jsonl` (or Pi's configured agent dir):
+time, extension version, SHA-256 policy-block hash when it changes, intensity, Advisor modes, context
+and count; consultation model IDs, status, context and duration. Role observations are attempts, not
+proof of completion; duration zero means unknown. Questions, briefs, answers, conversations, project
+paths and raw errors are excluded. Writes are serialized, rotate at 256 KiB to one `.1` backup, and
+failures never break a request. Shutdown drains queued writes for at most five seconds, then drops
+remaining work. An in-flight filesystem operation may finish later, but starts no further operation.
+No network telemetry is sent; model identifiers can still be sensitive.
 
 Before downgrading to a package that cannot read schema 4, set global and branch ContextShunt to
 `off`. Before downgrading to `0.6.0`, set intensity to `off`, `normal`, or `aggressive` and run
@@ -143,6 +172,10 @@ schema 7 readers such as `0.16.0`; earlier versions keep their existing limitati
 /delegate status                   Show effective session state
 /delegate reset                    Turn delegation and Advisor off for the branch
 /delegate advisor off|on|with-delegation      Set the Advisor mode
+/delegate advisor launch role|tool           Select the launch surface
+/delegate advisor 1|2 model PROVIDER/MODEL    Configure an entry
+/delegate advisor 1|2 model remove           Remove entry 2, or both from entry 1
+/delegate advisor 1|2 thinking unset|LEVEL|MIN MAX  Set thinking
 /delegate context off|observe|enforce|status  Set or inspect ContextShunt
 ```
 
@@ -154,7 +187,7 @@ only the global files.
 
 `/delegate status` reports stable tokens with their source (`default`, `global`, or `session`), for
 example `advisor-mode=with-delegation (global); A:OFF` and `thinking-advisor=unset (default)`.
-`D:OFF`, `D:NORM`, `D:AGG`, and `D:ORCH` describe delegation; `A:OFF`, `A:ON`, and `A:ERR` describe
+`D:OFF`, `D:NORM`, `D:AGG`, and `D:ORCH` describe delegation; `A:OFF`, `A:ON`, `A:PART`, and `A:ERR` describe
 Advisor. None of them proves that a launch happened or that another system followed the guidance.
 
 ## ContextShunt

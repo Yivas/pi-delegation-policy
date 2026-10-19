@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Schema 9: one or two ordered Advisors with independent exact models and thinking policies. Consult every valid entry; `A:PART` reports one valid entry out of two.
+- Inherited `advisorLaunch: role|tool`, default `role`. Explicit `consult_advisor` uses the authorized external executor, parallel results, independent failures, fork-to-fresh retry only after explicit rejection, cancellation and local timeouts. No hook launches children.
+- Content-free local JSONL policy hashes and consultation metadata, with size rotation and no network telemetry. No questions, briefs, answers, conversations, project paths or raw errors.
+
+### Compatibility and privacy
+
+- Schemas 2–8 resolve in memory without rewriting files. The legacy companion keeps Advisor 1 readable by 0.17–0.20 in role mode; 0.16 keeps delegation without Advisor. A separately paired extension holds Advisor 2 and launch mode. Three atomic replacements are not a transaction; a stale extension falls back to Advisor 1 and role launch.
+- Fork sends the conversation to each advisor provider. Normal executor/provider retention, latency and cost remain; no deletion, external TTL or generation ceiling is promised. One pending call per tool permits one reader plus an Advisor group of up to two children.
+
 ## 0.20.0 - 2026-10-18
 
 ### Changed

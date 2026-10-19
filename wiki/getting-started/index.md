@@ -64,10 +64,12 @@ diagnose it.
 
 ## 4. Enable the Advisor when you want it
 
-The Advisor is a consultation role the main agent may launch as a subagent with the profile packaged
-in this package. It advises and executes nothing, and the extension never launches it. Configure
-**Advisor model** and, optionally, **Advisor thinking**, then set **Advisor mode** in the panel or run
-`/delegate advisor on`.
+Configure **Advisor 1**, optional **Advisor 2**, and per-entry thinking in `/delegate`, then select
+**Advisor mode** or run `/delegate advisor on`. Default **Advisor launch: role** asks the main agent
+to consult every valid entry in one background call. Optional **tool** mode uses explicit
+`consult_advisor({ question, brief? })` through the authorized external executor, never from hooks.
+Fresh needs a self-contained brief; fork sends the conversation to each provider. The tool's compatible
+executor is pinned to `pi-subagents` `0.76.1`. `A:PART` means one of two entries is valid and usable.
 
 With delegation `off` and mode `on`, status shows `D:OFF A:ON`: consultation-only guidance is
 injected and ordinary roles are not required. Mode `off` silences consultation and keeps the saved
@@ -105,10 +107,11 @@ the reader contract, and what one request sends.
   keeps reading delegation after a downgrade.
 - Advisor settings go to the `delegation-policy.advisor.json` companion next to it; the main file
   never carries an Advisor mode.
-- A branch saves a schema 2 `off` guard, the Advisor entry, and the schema 7 delegation entry, in that
-  order. A failure leaves the guard authoritative, so both features stay off for that branch.
+- Advisor 2 and launch mode live in `delegation-policy.advisor-extension.json`, bound by normalized
+  schema-8 state. Invalid or missing extension state falls back to Advisor 1 in role mode with a notice.
+- A branch saves a schema 2 off guard, extension entry, schema-8 companion, then schema-7 commit. A failure leaves the guard authoritative, so both features stay off for that branch.
 
-Loading never rewrites a file: schemas 2 through 8 are normalized in memory only. **Save effective
+Loading never rewrites a file: schemas 2 through 9 are normalized in memory only. **Save effective
 configuration as defaults** updates the global files and not the branch. Before installing an older
 package, follow the downgrade steps in
 [configuration](/configuration/#global-defaults-and-inheritance).
@@ -117,7 +120,7 @@ package, follow the downgrade steps in
 
 With version `0.20.0` on Pi `0.87.1` or later, the policy is refreshed before each LLM request, so a
 change made during a turn affects that turn's next request. A request already in progress, and
-subagents already launched, keep the state they started with. Turning everything off removes the
+host-owned role subagents keep their original state; tool groups cancel on detected authorization changes. Turning everything off removes the
 injected block when that version next applies its policy. Version `0.14.1` applies changes on the next
 agent run.
 

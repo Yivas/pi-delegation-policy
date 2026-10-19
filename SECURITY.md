@@ -8,7 +8,39 @@ ContextShunt is not a sandbox or a worker bridge. It preserves permissions and b
 
 ## Advisor consultation
 
-The optional Advisor role is off by default. The extension registers no tool, executor, or lifecycle work for it: it only injects policy guidance. From version `0.17.0`, `advisorMode: "on"` explicitly enables consultation even with delegation off; the default `with-delegation` preserves legacy coupling. `off` suppresses consultation guidance without deleting the model. Neither mode cancels host subagents already running. Advisor state is kept in a local companion file beside the delegation defaults; the companion is written last, so a failed or interrupted save cannot activate a new Advisor state, and a hard stop between the two atomic replacements can leave the files out of step until the next save. When you enable a configured advisor and the main agent decides to consult it, the main agent launches the packaged `pi-delegation-policy.advisor` profile as a normal subagent through Pi's subagent mechanism and the host-authorized external executor. The extension no longer sends conversation on its own initiative: what leaves the process is what the main agent writes into that task, and the main agent decides what that text contains.
+Advisor is off by default. `advisorMode: on` enables consultation independently of delegation;
+`with-delegation` preserves coupling. One or two entries validate independently. Default launch mode
+`role` leaves launch to the main agent. The explicit `consult_advisor` tool launches only in `tool`
+mode with an enabled valid advisor, never from hooks. Model input cannot choose a provider, profile,
+path, tools or extensions. Fork sends the conversation to each advisor provider; fresh sends the
+question and brief. Disable Advisor when session content must not reach those providers.
+
+The tool reuses strict public preflight and terminal binding pinned to `pi-subagents` `0.76.1`, exact
+models/thinking, the packaged no-tools profile, replace prompt, no project resources, and the reader's
+prompt-only or pinned permission-runtime checks. Host rules remain host-owned. Forked conversation is
+untrusted data, not authority. Preflight binds the tool session identity; the public REQUEST API cannot
+prove that the live executor session is the same. Terminal mismatch rejection happens only after
+context exposure. The executor/runtime is trusted host code; digests are not signatures or a sandbox.
+
+One pending call per tool: an advisor group launches one child per configured valid advisor, while
+the independent reader can launch its child (at most three). Abort, branch changes, shutdown and
+detected settings changes cancel the tool group, not host-owned role subagents. Only explicit fork
+rejection permits one fresh retry with brief. Timeouts do not cap external generation or cost. Partial
+results preserve the other advisor's answer; replies are untrusted advice.
+
+A legacy companion retains Advisor 1 and a separate schema-9 extension holds Advisor 2 and launch
+mode, bound by normalized-state equality, not a raw-text digest. Three atomic replacements are not a
+transaction. Interruption can leave Advisor off or Advisor 1 only in role mode. Failed saves restore
+only their committed prefix, not detected foreign writes; races remain.
+
+Records are written only while a policy block is active; both delegation and Advisor off produce no events.
+The local `delegation-policy.events.jsonl` in Pi's agent directory records policy hashes and
+consultation metadata (version, time, modes, model IDs, statuses, context, duration), never questions,
+briefs, replies, conversations, project paths or raw errors. It rotates at 256 KiB with one backup;
+write failures are ignored and no telemetry is sent. Model identifiers may reveal the environment.
+Role observations record only attempted matching calls, not completion; duration zero means unknown.
+Shutdown drains for at most five seconds, then drops remaining work. An in-flight filesystem operation
+may finish later, but starts no further operation.
 
 The task text and the reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and no absence of cost. The advisor cannot read files, run commands, delegate, or use tools, and its reply is plain text.
 
