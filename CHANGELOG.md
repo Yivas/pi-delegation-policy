@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.1 - 2026-10-19
+
+### Fixed
+
+- Accept valid Advisor replies in fork context. Preflight now uses the public executor wrapper to bind the same task that the host executes, while the emitted question and strict result identity checks remain unchanged. Version 0.21.0 discarded successful fork replies because the task digests differed.
+- Explain Advisor launch failures instead of returning only `Advisor failed`. Messages distinguish missing launch prerequisites, preflight failures, timeouts, mismatched result identity, and unusable answers. If the host supplies no safely displayable cause, the message says so; raw errors, prompts, paths, and secrets are never copied into replies or the local log.
+
+### Compatibility and verification
+
+- No configuration or schema migration. Pi `0.87.1+` and the exact `pi-subagents` `0.76.1` executor requirement are unchanged. Reload after upgrading.
+- The regression is covered against a synthetic host matching the installed executor, including rejection of a genuinely mismatched digest. A real-provider fork check remains pending after installation.
+
 ## 0.21.0 - 2026-10-19
 
 ### Added
