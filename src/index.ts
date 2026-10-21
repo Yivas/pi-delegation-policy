@@ -896,6 +896,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorContext = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
     });
+    // The host emits this after every `session_start` handler has run, so a model catalog another
+    // extension fills during its own start handler is visible here and the footer stops reporting an
+    // error that no longer applies. It only re-reads the runtime and repaints: no resource paths, no
+    // network, no new validation rules, and the notice reference stays as the start left it, so a pending
+    // change is not lost.
+    pi.on("resources_discover", async (_event, ctx) => {
+      await refreshRuntime(ctx);
+    });
     pi.on("input", async (event) => {
       // The host emits this for every submitted input immediately before the prompt it belongs to,
       // and `before_agent_start` follows only for a fresh prompt. Attribution therefore depends on

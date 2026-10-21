@@ -127,6 +127,7 @@ function createHarness(directory: string, availableModels: TestModel[]) {
     bg: (_color: string, text: string) => text,
     bold: (text: string) => text,
   };
+  const statuses: Array<string | undefined> = [];
   const ctx = {
     cwd: "/project",
     hasUI: true,
@@ -139,7 +140,11 @@ function createHarness(directory: string, availableModels: TestModel[]) {
       getAvailable: () => availableModels,
       hasConfiguredAuth: () => true,
     },
-    ui: { theme, setStatus: () => undefined, notify: () => undefined },
+    ui: {
+      theme,
+      setStatus: (_key: string, value: string | undefined) => statuses.push(value),
+      notify: () => undefined,
+    },
   } as unknown as ExtensionContext;
   let sessionTokens: number | null = 10_000;
   ctx.getContextUsage = () => ({ tokens: sessionTokens, contextWindow: 1_000_000, percent: null });
@@ -194,6 +199,19 @@ function createHarness(directory: string, availableModels: TestModel[]) {
   };
   const tree = async (): Promise<void> => {
     await handler("session_tree")({ type: "session_tree" }, ctx);
+  };
+  /**
+   * The host emits this after every `session_start` handler. It is called through the map so a build
+   * without the handler shows the stale status instead of throwing for an unrelated reason.
+   */
+  const resources = async (reason: "startup" | "reload" = "startup"): Promise<void> => {
+    await handlers.get("resources_discover")?.(
+      { type: "resources_discover", cwd: "/project", reason },
+      ctx,
+    );
+  };
+  const setAvailableModels = (references: ModelRef[]): void => {
+    availableModels.splice(0, availableModels.length, ...references.map(model));
   };
   const shutdown = async (): Promise<void> => {
     await handler("session_shutdown")({ type: "session_shutdown" }, ctx);
@@ -259,6 +277,10 @@ function createHarness(directory: string, availableModels: TestModel[]) {
     finish,
     start,
     tree,
+    resources,
+    statuses,
+    status: () => statuses.at(-1),
+    setAvailableModels,
     shutdown,
     command,
     config,
@@ -432,6 +454,55 @@ test("a session start fixes a silent reference and the first turn carries no not
       assert.match(harness.policyBlock(silent), /Intensity: orchestrator/);
       await harness.finish();
     }
+    await harness.shutdown();
+  });
+});
+
+test("a registry another extension fills after start refreshes the footer without losing the notice", async () => {
+  // The configured Small model is absent while the Advisor is already valid, so the footer starts as
+  // D:ERR A:ON. A later extension fills the registry during its own `session_start` handler, which
+  // runs after ours, and the host then emits `resources_discover`.
+  await withHarness([medium, large, uiDesign, advisor].map(model), async (harness) => {
+    await harness.config({ ...defaults, advisors: [advisor], advisorMode: "on" });
+
+    for (const variant of [
+      { start: "startup", resources: "startup" },
+      { start: "reload", resources: "reload" },
+      { start: "new", resources: "startup" },
+    ] as const) {
+      await harness.start(variant.start);
+      assert.equal(harness.status(), "D:ERR A:ON", `${variant.start}: Small is not in the catalog`);
+      harness.setAvailableModels([small, medium, large, uiDesign, advisor]);
+      await harness.resources(variant.resources);
+      assert.equal(
+        harness.status(),
+        "D:NORM A:ON",
+        `${variant.start}: the discovered catalog clears the stale error`,
+      );
+      // Availability alone is not a configuration change, so the first turn carries no notice.
+      const first = await harness.turn();
+      assert.equal(harness.noticeText(first), undefined);
+      await harness.finish();
+      harness.setAvailableModels([medium, large, uiDesign, advisor]);
+    }
+
+    // Circumstances the discovery event must not paper over: the model is genuinely absent.
+    await harness.start("startup");
+    await harness.resources("startup");
+    assert.equal(harness.status(), "D:ERR A:ON");
+
+    // A configuration change made between the start and the event stays pending because the
+    // refresh re-reads the runtime without re-anchoring the notice reference.
+    harness.setAvailableModels([small, medium, large, uiDesign, advisor]);
+    await harness.start("startup");
+    assert.equal(harness.status(), "D:NORM A:ON");
+    await harness.command("orchestrator");
+    await harness.resources("startup");
+    assert.equal(harness.status(), "D:ORCH A:ON");
+    const pending = await harness.turn();
+    assert.match(harness.noticeText(pending)!, /- Delegation intensity: normal -> orchestrator/);
+    await harness.finish();
+    assert.equal(harness.noticeText(await harness.turn()), undefined);
     await harness.shutdown();
   });
 });

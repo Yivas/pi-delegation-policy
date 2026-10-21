@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The footer no longer keeps a stale `D:ERR` from session start when an ordinary model becomes
+  available only after this extension's `session_start` handler. Another extension may fill the model
+  catalog in its own start handler, and the host then emits `resources_discover`; a read-only runtime
+  refresh there repaints the footer with the existing validation. This adds one configuration/branch
+  read and footer refresh per session bind or reload, returns no resource paths, makes no network
+  call, and leaves the configuration-change notice reference alone, so a pending change is not lost.
+  A model that is genuinely missing or unusable still reports `D:ERR`. The fix relies on the public
+  post-start discovery order, verified in Pi `0.87.1` and `1.1.0`; availability changes after that
+  event still refresh on the next request or menu action.
+
 ## 0.22.0 - 2026-10-21
 
 ### Added

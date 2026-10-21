@@ -1337,6 +1337,7 @@ test("the extension uses only the approved lifecycle events and never accumulate
       "before_provider_request",
       "context_with_system",
       "input",
+      "resources_discover",
       "session_shutdown",
       "session_start",
       "session_tree",
