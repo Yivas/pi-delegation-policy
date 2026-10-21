@@ -125,6 +125,12 @@ role or by the main agent.
 
 ## 5. Read the footer and status output
 
+From `0.22.1`, the footer revalidates after all session-start handlers finish, using Pi's public
+post-start discovery event. This clears an earlier `D:ERR` when another extension makes the
+configured model available later in startup, without waiting for a message or menu action. A model
+that is still missing or unusable keeps `D:ERR`. The event order was checked in Pi `0.87.1` and
+`1.1.0`; later availability changes still refresh on the next request or menu action.
+
 | Label    | Meaning                                                                | What to do                                                                  |
 | -------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive.           | Choose an active intensity only when the roles are ready.                   |

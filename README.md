@@ -6,7 +6,7 @@ general subagent runner. Only explicit tools can request reader work or Advisor 
 the authorized host executor; hooks never launch children.
 
 > **Docs:** [yivas.github.io/pi-delegation-policy](https://yivas.github.io/pi-delegation-policy/).
-> Version **0.22.0** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
+> Version **0.22.1** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
 > Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 >
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
@@ -15,7 +15,7 @@ the authorized host executor; hooks never launch children.
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.22.0
+pi install npm:pi-delegation-policy@0.22.1
 # restart Pi, or run /reload
 ```
 
@@ -189,6 +189,10 @@ only the global files.
 example `advisor-mode=with-delegation (global); A:OFF` and `thinking-advisor=unset (default)`.
 `D:OFF`, `D:NORM`, `D:AGG`, and `D:ORCH` describe delegation; `A:OFF`, `A:ON`, `A:PART`, and `A:ERR` describe
 Advisor. None of them proves that a launch happened or that another system followed the guidance.
+
+The footer also revalidates after all session-start handlers finish. If another extension makes a
+configured model available later in startup, the earlier `D:ERR` is replaced with the current status
+without waiting for a message or menu action. A model that remains invalid still reports `D:ERR`.
 
 ### Configuration change notice
 
