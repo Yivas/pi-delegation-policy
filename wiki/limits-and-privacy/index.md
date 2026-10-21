@@ -17,13 +17,39 @@ The final provider request re-applies the current marked block inside the recogn
 fields of the outgoing payload, so a host or another extension that replaces the system prompt
 afterwards cannot drop it; a payload whose shape is not recognized is left untouched. Turning
 delegation and Advisor off removes only that block. The host system message, tools, context, other
-extension sections, and conversation are preserved.
+extension sections, and stored conversation are preserved.
 
 The extension never launches children from hooks. Only explicit tools launch through the authorized
 external executor: `context_shunt_delegate` for a preserved artifact, and `consult_advisor` in tool
 mode. Default role mode leaves Advisor launches to the main agent. Neither replaces permissions,
 backends, delegation, or Pi's main model or thinking. There is no network telemetry or direct network
 client; the executor performs model calls. A content-free local log is described below.
+
+## Configuration change notice
+
+From `0.22.0`, an effective configuration change can add an ephemeral notice to the next user turn's
+request context, in addition to the current policy. Turning both delegation and Advisor off has a
+single exception to zero injection: one notice says they were disabled **by this policy**; subsequent
+turns inject nothing while both stay off. This does not revoke authority from the user, host, or
+another extension and does not itself cancel children or initiate a turn.
+
+Pi converts the custom message to user-role text and drops its custom metadata. Its text identifies
+it as an extension notice, not something the user wrote. The extension does not write notice text to
+session history or its local log, so stored summaries and branches cannot inherit the notice. This
+is not a promise about request retention by providers or other authorized host components.
+
+The presented revision is consumed at final settlement when the last recorded assistant response
+completed; a failed attempt followed by a successful retry counts as completed. A final reported
+error, abort, or unknown outcome preserves the change for another user turn. Pi has no public signal
+for an abort or exception after the last successful response and before final settlement: that
+accepted window can still consume a notice. A newer, unpresented configuration change is not consumed
+by the earlier response.
+
+The Pi peer remains `>=0.87.1`. Notice hooks and conversion were verified against `0.87.1` public APIs
+and a synthetic registered-hook harness, not a full host process or later hosts. The harness encodes
+that host's `input` then `before_agent_start` order. No real-provider notice test, model-obedience
+measurement or provider-cache measurement is claimed. [Configuration](/configuration/#configuration-change-notice)
+lists the tracked settings.
 
 ## Fail-closed behavior
 

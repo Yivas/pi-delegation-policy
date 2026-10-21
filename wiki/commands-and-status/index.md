@@ -108,6 +108,15 @@ turn's next request. A request already in progress keeps the state it started wi
 already launched in role mode remain host-owned; tool groups cancel on detected authorization changes; turning everything off removes the
 block when the extension next applies its policy.
 
+From `0.22.0`, the next user turn also carries a request-only notice of changed role assignments and
+settings. Changes made before that turn are grouped; cancelling, saving identical values or reverting
+to the previous configuration produces no notice. A change during a running turn waits for the next
+user turn's notice, while the policy itself still updates before the next request. Turning both axes
+off reports that shutdown once and then injects nothing. The notice is not saved in the conversation,
+does not start a turn, and does not prove that the model followed it. See the
+[configuration notice](/configuration/#configuration-change-notice) and its
+[consumption limits](/limits-and-privacy/#configuration-change-notice).
+
 Before every delegated launch, use the selected exact `provider/model` base and that role's thinking
 policy. With no policy, choose the level for that task from demand, difficulty, quantity, risk,
 review cost, and the selected model's capabilities. With a fixed policy, use exactly that level. With

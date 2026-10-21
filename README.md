@@ -6,7 +6,7 @@ general subagent runner. Only explicit tools can request reader work or Advisor 
 the authorized host executor; hooks never launch children.
 
 > **Docs:** [yivas.github.io/pi-delegation-policy](https://yivas.github.io/pi-delegation-policy/).
-> Version **0.21.1** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
+> Version **0.22.0** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
 > Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 >
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
@@ -15,7 +15,7 @@ the authorized host executor; hooks never launch children.
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.21.1
+pi install npm:pi-delegation-policy@0.22.0
 # restart Pi, or run /reload
 ```
 
@@ -190,9 +190,9 @@ example `advisor-mode=with-delegation (global); A:OFF` and `thinking-advisor=uns
 `D:OFF`, `D:NORM`, `D:AGG`, and `D:ORCH` describe delegation; `A:OFF`, `A:ON`, `A:PART`, and `A:ERR` describe
 Advisor. None of them proves that a launch happened or that another system followed the guidance.
 
-### Configuration change notice (unreleased)
+### Configuration change notice
 
-The published `0.21.1` package does not include this notice. The declared Pi peer remains
+Available from `0.22.0`. The declared Pi peer remains
 `>=0.87.1`; the notice hooks and conversion are verified against `0.87.1` with a synthetic harness,
 not a full host process or later host versions.
 

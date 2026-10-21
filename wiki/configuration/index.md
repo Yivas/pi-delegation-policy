@@ -65,6 +65,28 @@ branch. A role with no effective policy is written without one, never as `null`.
 writes `off` for both intensity and Advisor mode and returns the other fields to global inheritance;
 **Reset draft to off** is only a draft until Apply.
 
+## Configuration change notice
+
+From `0.22.0`, a change to effective delegation settings adds one extension-owned notice to the
+requests of the next user turn. It names the previous and new intensity, preference, role models,
+thinking policies, Advisor settings, or ContextShunt mode and reader settings. It explicitly directs
+new work to the current valid assignments rather than older settings in the conversation. Changes
+to global defaults count when they reach the branch; opening or cancelling the editor, identical
+saves, and changes reverted before the turn do not produce a notice. Enforcement limits and path
+patterns are not tracked by the notice.
+
+The notice is request-only, not a saved conversation message or part of system policy. It stays the
+same across the requests and retries of that turn. A change during a running turn updates the policy
+immediately as before and waits until the next user turn for its notice. Completing the earlier
+revision cannot consume a later change that has not been shown. Session starts, reloads and tree
+navigation reset the reference silently; extension-generated prompts do not consume pending notices.
+
+Turning both axes off produces one notice: `Delegation and Advisor disabled by this policy.` After
+that, neither policy nor notice is injected while both remain off. An enabled but invalid Advisor is
+not described as disabled. The notice changes no other authority, permission or model, and it cannot
+guarantee obedience. [Limits and privacy](/limits-and-privacy/#configuration-change-notice) explains
+consumption, the accepted cancellation window and the verified host boundary.
+
 ## Roles and validation
 
 Active execution-delegation guidance requires each ordinary role to be an exact authenticated
@@ -110,7 +132,8 @@ sanitized notice; neither case produces `D:ERR`.
 ## Intensities
 
 - `off` reports `D:OFF` and removes execution-delegation guidance before the next LLM request. An
-  explicitly enabled Advisor keeps consultation-only guidance; with both off nothing is injected.
+  explicitly enabled Advisor keeps consultation-only guidance; with both off no policy block is injected.
+  The change notice has the one-turn shutdown exception described above.
   A request already in progress and subagents already launched are unchanged.
 - `normal` delegates substantial, separable work only when the expected benefit clearly outweighs
   briefing, supervision, review, and integration. Borderline work stays with the main agent.
@@ -214,7 +237,7 @@ Local timeouts and cancellation do not cap external generation, retries or cost.
 | `off`             | Inject no Advisor guidance and keep the saved model and thinking policy.                                   |
 | `with-delegation` | Consult only while delegation is active and an Advisor is configured. Default when the key is absent.      |
 
-`D:OFF A:ON` shows consultation-only guidance; `D:OFF A:OFF` shows nothing injected. `/delegate reset`
+`D:OFF A:ON` shows consultation-only guidance; `D:OFF A:OFF` means neither axis injects a policy block. `/delegate reset`
 turns both off for the branch; `/delegate off` leaves an independently enabled Advisor active.
 
 ### Errors by axis

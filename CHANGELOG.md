@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.0 - 2026-10-21
 
 ### Added
 
@@ -27,7 +27,7 @@
 
 ### Compatibility and verification
 
-- No configuration, schema, dependency or version change. The notice uses public Pi `0.87.1` events,
+- No configuration, schema or dependency change. The notice uses public Pi `0.87.1` events,
   is converted to user text by the host like any custom message and identifies itself as an extension
   notice; it is not system policy and changes no model, permission or authority. The extension writes
   no notice text to session history or its local log. This does not limit request retention by the
