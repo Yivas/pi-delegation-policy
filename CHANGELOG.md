@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- One ephemeral configuration-change notice on the next user turn after an effective configuration
+  change, whether a `/delegate` save or an edit of the global defaults that reaches the session. It
+  lists the values that changed since the configuration the model was last shown: intensity,
+  preference, ordinary roles, Visual Design, thinking policies, Advisor entries, mode and launch, the
+  ContextShunt mode, and the reader role, toggle and answer limit. The ContextShunt enforcement
+  tuning (`limits`, `exceptionPatterns`, `delegationHintPatterns`) is left out on purpose: it changes
+  how much the shunt preserves or compacts, not the assignments the model follows. The notice exists
+  only in the requests of that turn, never in the conversation, and stays identical across their
+  retries. With both axes off by configuration it reports one line,
+  `Delegation and Advisor disabled by this policy.`, and then injects nothing; an Advisor left on but
+  unusable is not reported as disabled.
+- The reference is the configuration the model was actually shown. Changes made before a turn are
+  grouped, a reversion reports nothing, an edit that leaves effective values unchanged reports
+  nothing, and a change made while a turn is running waits for the next turn. The notice is consumed
+  when the run ends with its last recorded outcome completed, read from the final `agent_end`, so a
+  retried error that then succeeds consumes it while an error or abort reported before that point
+  leaves the change pending. Residual: an abort or a thrown error after the last successful response,
+  which the host reports through no later public event, can still consume it. Session starts,
+  reloads, forks and tree moves set the reference silently, and a prompt another extension sends with
+  `sendUserMessage` neither receives nor consumes the notice.
+
+### Compatibility and verification
+
+- No configuration, schema, dependency or version change. The notice uses public Pi `0.87.1` events,
+  is converted to user text by the host like any custom message and identifies itself as an extension
+  notice; it is not system policy and changes no model, permission or authority. The extension writes
+  no notice text to session history or its local log. This does not limit request retention by the
+  provider or other authorized host components. The existing local JSONL log keeps its fields.
+- Covered against the registered hooks with a synthetic host: grouping and reversion, no-op saves,
+  retries, a mid-turn change, a completed turn followed by a failed continuation, error and abort, an
+  unknown run outcome, the accepted abort/throw window after a completed response, the both-off
+  notice, an extension-sent prompt, session and tree resets, global changes, the Advisor context mode,
+  and the real host conversion and payload repair. No real-provider run was performed. The synthetic
+  host encodes Pi `0.87.1`'s event order instead of exercising a host process, so a future host that
+  reordered `input` and `before_agent_start` would not be detected.
+
 ## 0.21.1 - 2026-10-19
 
 ### Fixed

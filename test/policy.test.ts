@@ -1332,8 +1332,11 @@ test("the extension uses only the approved lifecycle events and never accumulate
     piDelegationPolicy(pi as never);
     assert.deepEqual([...handlers.keys()].sort(), [
       "agent_end",
+      "agent_settled",
+      "before_agent_start",
       "before_provider_request",
       "context_with_system",
+      "input",
       "session_shutdown",
       "session_start",
       "session_tree",
@@ -2808,6 +2811,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/agent-launch.ts",
     "src/advisor-executor.ts",
     "src/advisor-log.ts",
+    "src/config-notice.ts",
     "src/config.ts",
     "src/context-shunt-adapter.ts",
     "src/context-shunt-executor.ts",

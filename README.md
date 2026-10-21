@@ -33,7 +33,7 @@ to inheritance later.
 
 | Intensity      | What the guidance asks                                                                                                                                                                                                                                                                                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `off`          | No execution-delegation guidance. An independently enabled Advisor still injects its own section; with both off nothing is injected.                                                                                                                                                                                                                    |
+| `off`          | No execution-delegation guidance. An independently enabled Advisor still injects its own section; with both off no policy block is injected.                                                                                                                                                                                                            |
 | `normal`       | Delegate substantial, separable work only when the expected benefit clearly outweighs briefing, supervision, review, and integration. Borderline work stays with the main agent.                                                                                                                                                                        |
 | `aggressive`   | Delegate suitable substantial, separable, independently checkable work by default when objective and acceptance criteria are clear.                                                                                                                                                                                                                     |
 | `orchestrator` | Delegate all transferable execution before it begins whenever an enabled capable role and an authorized launcher exist, regardless of size: small lookups, reading, detailed planning, edits, tests, writing, detailed review, and integration mechanics. Direct work needs a briefly stated exception, and final acceptance stays with the main agent. |
@@ -105,7 +105,7 @@ Local timeouts and cancellation do not cap external generation, retries or cost.
 | `off`             | Inject no Advisor guidance and keep the saved model and thinking policy.                                   |
 | `with-delegation` | Consult only while delegation is active and an Advisor is configured. Default when the key is absent.      |
 
-`D:OFF A:ON` shows consultation-only guidance; `D:OFF A:OFF` shows nothing injected. `/delegate reset`
+`D:OFF A:ON` shows consultation-only guidance; `D:OFF A:OFF` means neither axis injects a policy block. `/delegate reset`
 turns both off for the branch; `/delegate off` leaves an independently enabled Advisor active.
 
 Errors are reported per axis. Each entry validates independently: `A:ON` means all valid, `A:PART` means one of two valid
@@ -189,6 +189,49 @@ only the global files.
 example `advisor-mode=with-delegation (global); A:OFF` and `thinking-advisor=unset (default)`.
 `D:OFF`, `D:NORM`, `D:AGG`, and `D:ORCH` describe delegation; `A:OFF`, `A:ON`, `A:PART`, and `A:ERR` describe
 Advisor. None of them proves that a launch happened or that another system followed the guidance.
+
+### Configuration change notice (unreleased)
+
+The published `0.21.1` package does not include this notice. The declared Pi peer remains
+`>=0.87.1`; the notice hooks and conversion are verified against `0.87.1` with a synthetic harness,
+not a full host process or later host versions.
+
+After an effective configuration change — a `/delegate` save, or an edit of the global defaults that
+changes effective values — the next user turn carries one extension-owned notice in the request
+context. It lists the values that changed since the configuration the model was last shown:
+intensity, preference, ordinary roles, Visual Design, thinking policies, Advisor entries, mode and
+launch, the ContextShunt mode, and the reader role, toggle and answer limit. The ContextShunt
+enforcement tuning (`limits`, `exceptionPatterns`, `delegationHintPatterns`) is left out on purpose:
+it changes how much the shunt preserves or compacts, not the assignments the model follows. The
+notice is not system policy and never enters the conversation: it exists only in the requests of
+that turn, identical across their retries, and it disappears with the turn.
+
+The reference is the configuration the model was actually shown, so changes made before a turn are
+grouped, a reversion before the turn reports nothing, and an edit that leaves effective values
+unchanged reports nothing. Opening or cancelling the editor writes nothing and reports nothing. A
+change made while a turn is already running reaches the policy immediately and is reported on the
+next turn; a revision that has not been shown is never consumed by an earlier turn.
+
+Consumption happens when the run ends and its last recorded outcome is a completed response: the
+extension reads the last assistant message of the final `agent_end` and keeps the presented revision
+only when that response completed. An error the host retries and that then succeeds counts as
+completed, so the notice is consumed there. An error or an abort reported before that point leaves
+the change pending, and the next user turn reports it again. Residual: an abort or a thrown error
+after the last successful response, which the host reports through no later public event, can still
+consume the notice; no public signal separates that window.
+
+With delegation off and Advisor off by configuration, one notice says `Delegation and Advisor
+disabled by this policy.` and nothing further is injected while both stay off. An Advisor left on but
+unusable is not reported as disabled, because the configuration did not disable it. Every notice is
+scoped to this extension and revokes no other instruction, permission, or authority. Session starts,
+reloads, forks and tree navigation set the reference silently, so no notice appears at startup.
+The extension writes no notice text to session history or its local log, so compaction summaries
+and branches cannot inherit one from stored history. This does not limit the provider's or other
+authorized host components' request retention. A prompt another extension sends with
+`sendUserMessage` is not a user turn: it neither receives nor consumes the notice. The notice reports configuration, not availability: an unusable model keeps its value in the
+list and the policy block that would assign it may simply be absent, so nothing in the notice
+presents that model as usable. For new work, the notice points the model at the current valid
+assignments and thinking rules in this policy rather than earlier settings in the conversation.
 
 ## ContextShunt
 

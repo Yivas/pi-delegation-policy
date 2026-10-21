@@ -1,7 +1,10 @@
 import type {
+  AgentActivityOutcome,
+  AgentEndEvent,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  InputSource,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -19,6 +22,13 @@ import {
   ADVISOR_AGENT_NAME,
 } from "./advisor-executor.ts";
 import { AdvisorLog } from "./advisor-log.ts";
+import {
+  createConfigNotice,
+  noticeLines,
+  projectNoticeConfig,
+  type ConfigNoticeMessage,
+  type NoticeProjection,
+} from "./config-notice.ts";
 import { ContextShuntAdapter } from "./context-shunt-adapter.ts";
 import { ContextShuntExecutor } from "./context-shunt-executor.ts";
 import {
@@ -175,6 +185,28 @@ function isContextShuntDisabled(state: RuntimeState): boolean {
     state.effective.contextShunt.mode === "off" ||
     state.effective.contextShunt.suspended
   );
+}
+function bothAxesOff(state: RuntimeState): boolean {
+  return state.effective.intensity === "off" && !isAdvisorEnabled(state.effective);
+}
+/** What the model has been told: the configuration shown by the last consumed notice. */
+type ConfigReference = { projection: NoticeProjection; axesOff: boolean };
+/**
+ * The host decides a turn's outcome from the last assistant message, and reports `completed` for
+ * every stop reason except an abort or an error. The same rule keeps the notice's consume rule
+ * aligned with the host's own notion of a finished turn.
+ */
+function endOutcome(messages: AgentEndEvent["messages"]): AgentActivityOutcome | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    return message.stopReason === "aborted"
+      ? "aborted"
+      : message.stopReason === "error"
+        ? "error"
+        : "completed";
+  }
+  return undefined;
 }
 function synchronizeContextShunt(shunt: ContextShuntAdapter, state: RuntimeState): void {
   if (isContextShuntDisabled(state)) shunt.clearPending();
@@ -383,6 +415,58 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const invalidateReaderAuthorization = (): void => {
       readerEpoch += 1;
       executor.cancel();
+    };
+    // The notice follows the user's turns, not host turns. `input` reports where the next prompt
+    // comes from, `before_agent_start` opens one run per fresh prompt, and the comparison runs on
+    // that user turn's first request. A change made while a turn is already running updates the
+    // policy as usual and is reported on the next user turn, so no request carries a notice that
+    // contradicts the policy of the same request.
+    let configBaseline: ConfigReference | undefined;
+    let inputSource: InputSource | undefined;
+    let userTurn = 0;
+    let runToken = 0;
+    let diffedTurn: number | undefined;
+    let runOutcome: AgentActivityOutcome | undefined;
+    let presentedNotice:
+      { runToken: number; reference: ConfigReference; message: ConfigNoticeMessage } | undefined;
+    const startConfigBaseline = (state: RuntimeState): void => {
+      configBaseline = {
+        projection: projectNoticeConfig(state.effective),
+        axesOff: bothAxesOff(state),
+      };
+      userTurn = 0;
+      runToken = 0;
+      diffedTurn = undefined;
+      runOutcome = undefined;
+      presentedNotice = undefined;
+    };
+    const configNotice = (state: RuntimeState): ConfigNoticeMessage | undefined => {
+      if (diffedTurn !== userTurn) {
+        diffedTurn = userTurn;
+        presentedNotice = undefined;
+        const current: ConfigReference = {
+          projection: projectNoticeConfig(state.effective),
+          axesOff: bothAxesOff(state),
+        };
+        // Every session start and tree move sets a baseline. Only an unreadable configuration
+        // defers it to this first successful refresh, which then reports nothing.
+        if (configBaseline === undefined) configBaseline = current;
+        else {
+          const lines = noticeLines({
+            previous: configBaseline.projection,
+            current: current.projection,
+            previouslyOff: configBaseline.axesOff,
+            currentlyOff: current.axesOff,
+          });
+          if (lines.length)
+            presentedNotice = {
+              runToken,
+              reference: current,
+              message: createConfigNotice(lines, Date.now()),
+            };
+        }
+      }
+      return presentedNotice?.runToken === runToken ? presentedNotice.message : undefined;
     };
     const rememberRuntime = (state: RuntimeState): RuntimeState => {
       if (
@@ -802,7 +886,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     });
     pi.on("session_start", async (_event, ctx) => {
       advisorContext = undefined;
-      await refreshRuntime(ctx);
+      startConfigBaseline(await refreshRuntime(ctx));
     });
     pi.on("session_tree", async (_event, ctx) => {
       readerEpoch += 1;
@@ -810,7 +894,30 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorExecutor.rotate();
       shunt.clearPending();
       advisorContext = undefined;
-      await refreshRuntime(ctx);
+      startConfigBaseline(await refreshRuntime(ctx));
+    });
+    pi.on("input", async (event) => {
+      // The host emits this for every submitted input immediately before the prompt it belongs to,
+      // and `before_agent_start` follows only for a fresh prompt. Attribution therefore depends on
+      // that order, which Pi 0.87.1 keeps for every path that reaches it; a host that emitted the
+      // anchor first would leave the previous source in place, so the notice would follow the
+      // earlier prompt instead of skipping an extension one. No public signal can detect that
+      // change, so it stays a documented residual.
+      inputSource = event.source;
+    });
+    pi.on("before_agent_start", async () => {
+      const source = inputSource;
+      inputSource = undefined;
+      runToken += 1;
+      runOutcome = undefined;
+      // Commands, input interception and tool iterations never reach this event, and the host
+      // emits it once per fresh prompt. A prompt an extension sends is not the user's turn, so it
+      // neither receives nor consumes a notice waiting for the user.
+      if (source === "extension") {
+        diffedTurn = userTurn;
+        return;
+      }
+      userTurn += 1;
     });
     pi.on("context_with_system", async (event, ctx) => {
       const state = await refreshRuntime(ctx);
@@ -822,7 +929,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         typeof systemMessage.content !== "string"
       )
         return undefined;
-
+      const notice = configNotice(state);
       const ownedPolicyBlock =
         /(?:\n\n)?<delegation_policy>\n<!-- pi-delegation-policy:owned -->[\s\S]*?<\/delegation_policy>/g;
       let replacedPolicy = false;
@@ -856,15 +963,35 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             ...(sections && Object.keys(sections).length > 0 ? { sections } : {}),
           },
           ...event.messages.slice(1),
+          // Appended last, never inside the system block: a tool call stays adjacent to its result,
+          // the stored transcript prefix of the request is unchanged, and the host already sends
+          // user-role text after a tool result for its own custom messages.
+          ...(notice ? [notice] : []),
         ],
       };
+    });
+    pi.on("agent_settled", async () => {
+      // The notice is consumed when the last outcome the run reported was a completed response:
+      // `agent_end` reports one outcome per low-level run, and this event marks the end of the whole
+      // run, emitted once in the host's `finally` after retries, compaction and queued continuations.
+      // A completed settle boundary can still be followed by another request, or by an aborted one,
+      // so the last recorded outcome decides and an unknown one never consumes. Accepted residual:
+      // an abort or a throw after the last completed response, which the host reports through no
+      // later public event, leaves that `completed` standing and consumes the notice.
+      if (runOutcome !== "completed" || presentedNotice?.runToken !== runToken) return;
+      // The revision the model received, not the live one: a change made after that request stays
+      // pending for the next turn.
+      configBaseline = presentedNotice.reference;
     });
     pi.on("before_provider_request", async (event, ctx) => {
       const state = await refreshProviderRuntime(ctx);
       if (!state) return event.payload;
       return updateProviderPolicy(event.payload, renderPolicy(ctx, state));
     });
-    pi.on("agent_end", async () => {
+    pi.on("agent_end", async (event) => {
+      // The event carries the messages of this low-level run; a run that reports none has no
+      // outcome to trust, and an unknown outcome never consumes a notice.
+      runOutcome = endOutcome(event.messages ?? []);
       shunt.clearConsumed();
     });
     pi.on("tool_call", async (event) => {
@@ -923,6 +1050,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("session_shutdown", async (_event, ctx) => {
       readerEpoch += 1;
       latestRuntime = undefined;
+      configBaseline = undefined;
+      presentedNotice = undefined;
+      runOutcome = undefined;
       executor.close();
       advisorExecutor.close();
       await advisorLog.close();
