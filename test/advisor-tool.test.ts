@@ -139,10 +139,12 @@ class Bus {
 }
 async function fakeModules(
   preflight: "valid" | "throw" | "undefined" | "invalid" = "valid",
+  fixtureVersion: "0.76.1" | "0.83.1" = "0.76.1",
+  packageVersion?: string,
 ): Promise<AgentLaunchModules> {
   const fixture = JSON.parse(
     await readFile(
-      new URL("./fixtures/pi-subagents-0.76.1/preflight-contract.json", import.meta.url),
+      new URL(`./fixtures/pi-subagents-${fixtureVersion}/preflight-contract.json`, import.meta.url),
       "utf8",
     ),
   ) as { contract: Payload };
@@ -178,7 +180,10 @@ async function fakeModules(
       tools.internalTools = [];
       tools.runtimeExtensions = ["prompt-runtime"];
       tools.extensionArgs = ["prompt-runtime"];
-      contract.roots = { cwd: resolve(fields.cwd as string) };
+      // A 0.83.x contract also carries the lifecycle subtree; the launch checks tolerate it.
+      contract.roots = { ...(contract.roots as Payload), cwd: resolve(fields.cwd as string) };
+      if (packageVersion !== undefined)
+        contract.protocol = { ...(contract.protocol as Payload), packageVersion };
       return { ok: true, contract };
     },
   };
@@ -187,7 +192,12 @@ async function harness(
   value = base,
   available = models,
   tokens: number | null = 10_000,
-  options: { forkTaskNormalizer?: boolean; preflight?: "throw" | "undefined" | "invalid" } = {},
+  options: {
+    forkTaskNormalizer?: boolean;
+    preflight?: "throw" | "undefined" | "invalid";
+    fixtureVersion?: "0.76.1" | "0.83.1";
+    packageVersion?: string;
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "advisor-tool-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
@@ -220,7 +230,11 @@ async function harness(
       notify: (message: string, type: string) => notifications.push({ message, type }),
     },
   };
-  const loaded = await fakeModules(options.preflight);
+  const loaded = await fakeModules(
+    options.preflight,
+    options.fixtureVersion,
+    options.packageVersion,
+  );
   const modules: AgentLaunchModules =
     options.forkTaskNormalizer === false ? { ...loaded, normalizeForkTask: undefined } : loaded;
   const executor = new AdvisorExecutor({ loader: async () => modules });
@@ -635,7 +649,8 @@ test("fork fails closed without the public task normalizer and fresh still works
     assert.match(forkAnswer, /does not export wrapForkTask/);
     // A brief cannot switch this session to fresh, so the cause must not promise that fallback.
     assert.doesNotMatch(forkAnswer, /Call again with brief/);
-    assert.match(forkAnswer, /0\.76\.1/);
+    assert.match(forkAnswer, /install an admitted pi-subagents build/);
+    assert.doesNotMatch(forkAnswer, /0\.76\.1/);
     assert.equal(run.bus.requests.length, 0);
     run.ctx.getContextUsage = () => ({ tokens: 60_000 });
     run.bus.respond = (request) => run.bus.finish(request);
@@ -675,6 +690,46 @@ test("preflight failures differ from an invalid contract and render safe causes"
     assert.equal(run.executor.busy, false);
   } finally {
     await run.close();
+  }
+});
+
+test("a verified 0.83.1 contract admits the Advisor in fork and fresh and binds the fork digest", async () => {
+  const run = await harness(base, models, 10_000, { fixtureVersion: "0.83.1" });
+  try {
+    // The synthetic host binds the wrapped fork task, exactly as the preflight did.
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /example\/first \[fork\]/);
+    run.ctx.getContextUsage = () => ({ tokens: 60_000 });
+    assert.match(
+      await run.call({ question: sentinel, brief: sentinel }),
+      /example\/first \[fresh\]/,
+    );
+    assert.deepEqual(
+      run.bus.requests.map((request) => [request.context, request.model, request.thinking]),
+      [
+        ["fork", "example/first", "low"],
+        ["fork", "example/second", "high"],
+        ["fresh", "example/first", "low"],
+        ["fresh", "example/second", "high"],
+      ],
+    );
+  } finally {
+    await run.close();
+  }
+});
+
+test("a pi-subagents build outside the admitted list is rejected before any request", async () => {
+  for (const packageVersion of ["0.84.0", "0.82.0", "0.76.0"]) {
+    const run = await harness(base, models, 10_000, {
+      fixtureVersion: "0.83.1",
+      packageVersion,
+    });
+    try {
+      assert.match(await run.call(), /launch contract was rejected/);
+      assert.equal(run.bus.requests.length, 0);
+    } finally {
+      await run.close();
+    }
   }
 });
 

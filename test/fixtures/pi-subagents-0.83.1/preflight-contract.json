@@ -1,0 +1,78 @@
+{
+  "ok": true,
+  "contract": {
+    "version": 3,
+    "runId": "fixture-run",
+    "agent": {
+      "name": "pi-delegation-policy.advisor",
+      "localName": "pi-delegation-policy.advisor",
+      "source": "package",
+      "filePath": "{{agentPath}}",
+      "definitionProjectionVersion": 2,
+      "definitionDigest": "fc669bb8e88e6bffe6da3c34dd16a5e78adb9ace02ff23e99df454923f6fc24a",
+      "shadowedCandidates": []
+    },
+    "context": "fork",
+    "model": "example/advisor:low",
+    "thinking": "low",
+    "systemPromptMode": "replace",
+    "inheritProjectContext": false,
+    "inheritGlobalContext": false,
+    "inheritSkills": false,
+    "skills": {
+      "requested": [],
+      "resolved": [],
+      "missing": []
+    },
+    "tools": {
+      "requestedBuiltin": [],
+      "declaredBuiltin": [],
+      "effectiveAllowlist": [],
+      "explicitAllowlist": true,
+      "requiredChildTools": [],
+      "internalTools": [],
+      "mcp": [],
+      "effectiveMcpTools": [],
+      "toolExtensionPaths": [],
+      "runtimeExtensions": ["{{promptRuntimePath}}"],
+      "configuredExtensions": [],
+      "requiredExtensionIds": [],
+      "extensionArgs": ["{{promptRuntimePath}}"],
+      "disableAmbientExtensions": true,
+      "fanoutAuthorized": false
+    },
+    "intercomBridge": {
+      "active": false,
+      "mode": "off"
+    },
+    "roots": {
+      "cwd": "{{cwd}}",
+      "lifecycle": {
+        "asyncDir": "{{lifecycleDir}}",
+        "resultPath": "{{lifecycleResultPath}}",
+        "statusPath": "{{lifecycleDir}}/status.json",
+        "eventsPath": "{{lifecycleDir}}/events.jsonl",
+        "processTerminalPath": "{{lifecycleDir}}/process-terminal.json",
+        "processTerminalCandidatePath": "{{lifecycleDir}}/process-terminal-candidate.json"
+      }
+    },
+    "protocol": {
+      "lifecycleArtifactVersion": 3,
+      "packageVersion": "0.83.1"
+    },
+    "diagnostics": [
+      {
+        "code": "host_required",
+        "severity": "host-required",
+        "message": "Exact fork session branching requires Pi host session snapshots."
+      },
+      {
+        "code": "host_required",
+        "severity": "host-required",
+        "message": "No sessionRoot/sessionDir was supplied; exact child session paths require the Pi host session-root policy."
+      }
+    ],
+    "launchContractDigest": "3259eee5c3cfecb385e82b094fb6b3ff1a186648e542062bbecaaf8c08350eee",
+    "digest": "7e273ae107f693ad03fa64b89ed9e536dfa62ad4321821f96428c649fb1d5bef"
+  }
+}

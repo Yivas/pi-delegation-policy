@@ -109,7 +109,7 @@ function isReaderAnswer(value: unknown): value is ReaderAnswer {
 const READER_LAUNCH = {
   agentName: CONTEXT_SHUNT_READER_AGENT_NAME,
   agentPath: CONTEXT_SHUNT_READER_AGENT_PATH,
-  protocolVersion: CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
+  admittedProtocolVersions: [CONTEXT_SHUNT_READER_PROTOCOL_VERSION],
   internalTools: ["structured_output"],
   buildTask: buildReaderTask,
   result: {

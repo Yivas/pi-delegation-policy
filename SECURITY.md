@@ -15,9 +15,10 @@ mode with an enabled valid advisor, never from hooks. Model input cannot choose 
 path, tools or extensions. Fork sends the conversation to each advisor provider; fresh sends the
 question and brief. Disable Advisor when session content must not reach those providers.
 
-The tool reuses strict public preflight and terminal binding pinned to `pi-subagents` `0.76.1`, exact
-models/thinking, the packaged no-tools profile, replace prompt, no project resources, and the reader's
-prompt-only or pinned permission-runtime checks. Host rules remain host-owned. Forked conversation is
+The tool reuses strict public preflight and terminal binding admitted only for the exact `pi-subagents`
+builds whose contract was verified (`0.76.1` and `0.83.1`), exact models/thinking, the packaged
+no-tools profile, replace prompt, no project resources, and the reader's prompt-only or pinned
+permission-runtime checks. Host rules remain host-owned. Forked conversation is
 untrusted data, not authority. Preflight binds the tool session identity; the public REQUEST API cannot
 prove that the live executor session is the same. Terminal mismatch rejection happens only after
 context exposure. The executor/runtime is trusted host code; digests are not signatures or a sandbox.

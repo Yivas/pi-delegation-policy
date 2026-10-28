@@ -148,7 +148,12 @@ export type AgentLaunchDefinition<Request extends AgentLaunchRequest, Value> = R
   agentPath: string;
   /** Only the advisor may send a fork; reader requests remain fresh-only. */
   allowFork?: boolean;
-  protocolVersion: string;
+  /**
+   * The `pi-subagents` package versions whose launch contract this profile was verified against.
+   * An exact, per-profile list: no range, wildcard or fallback, so a new build is rejected until
+   * its contract is checked.
+   */
+  admittedProtocolVersions: readonly string[];
   /**
    * Builtin tools the child must expose. A profile that declares no tools and no
    * extensions exposes exactly these, so the contract must report the same list
@@ -415,7 +420,8 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       contract.version !== LAUNCH_CONTRACT_VERSION ||
       !isRecord(contract.protocol) ||
       contract.protocol.lifecycleArtifactVersion !== 3 ||
-      contract.protocol.packageVersion !== definition.protocolVersion ||
+      typeof contract.protocol.packageVersion !== "string" ||
+      !definition.admittedProtocolVersions.includes(contract.protocol.packageVersion) ||
       contract.runId !== active.requestId ||
       !isLowerHexDigest(contract.digest)
     )

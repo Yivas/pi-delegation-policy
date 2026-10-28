@@ -18,6 +18,13 @@ import type { AdvisorContext } from "./prompt.ts";
 import type { AdvisorSetting, ThinkingLevelName } from "./types.ts";
 import type { ConsultationAttempt } from "./advisor-log.ts";
 
+/**
+ * `pi-subagents` builds whose launch contract was checked against this profile: the original pin and
+ * the build that only changed its own package version (same contract version, profile projection,
+ * tool plan, runtime lists and fork wrapper). A different build is rejected before any request.
+ */
+const ADMITTED_SUBAGENTS_VERSIONS: readonly string[] = ["0.76.1", "0.83.1"];
+
 export const ADVISOR_AGENT_NAME = "pi-delegation-policy.advisor";
 export type AdvisorRequest = AgentLaunchRequest & {
   question: string;
@@ -34,7 +41,7 @@ const DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
   agentPath: resolve(
     fileURLToPath(new URL("../agents/pi-delegation-policy.advisor.md", import.meta.url)),
   ),
-  protocolVersion: "0.76.1",
+  admittedProtocolVersions: ADMITTED_SUBAGENTS_VERSIONS,
   allowFork: true,
   internalTools: [],
   buildTask: (request) =>
@@ -84,9 +91,9 @@ function hostStatusText(status: AgentLaunchTerminalStatus | undefined): string {
     case "tool_budget_exhausted":
       return "The host ended the Advisor run at its tool limit before answering. Retry once with a narrower question.";
     case "structured_output_failed":
-      return "The host ended the Advisor run while collecting its structured result. Retry once; if it repeats, inspect host diagnostics and check the compatibility of the installed pi-delegation-policy and pi-subagents 0.76.1 build.";
+      return "The host ended the Advisor run while collecting its structured result. Retry once; if it repeats, inspect host diagnostics and check that the installed pi-delegation-policy and pi-subagents builds are compatible.";
     case "acceptance_failed":
-      return "The host ended the Advisor run at its acceptance check. Retry once; if it repeats, inspect host diagnostics and check the compatibility of the installed pi-delegation-policy and pi-subagents 0.76.1 build.";
+      return "The host ended the Advisor run at its acceptance check. Retry once; if it repeats, inspect host diagnostics and check that the installed pi-delegation-policy and pi-subagents builds are compatible.";
     case "failed":
       return "The host ended the Advisor run with status failed and supplied no safe detail. Retry once; if it repeats, check the installed pi-subagents version.";
     default:
@@ -98,11 +105,11 @@ function unavailableFailureText(reason: AgentLaunchFailure | undefined): string 
   const preflightSeconds = LAUNCH_PREFLIGHT_TIMEOUT_MS / 1000;
   switch (reason?.code) {
     case "fork-task-normalizer-unavailable":
-      return "Fork launch is unavailable: the installed pi-subagents does not export wrapForkTask, so a fork task cannot be bound to the child. Retrying or supplying a brief will not switch this session to fresh; install the compatible pi-subagents 0.76.1 build and reload the session.";
+      return "Fork launch is unavailable: the installed pi-subagents does not export wrapForkTask, so a fork task cannot be bound to the child. Retrying or supplying a brief will not switch this session to fresh; install an admitted pi-subagents build and reload the session.";
     case "modules-unavailable":
-      return "Advisor launch is unavailable: the pi-subagents 0.76.1 exports this extension requires were not found. Install the compatible pi-subagents 0.76.1 build, then reload the session.";
+      return "Advisor launch is unavailable: the pi-subagents exports this extension requires were not found. Install an admitted pi-subagents build, then reload the session.";
     case "preflight-unavailable":
-      return "Advisor preflight returned no launch contract. Retry once; if it repeats, check the compatible pi-subagents 0.76.1 build and the packaged Advisor profile.";
+      return "Advisor preflight returned no launch contract. Retry once; if it repeats, check the installed pi-subagents build and the packaged Advisor profile.";
     case "preflight-timeout":
       return `Advisor preflight did not finish within ${preflightSeconds} seconds. Retry once; if it repeats, check the installed pi-subagents version.`;
     case "contract-rejected":
@@ -110,7 +117,7 @@ function unavailableFailureText(reason: AgentLaunchFailure | undefined): string 
     case "request-start-timeout":
       return `The host did not start the Advisor within ${preflightSeconds} seconds. Retry once; if it repeats, check the installed pi-subagents version.`;
     case "request-emit-failed":
-      return "The host could not set up or send the Advisor launch event. Reload the session, then retry; if it repeats, check the installed extension against the compatible pi-subagents 0.76.1 build.";
+      return "The host could not set up or send the Advisor launch event. Reload the session, then retry; if it repeats, check the installed extension against an admitted pi-subagents build.";
     case "host-session-missing":
       return "Advisor unavailable: the host supplied no session identity.";
     case "fork-not-allowed":
@@ -131,7 +138,7 @@ function failedFailureText(reason: AgentLaunchFailure | undefined): string {
     case "terminal-metadata-mismatch":
       return `The host returned an Advisor reply whose ${terminalFieldText(reason.field)} did not match the preflight contract, so the reply was discarded. Retry once; if it repeats, report the mismatch.`;
     case "terminal-result-invalid":
-      return "The host reported completion without a usable text answer, so the result was discarded. Retry once; if it repeats, inspect host diagnostics and check the compatibility of the extension with the installed pi-subagents 0.76.1 build.";
+      return "The host reported completion without a usable text answer, so the result was discarded. Retry once; if it repeats, inspect host diagnostics and check the compatibility of the extension with the installed pi-subagents build.";
     case "host-terminal-status":
       return hostStatusText(reason.status);
     case "host-status-unrecognized":
