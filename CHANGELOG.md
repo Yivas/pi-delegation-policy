@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.22.2 - 2026-10-28
+
+### Fixed
+
+- The Advisor no longer rejects a verified `pi-subagents` build. Each launch definition now declares
+  the exact list of package versions whose launch contract it was checked against: the Advisor admits
+  `0.76.1` and `0.83.1`, while the ContextShunt reader keeps its single verified `0.76.1`, so the
+  reader limit does not widen. Everything else in the launch check is unchanged: exact profile
+  projection and digest shape, exact model and thinking, host session binding, empty tools and
+  extensions, the pinned `@gotgenes/pi-permission-system` `33.0.3` runtime, and the terminal digest
+  binding. A build outside the list still fails closed before any request is sent.
+
+  The two contracts were compared from their real preflight payloads: they differ only in the package
+  version, the install path of the runtime extension and the digests derived from that path, and the
+  public fork wrapper is byte-identical. Admission and terminal binding were exercised in an isolated
+  host that answered with each contract's own digest. That does not cover provider transport, real
+  child execution or a real consultation, which remain unverified, and it does not explain the
+  Advisor failure reported on a forked session or the menu/status discrepancy; both stay open.
+
 ## 0.22.1 - 2026-10-22
 
 ### Fixed

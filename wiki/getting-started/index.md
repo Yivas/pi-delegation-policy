@@ -10,14 +10,14 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 ## Requirements
 
-- Version `0.22.1` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
+- Version `0.22.2` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
 - Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design and Advisor are optional.
 
 ## 1. Install and reload
 
 ```bash
-pi install npm:pi-delegation-policy@0.22.1
+pi install npm:pi-delegation-policy@0.22.2
 ```
 
 Restart Pi or run `/reload`. Installing or upgrading changes no configuration: a session with no saved
@@ -68,8 +68,9 @@ Configure **Advisor 1**, optional **Advisor 2**, and per-entry thinking in `/del
 **Advisor mode** or run `/delegate advisor on`. Default **Advisor launch: role** asks the main agent
 to consult every valid entry in one background call. Optional **tool** mode uses explicit
 `consult_advisor({ question, brief? })` through the authorized external executor, never from hooks.
-Fresh needs a self-contained brief; fork sends the conversation to each provider. The tool's compatible
-executor is pinned to `pi-subagents` `0.76.1`. `A:PART` means one of two entries is valid and usable.
+Fresh needs a self-contained brief; fork sends the conversation to each provider. The tool's executor
+is admitted only for the exact `pi-subagents` builds whose launch contract was verified (`0.76.1` and
+`0.83.1`). `A:PART` means one of two entries is valid and usable.
 
 With delegation `off` and mode `on`, status shows `D:OFF A:ON`: consultation-only guidance is
 injected and ordinary roles are not required. Mode `off` silences consultation and keeps the saved
@@ -118,7 +119,7 @@ package, follow the downgrade steps in
 
 ## 7. When a change takes effect
 
-With version `0.22.1` on Pi `0.87.1` or later, the policy is refreshed before each LLM request, so a
+With version `0.22.2` on Pi `0.87.1` or later, the policy is refreshed before each LLM request, so a
 change made during a turn affects that turn's next request. A request already in progress, and
 host-owned role subagents keep their original state; tool groups cancel on detected authorization changes. Turning everything off removes the
 injected block when that version next applies its policy. Version `0.14.1` applies changes on the next

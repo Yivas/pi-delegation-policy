@@ -104,8 +104,9 @@ same question. Weigh disagreements; agreement is not proof. The packaged no-tool
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
   models and thinking. The extension observes matching attempts but does not launch them.
 - `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
-  advisor in parallel through the public `pi-subagents` delegation API, pinned to `0.76.1`. Otherwise
-  it returns unavailable text. No model, provider or executor fallback is added.
+  advisor in parallel through the public `pi-subagents` delegation API, admitted only for the exact
+  builds whose launch contract was verified (`0.76.1` and `0.83.1`). Otherwise it returns unavailable
+  text. No model, provider or executor fallback is added.
 
 Both modes ask for consultation after orientation before substantive work, when stuck, before changing
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
