@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.23.1 - 2026-10-29
+
+### Fixed
+
+- Advisor and ContextShunt reader launches no longer reject later `pi-subagents` releases solely
+  because their package version is not on an exact list. Both require a valid stable SemVer version
+  `>=0.76.1`, with no upper bound. Prereleases, invalid versions and non-string values are rejected;
+  build metadata does not affect precedence.
+- All other launch checks remain unchanged: contract and lifecycle version 3, definition projection
+  version 2, packaged profile and shadowing, exact model and thinking, tool and extension lists,
+  permission runtime, session identity and terminal digest binding. An incompatible preflight
+  still fails closed before a request is sent; a terminal mismatch still discards the reply.
+
+### Compatibility and verification
+
+- Pi `0.87.1` remains the package minimum. No dependency, configuration, schema, provider option or
+  permission change. Upgrade and reload; no configuration migration is needed.
+- The final loader was exercised against real `pi-subagents` `0.84.0` exports with a synthetic event
+  host on Pi `1.4.0`: Advisor fresh/fork and reader fresh completed with terminal binding. This
+  checks admission, not real child execution, provider transport or personal permission rules.
+  Version labels are not signatures or a guarantee of future compatibility.
+
 ## 0.23.0 - 2026-10-29
 
 ### Added

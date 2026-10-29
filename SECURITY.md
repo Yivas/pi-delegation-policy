@@ -69,4 +69,4 @@ Include the affected version or commit, operating system, Pi version, reproducti
 
 ## Supported versions
 
-Only the latest published version is supported. Version `0.23.0` requires Pi `0.87.1` or later; version `0.14.1` requires Pi `0.84.3` or later.
+Only the latest published version is supported. Version `0.23.1` requires Pi `0.87.1` or later; version `0.14.1` requires Pi `0.84.3` or later.
