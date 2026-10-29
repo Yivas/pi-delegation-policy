@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+## 0.23.0 - 2026-10-29
+
+### Added
+
+- An optional Anthropic provider extension for each Advisor. The native provider selector chooses the
+  separate `pi-delegation-policy.advisor-anthropic-auth` profile without changing the configured model,
+  thinking, background role behavior, standard Advisor profile or ContextShunt reader. Only an exact
+  managed-user installation of `@gotgenes/pi-anthropic-auth` 3.4.3 is admitted. Its normal configuration,
+  startup hook, aliases and account diagnostic command remain trusted host code; the diagnostic is
+  never invoked automatically. No provider package is bundled or installed by this extension.
+- Schema 10 stores the per-Advisor `providerExtension: "anthropic-auth"` opt-in. Schemas 2–9 migrate in
+  memory without surprise writes. When any opt-in is saved, companion envelope 2 binds the full state
+  to an Advisor-off schema-8 base: downgrading through 0.22.2 leaves all Advisors off instead of
+  silently choosing the standard profile. Ordinary delegation and the reader are preserved; saves
+  without an opt-in retain envelope 1.
+
+### Fixed
+
+- Changing an Advisor model through the command or panel preserves its provider option. An
+  incompatible provider reports an Advisor error rather than silently removing the opt-in.
+- Provider choices stay visible in short, narrow terminals; Enter and Escape retain their normal
+  apply/cancel behavior. An invalid companion now reports that Advisor remains off when that is the
+  actual restored state.
+
+### Compatibility and verification
+
+- Pi 0.87.1 or later remains the package minimum. Missing public APIs disable only the optional
+  provider path. Advisor launch contracts still admit exact pi-subagents 0.76.1/0.83.1; the reader
+  remains limited to 0.76.1. No ambient extensions, model fallback or permission bypass is added.
+- One bounded fresh/background real-provider consultation with the new profile completed on
+  Pi 1.4.0 and pi-subagents 0.83.1. Metadata showed only the prompt runtime and provider bridge, no
+  required child extensions and no observed tool calls. This does not validate fork, consult_advisor,
+  other builds or permission runtimes, or establish a sole cause of the earlier failure. Provider
+  code is not sandboxed, version labels are not signatures, and resolution-to-load races remain.
+
 ## 0.22.2 - 2026-10-28
 
 ### Fixed

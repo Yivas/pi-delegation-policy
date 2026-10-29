@@ -6,7 +6,7 @@ general subagent runner. Only explicit tools can request reader work or Advisor 
 the authorized host executor; hooks never launch children.
 
 > **Docs:** [yivas.github.io/pi-delegation-policy](https://yivas.github.io/pi-delegation-policy/).
-> Version **0.22.2** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
+> Version **0.23.0** requires Pi `0.87.1` or later (`>=0.87.1`); it re-applies its marked policy block in the final provider payload.
 > Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 >
 > Independent Advisor mode and its companion file are available from version `0.17.0`.
@@ -15,7 +15,7 @@ the authorized host executor; hooks never launch children.
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.22.2
+pi install npm:pi-delegation-policy@0.23.0
 # restart Pi, or run /reload
 ```
 
@@ -123,7 +123,7 @@ Consulting sends a brief, or with `fork` the conversation so far, to another mod
 latency and cost, including with delegation off. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
-### Provider extension (unreleased source)
+### Provider extension
 
 Each Advisor has an explicit **Anthropic auth 3.4.3** provider option in the native panel. It selects
 `pi-delegation-policy.advisor-anthropic-auth`, a separate no-tools profile that preserves the installed
@@ -131,12 +131,12 @@ provider extension's normal configuration, startup hook and account diagnostic c
 change the model/thinking, inherit all extensions, or alter ContextShunt. Only provider `anthropic`
 and an exact managed-user installation are supported; unavailable or incompatible setups fail closed.
 The account diagnostic is never invoked during initialization. With this opt-in saved, downgrading to
-0.22.2 leaves all Advisors off instead of falling back to the standard profile. The change is not yet
-in published 0.22.2. One bounded real-provider background consultation completed in fresh context on
+0.22.2 leaves all Advisors off instead of falling back to the standard profile. Available from
+0.23.0. One bounded real-provider background consultation completed in fresh context on
 Pi 1.4.0 with pi-subagents 0.83.1. Launch metadata showed only the prompt runtime and configured
 provider bridge, with no required extensions or observed tool calls. This does not validate fork,
 `consult_advisor`, other builds, or a sole cause of the earlier failure. See the
-[configuration reference](https://yivas.github.io/pi-delegation-policy/configuration/#provider-extension-unreleased-source)
+[configuration reference](https://yivas.github.io/pi-delegation-policy/configuration/#provider-extension)
 for the schema-10 option, trusted-code surface and installation limits.
 
 ## Where settings live

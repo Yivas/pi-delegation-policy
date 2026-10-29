@@ -45,7 +45,7 @@ may finish later, but starts no further operation.
 
 The task text and the reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and no absence of cost. The advisor cannot read files, run commands, delegate, or use tools, and its reply is plain text.
 
-### Optional provider code (unreleased source)
+### Optional provider code
 
 A per-Advisor `providerExtension: "anthropic-auth"` opt-in selects the separate
 `pi-delegation-policy.advisor-anthropic-auth` profile. It admits only a managed-user installation of
@@ -68,4 +68,4 @@ Include the affected version or commit, operating system, Pi version, reproducti
 
 ## Supported versions
 
-Only the latest published version is supported. Version `0.22.2` requires Pi `0.87.1` or later; version `0.14.1` requires Pi `0.84.3` or later.
+Only the latest published version is supported. Version `0.23.0` requires Pi `0.87.1` or later; version `0.14.1` requires Pi `0.84.3` or later.

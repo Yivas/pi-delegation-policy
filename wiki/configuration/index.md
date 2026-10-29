@@ -256,7 +256,7 @@ Consulting sends a brief, or with `fork` the conversation so far, to another mod
 latency and cost, including with delegation off. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
-### Provider extension (unreleased source)
+### Provider extension
 
 The default profile remains `pi-delegation-policy.advisor`, with no configured tools or extensions.
 For each configured Advisor, the **Advisor 1 provider** or **Advisor 2 provider** row offers an
@@ -281,7 +281,7 @@ unavailable. Nothing is installed automatically and other Advisors remain indepe
 loads no provider code while Advisor is off. It does not inventory irrelevant legacy copies; version
 labels are not signatures, and a resolution-to-load race remains. A persistent dispatch guard keeps
 initialization errors from silently choosing builtin transport. No provider payload or headers are
-reimplemented. This source change is not yet part of the installation command for published 0.22.2.
+reimplemented. The option is available from 0.23.0.
 One bounded fresh/background real-provider consultation completed on Pi 1.4.0 with pi-subagents
 0.83.1. Launch metadata showed the prompt runtime and provider bridge, no required extensions and no
 observed tool calls. Fork, `consult_advisor` and other builds were not validated by that run.
