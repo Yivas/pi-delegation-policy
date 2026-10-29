@@ -160,6 +160,8 @@ export type AgentLaunchDefinition<Request extends AgentLaunchRequest, Value> = R
    * as its effective allowlist, its required child tools, and its internal tools.
    */
   internalTools: readonly string[];
+  /** Exact configured entries admitted only by this profile, never by the shared reader. */
+  configuredExtensions?: readonly string[];
   buildTask: (request: Request) => string;
   result: AgentLaunchResultExpectation<Request, Value>;
 }>;
@@ -482,7 +484,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       !exactStrings(contract.tools.internalTools, definition.internalTools) ||
       !exactStrings(contract.tools.effectiveMcpTools, []) ||
       !exactStrings(contract.tools.toolExtensionPaths, []) ||
-      !exactStrings(contract.tools.configuredExtensions, []) ||
+      !exactStrings(contract.tools.configuredExtensions, definition.configuredExtensions ?? []) ||
       !exactStrings(contract.tools.requiredExtensionIds, []) ||
       contract.tools.disableAmbientExtensions !== true ||
       contract.tools.fanoutAuthorized !== false ||
@@ -501,7 +503,11 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
     const admitted = modules
       .admittedRuntimeExtensionLists()
       .find((list) => exactStrings(tools.runtimeExtensions, list));
-    if (!admitted || !exactStrings(tools.extensionArgs, admitted)) return false;
+    if (
+      !admitted ||
+      !exactStrings(tools.extensionArgs, [...admitted, ...(definition.configuredExtensions ?? [])])
+    )
+      return false;
 
     if (
       !isRecord(contract.roots) ||

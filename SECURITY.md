@@ -45,6 +45,21 @@ may finish later, but starts no further operation.
 
 The task text and the reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and no absence of cost. The advisor cannot read files, run commands, delegate, or use tools, and its reply is plain text.
 
+### Optional provider code (unreleased source)
+
+A per-Advisor `providerExtension: "anthropic-auth"` opt-in selects the separate
+`pi-delegation-policy.advisor-anthropic-auth` profile. It admits only a managed-user installation of
+`@gotgenes/pi-anthropic-auth` 3.4.3 with the exact manifest/entry/canonical path, not ambient
+extensions. The provider's normal configuration, startup hook, aliases and diagnostic command are
+trusted code with normal authentication and filesystem access; zero model tools is not a sandbox.
+The account diagnostic is never invoked during initialization. Failed initialization retains a
+closed dispatch guard rather than builtin transport. Version labels are not signatures and the
+resolution-to-load race remains. Saved opt-ins silence all Advisors on downgrade to 0.22.2; ordinary
+delegation and the ContextShunt reader are unchanged. One bounded fresh/background real-provider
+consultation completed on Pi 1.4.0 with pi-subagents 0.83.1. Launch metadata showed the prompt runtime
+and provider bridge, no required extensions and no observed tool calls. This does not establish fork,
+`consult_advisor` or other-build compatibility, eliminate the race, or identify a sole historical cause.
+
 ## Reporting
 
 Please use GitHub's private vulnerability reporting for this repository. Do not open a public issue for an undisclosed vulnerability. Remove credentials, session files, prompts, personal paths, and unredacted logs from reports.

@@ -267,7 +267,7 @@ function parseShunt(value: unknown, schema: 4 | 5 | 6 | 7 | 8): ContextShuntSett
 }
 function envelope(
   value: unknown,
-  schema: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  schema: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
   keys: readonly string[],
   intensityValidator: (value: unknown) => boolean,
 ): value is Record<string, unknown> {
@@ -313,7 +313,7 @@ export function parseSchema2Config(value: unknown): Schema2Config | undefined {
 }
 function parseModern(
   value: unknown,
-  schema: 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  schema: 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
   session: boolean,
 ): GlobalDefaults | SessionDelegateState | undefined {
   const keys =
@@ -343,7 +343,7 @@ function parseModern(
       ? undefined
       : session && value.advisors === null
         ? null
-        : parseAdvisors(value.advisors);
+        : parseAdvisors(value.advisors, schema >= 10);
   if (value.advisors !== undefined && advisors === undefined) return undefined;
   if (
     value.advisors !== undefined &&
@@ -427,15 +427,35 @@ export function parseSchema8Config(value: unknown): GlobalDefaults | undefined {
 export function parseSchema9Config(value: unknown): GlobalDefaults | undefined {
   return parseModern(value, 9, false) as GlobalDefaults | undefined;
 }
-function parseAdvisors(value: unknown): AdvisorSetting[] | undefined {
+export function parseSchema10Config(value: unknown): GlobalDefaults | undefined {
+  return parseModern(value, 10, false) as GlobalDefaults | undefined;
+}
+function parseAdvisors(value: unknown, providerExtensions = false): AdvisorSetting[] | undefined {
   if (!Array.isArray(value) || value.length < 1 || value.length > 2) return undefined;
   const entries: AdvisorSetting[] = [];
   for (const entry of value) {
-    if (!isRecord(entry) || !only(entry, ["provider", "model", "thinking"])) return undefined;
+    if (
+      !isRecord(entry) ||
+      !only(entry, [
+        "provider",
+        "model",
+        "thinking",
+        ...(providerExtensions ? ["providerExtension"] : []),
+      ])
+    )
+      return undefined;
+    if (entry.providerExtension !== undefined && entry.providerExtension !== "anthropic-auth")
+      return undefined;
     const reference = model({ provider: entry.provider, model: entry.model });
     const thinking = entry.thinking === undefined ? undefined : thinkingPolicy(entry.thinking);
     if (!reference || (entry.thinking !== undefined && !thinking)) return undefined;
-    entries.push({ ...reference, ...(thinking ? { thinking } : {}) });
+    entries.push({
+      ...reference,
+      ...(thinking ? { thinking } : {}),
+      ...(entry.providerExtension === "anthropic-auth"
+        ? { providerExtension: "anthropic-auth" as const }
+        : {}),
+    });
   }
   return entries;
 }
@@ -471,6 +491,7 @@ function migrate2(value: Schema2Config | Schema2Session): SessionDelegateState {
 }
 export function parseConfig(value: unknown): GlobalDefaults | undefined {
   return (
+    parseSchema10Config(value) ??
     parseSchema9Config(value) ??
     parseSchema8Config(value) ??
     parseSchema7Config(value) ??
@@ -502,6 +523,7 @@ function parseSchema2Session(value: unknown): Schema2Session | undefined {
 }
 export function parseSessionState(value: unknown): SessionDelegateState | undefined {
   return (
+    (parseModern(value, 10, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 9, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 8, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 7, true) as SessionDelegateState | undefined) ??
@@ -562,12 +584,19 @@ function schema8Projection(state: GlobalDefaults | SessionDelegateState) {
     if (Object.keys(thinking).length) projected.thinking = thinking;
     else delete projected.thinking;
   }
+  // Old readers must never recover a provider-dependent Advisor as an ordinary one.
+  if (hasProviderExtension(state)) projected.advisorMode = "off";
   return projected;
+}
+function hasProviderExtension(state: GlobalDefaults | SessionDelegateState): boolean {
+  return configuredAdvisors(state)?.some((entry) => entry.providerExtension !== undefined) ?? false;
 }
 export function getAdvisorExtensionPath(path: string): string {
   return `${path.endsWith(".json") ? path.slice(0, -5) : path}.advisor-extension.json`;
 }
 function advisorExtension(state: GlobalDefaults | SessionDelegateState) {
+  if (hasProviderExtension(state))
+    return { schemaVersion: 2, base: schema8Projection(state), state };
   const second = configuredAdvisors(state)?.[1];
   return {
     schemaVersion: 1,
@@ -576,18 +605,36 @@ function advisorExtension(state: GlobalDefaults | SessionDelegateState) {
     ...(state.advisorLaunch ? { advisorLaunch: state.advisorLaunch } : {}),
   };
 }
-function extensionDiagnostic(): ConfigDiagnostic {
+function extensionDiagnostic(state: GlobalDefaults | SessionDelegateState): ConfigDiagnostic {
   return {
     scope: "advisor-extension",
     reportWhenOff: true,
     message:
-      "Advisor extension settings are missing, invalid, or stale. Using Advisor 1 only with the inherited launch mode; save again with /delegate.",
+      state.advisorMode === "off" || !configuredAdvisors(state)?.length
+        ? "Advisor extension settings are missing, invalid, or stale. Advisor remains off; save again with /delegate."
+        : "Advisor extension settings are missing, invalid, or stale. Using Advisor 1 only with the inherited launch mode; save again with /delegate.",
   };
 }
 function applyAdvisorExtension<T extends GlobalDefaults | SessionDelegateState>(
   state: T,
   value: unknown,
 ): T | undefined {
+  if (isRecord(value) && value.schemaVersion === 2) {
+    if (!only(value, ["schemaVersion", "base", "state"])) return undefined;
+    const candidate = parseSessionState(value.state);
+    const base = parseSessionState(value.base);
+    if (
+      !candidate ||
+      !isRecord(value.state) ||
+      value.state.schemaVersion !== 10 ||
+      !hasProviderExtension(candidate) ||
+      !base ||
+      !isDeepStrictEqual(schema8Projection(candidate), schema8Projection(base)) ||
+      !isDeepStrictEqual(schema8Projection(base), schema8Projection(state))
+    )
+      return undefined;
+    return candidate as T;
+  }
   if (
     !isRecord(value) ||
     value.schemaVersion !== 1 ||
@@ -735,7 +782,7 @@ async function readAdvisorCompanion(
     const extended = applyAdvisorExtension(state, extension);
     return extended
       ? { defaults: extended, diagnostics: [] }
-      : { defaults: state, diagnostics: [extensionDiagnostic()] };
+      : { defaults: state, diagnostics: [extensionDiagnostic(state)] };
   }
   return {
     defaults: withoutAdvisorActivation(defaults, state),
@@ -780,7 +827,7 @@ export async function writeConfig(
   path: string,
   defaults: GlobalDefaults,
 ): Promise<GlobalSaveResult> {
-  const parsed = parseSchema9Config(defaults);
+  const parsed = parseSchema10Config(defaults);
   if (!parsed) throw new Error("Refusing to write invalid delegation policy defaults.");
   const companionPath = getAdvisorConfigPath(path);
   const extensionPath = getAdvisorExtensionPath(path);
@@ -866,7 +913,7 @@ export function restoreSessionStateWithDiagnostics(entries: unknown[]): Restored
             ? applyAdvisorExtension(companion, extension.data)
             : undefined;
         if (extended) session = extended;
-        else return { session, diagnostics: [extensionDiagnostic()] };
+        else return { session, diagnostics: [extensionDiagnostic(session)] };
       } else
         return {
           session: { ...session, advisor: null, advisorMode: "off" },

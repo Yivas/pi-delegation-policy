@@ -6,7 +6,7 @@
   "required": ["schemaVersion"],
   "properties": {
     "schemaVersion": {
-      "enum": [7, 8, 9]
+      "enum": [7, 8, 9, 10]
     },
     "intensity": {
       "enum": ["off", "normal", "aggressive", "orchestrator"]
@@ -54,6 +54,17 @@
     }
   },
   "allOf": [
+    {
+      "if": { "properties": { "schemaVersion": { "enum": [7, 8, 9] } } },
+      "then": {
+        "properties": {
+          "advisors": {
+            "type": "array",
+            "items": { "not": { "type": "object", "required": ["providerExtension"] } }
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {
@@ -269,6 +280,10 @@
         },
         "thinking": {
           "$ref": "#/$defs/roleThinking"
+        },
+        "providerExtension": {
+          "const": "anthropic-auth",
+          "description": "Explicit opt-in to the separate Anthropic Advisor profile; requires managed-user pi-anthropic-auth 3.4.3. Does not change the model."
         }
       },
       "additionalProperties": false

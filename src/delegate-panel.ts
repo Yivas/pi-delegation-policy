@@ -62,6 +62,8 @@ const FIELD_IDS = [
   "advisorLaunch",
   "advisor2",
   "thinkingAdvisor2",
+  "advisorProvider",
+  "advisor2Provider",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
 const THINKING_FIELDS = [
@@ -124,6 +126,7 @@ function isLimitField(field: AdvancedField | EditableAdvancedField): field is Li
 type PanelMode =
   | { kind: "settings" }
   | { kind: "enum"; field: EnumField; selected: number }
+  | { kind: "provider"; field: "advisorProvider" | "advisor2Provider"; selected: number }
   | { kind: "model"; field: ModelField; selected: number; query: string }
   | { kind: "advanced"; selected: number }
   | { kind: "advanced-reader-enabled"; selected: number }
@@ -200,6 +203,8 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   thinkingLarge: "Large thinking",
   thinkingUiDesign: "Visual Design thinking",
   advisor: "Advisor 1",
+  advisorProvider: "Advisor 1 provider",
+  advisor2Provider: "Advisor 2 provider",
   advisor2: "Advisor 2 (optional)",
   advisorLaunch: "Advisor launch",
   thinkingAdvisor2: "Advisor 2 thinking",
@@ -233,6 +238,10 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
   advisorMode:
     "On works independently of delegation; off disables advice; with-delegation preserves legacy behavior. Consultations may incur cost.",
+  advisorProvider:
+    "Standard profile or explicit Anthropic auth extension. The extension runs its normal configuration, startup hook and account diagnostic command; no model tools are added.",
+  advisor2Provider:
+    "Choose independently for Advisor 2; Anthropic auth requires provider anthropic and managed-user pi-anthropic-auth 3.4.3. No installation or model change.",
   advisor: "First advice model; executes no work. Removing it removes both advisors.",
   advisor2: "Add a second model consulted alongside Advisor 1, or remove it with Disable.",
   advisorLaunch:
@@ -440,6 +449,7 @@ export class DelegatePanel implements Component, Focusable {
 
     if (this.mode.kind === "settings") this.handleSettingsInput(data);
     else if (this.mode.kind === "enum") this.handleEnumInput(data);
+    else if (this.mode.kind === "provider") this.handleProviderInput(data);
     else if (this.mode.kind === "model") this.handleModelInput(data);
     else if (this.mode.kind === "advanced") this.handleAdvancedInput(data);
     else if (this.mode.kind === "advanced-reader-enabled")
@@ -471,6 +481,7 @@ export class DelegatePanel implements Component, Focusable {
     const mode = this.mode;
     if (mode.kind === "settings") return this.renderSettings(width, budget);
     if (mode.kind === "enum") return this.renderEnum(width, budget, mode);
+    if (mode.kind === "provider") return this.renderProvider(width, budget, mode);
     if (mode.kind === "model") return this.renderModel(width, budget, mode);
     if (mode.kind === "advanced") return this.renderAdvanced(width, budget, mode);
     if (mode.kind === "advanced-reader-enabled")
@@ -640,6 +651,14 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string {
     if (isThinkingField(field)) return this.thinkingValue(field);
+    if (field === "advisorProvider" || field === "advisor2Provider") {
+      const entry = effective.advisors[field === "advisorProvider" ? 0 : 1];
+      return !entry
+        ? "configure model first"
+        : entry.providerExtension
+          ? "Anthropic auth · advisor-anthropic-auth"
+          : "Standard · advisor";
+    }
     if (
       field === "intensity" ||
       field === "preference" ||
@@ -915,6 +934,10 @@ export class DelegatePanel implements Component, Focusable {
   }
 
   private sourceDetails(field: DelegateField): string[] {
+    if (field === "advisorProvider" || field === "advisor2Provider")
+      return [
+        "Default: standard; opt-in keeps the selected model and thinking. Missing or incompatible package disables only this Advisor.",
+      ];
     if (field === "intensity") {
       return [
         "built-in off",
@@ -977,6 +1000,58 @@ export class DelegatePanel implements Component, Focusable {
       `global ${rawModelText(this.modelSetting(this.global, field), "—")}`,
       `session ${rawModelText(this.modelSetting(this.draft, field), "inherit")}`,
     ];
+  }
+
+  private renderProvider(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "provider" }>,
+  ): string[] {
+    const options = [
+      "Use global provider option",
+      "Standard profile (no provider extension)",
+      "Anthropic auth 3.4.3 (explicit opt-in)",
+    ];
+    const blocks = options.map((label, index) => [
+      selectedLine(this.theme, label, width, index === mode.selected),
+    ]);
+    // Reserve the choices first. A wrapped explanation must never hide the selection
+    // while Enter can still confirm it, including in a short, narrow terminal.
+    const description = wrapTextWithAnsi(FIELD_DESCRIPTIONS[mode.field], width).slice(
+      0,
+      Math.max(0, budget - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
+  }
+
+  private handleProviderInput(data: string): void {
+    if (this.mode.kind !== "provider") return;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected + 2) % 3;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % 3;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      const index = this.mode.field === "advisorProvider" ? 0 : 1;
+      const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
+      const entry = entries[index];
+      if (!entry) {
+        this.message = { kind: "error", text: "Configure this Advisor model first." };
+        return;
+      }
+      const extension =
+        this.mode.selected === 0
+          ? configuredAdvisors(this.global)?.[index]?.providerExtension
+          : this.mode.selected === 2
+            ? "anthropic-auth"
+            : undefined;
+      if (extension) entry.providerExtension = extension;
+      else delete entry.providerExtension;
+      this.replaceAdvisors(entries);
+      this.mode = { kind: "settings" };
+    }
   }
 
   private renderEnum(
@@ -1326,6 +1401,13 @@ export class DelegatePanel implements Component, Focusable {
   private activateSettingsItem(): void {
     const item = SETTINGS_ITEMS[this.settingsIndex];
     if (!item) return;
+    if (item === "advisorProvider" || item === "advisor2Provider") {
+      const entry = resolveDelegateState(this.global, this.draft).advisors[
+        item === "advisorProvider" ? 0 : 1
+      ];
+      this.mode = { kind: "provider", field: item, selected: entry?.providerExtension ? 2 : 1 };
+      return;
+    }
     if (item === "contextAdvanced") {
       this.mode = { kind: "advanced", selected: 0 };
       return;
@@ -1833,6 +1915,9 @@ export class DelegatePanel implements Component, Focusable {
         entries[index] = {
           ...reference,
           ...(entries[index]?.thinking ? { thinking: entries[index]!.thinking } : {}),
+          ...(entries[index]?.providerExtension
+            ? { providerExtension: entries[index]!.providerExtension }
+            : {}),
         };
       if (choice.kind === "global" && index === 0) {
         delete this.draft.advisors;

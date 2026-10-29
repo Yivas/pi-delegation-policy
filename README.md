@@ -123,6 +123,22 @@ Consulting sends a brief, or with `fork` the conversation so far, to another mod
 latency and cost, including with delegation off. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
+### Provider extension (unreleased source)
+
+Each Advisor has an explicit **Anthropic auth 3.4.3** provider option in the native panel. It selects
+`pi-delegation-policy.advisor-anthropic-auth`, a separate no-tools profile that preserves the installed
+provider extension's normal configuration, startup hook and account diagnostic command. It does not
+change the model/thinking, inherit all extensions, or alter ContextShunt. Only provider `anthropic`
+and an exact managed-user installation are supported; unavailable or incompatible setups fail closed.
+The account diagnostic is never invoked during initialization. With this opt-in saved, downgrading to
+0.22.2 leaves all Advisors off instead of falling back to the standard profile. The change is not yet
+in published 0.22.2. One bounded real-provider background consultation completed in fresh context on
+Pi 1.4.0 with pi-subagents 0.83.1. Launch metadata showed only the prompt runtime and configured
+provider bridge, with no required extensions or observed tool calls. This does not validate fork,
+`consult_advisor`, other builds, or a sole cause of the earlier failure. See the
+[configuration reference](https://yivas.github.io/pi-delegation-policy/configuration/#provider-extension-unreleased-source)
+for the schema-10 option, trusted-code surface and installation limits.
+
 ## Where settings live
 
 The extension stores only policy: intensity, preference, Advisor mode, model references, the optional
@@ -143,7 +159,7 @@ prompts, and never the thinking level of an individual run.
 Schema 9 accepts ordered `advisors: [{provider, model, thinking?}]` with 1–2 entries and inherited
 `advisorLaunch: role|tool`. An omitted list inherits; a list replaces both entries and their thinking;
 session `advisors: null` disables. Legacy `advisor` and `thinking.advisor` are single-advisor shorthand,
-not combinable with `advisors`. Schemas 2–8 resolve into the effective list in memory without writing.
+not combinable with `advisors`. Schemas 2–9 resolve into the schema-10 effective state in memory without writing. Schema 10 adds the per-Advisor provider opt-in described above; saves without it retain the envelope-1 layout.
 
 Global saves replace delegation, companion, then extension, individually atomically, not as a
 transaction. All three previous files must be readable or absent. On failure, restore and verify only

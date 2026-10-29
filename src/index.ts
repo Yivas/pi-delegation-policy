@@ -19,7 +19,7 @@ import {
   AdvisorExecutor,
   advisorFailureText,
   advisorThinking,
-  ADVISOR_AGENT_NAME,
+  advisorAgentName,
 } from "./advisor-executor.ts";
 import { AdvisorLog } from "./advisor-log.ts";
 import {
@@ -286,7 +286,7 @@ export function statusText(state: RuntimeState): string {
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
     ...effective.advisors.map(
       (entry, index) =>
-        `advisor-${index + 1}=${formatModelRef(entry)}; thinking=${thinkingToken(entry.thinking)} (${effective.source.advisors})`,
+        `advisor-${index + 1}=${formatModelRef(entry)}; thinking=${thinkingToken(entry.thinking)}; profile=${advisorAgentName(entry)} (${effective.source.advisors})`,
     ),
     ...THINKING_ROLE_KEYS.map(
       (role) =>
@@ -561,6 +561,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             question: input.question,
             ...(input.brief?.trim() ? { brief: input.brief } : {}),
             context,
+            ...(entry.setting.providerExtension
+              ? { providerExtension: entry.setting.providerExtension }
+              : {}),
             model: {
               provider: entry.model.provider,
               id: entry.model.id,
@@ -799,6 +802,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
                     ...(entries[action.index]?.thinking
                       ? { thinking: entries[action.index]!.thinking }
                       : {}),
+                    ...(entries[action.index]?.providerExtension
+                      ? { providerExtension: entries[action.index]!.providerExtension }
+                      : {}),
                   };
                 }
               } else {
@@ -1015,7 +1021,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         );
         const calls = Array.isArray(event.input.tasks) ? event.input.tasks : [event.input];
         for (const call of calls) {
-          if (!call || typeof call !== "object" || call.agent !== ADVISOR_AGENT_NAME) continue;
+          if (
+            !call ||
+            typeof call !== "object" ||
+            !validAdvisors(latestRuntime).some(
+              (entry) => call.agent === advisorAgentName(entry.setting),
+            )
+          )
+            continue;
           const requested = typeof call.model === "string" ? call.model : "";
           const model = [...allowed].find(
             (id) => requested === id || requested.startsWith(`${id}:`),

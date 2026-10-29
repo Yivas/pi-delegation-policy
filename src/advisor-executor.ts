@@ -17,6 +17,10 @@ import {
 import type { AdvisorContext } from "./prompt.ts";
 import type { AdvisorSetting, ThinkingLevelName } from "./types.ts";
 import type { ConsultationAttempt } from "./advisor-log.ts";
+import {
+  ANTHROPIC_ADVISOR_AGENT,
+  ANTHROPIC_ADVISOR_EXTENSION,
+} from "./advisor-anthropic-provider.ts";
 
 /**
  * `pi-subagents` builds whose launch contract was checked against this profile: the original pin and
@@ -30,6 +34,7 @@ export type AdvisorRequest = AgentLaunchRequest & {
   question: string;
   brief?: string;
   context: AdvisorContext;
+  providerExtension?: "anthropic-auth";
 };
 export type AdvisorAnswer = {
   model: string;
@@ -52,6 +57,22 @@ const DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
     variant: "text",
     isValue: (value): value is string => typeof value === "string" && value.trim().length > 0,
   },
+};
+
+export function advisorAgentName(
+  setting: Pick<AdvisorSetting, "provider" | "model" | "providerExtension">,
+): string {
+  return setting.providerExtension === "anthropic-auth"
+    ? ANTHROPIC_ADVISOR_AGENT
+    : ADVISOR_AGENT_NAME;
+}
+const ANTHROPIC_DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
+  ...DEFINITION,
+  agentName: ANTHROPIC_ADVISOR_AGENT,
+  agentPath: fileURLToPath(
+    new URL("../agents/pi-delegation-policy.advisor-anthropic-auth.md", import.meta.url),
+  ),
+  configuredExtensions: [ANTHROPIC_ADVISOR_EXTENSION],
 };
 
 export function advisorThinking(setting: AdvisorSetting, model: Model<Api>): ThinkingLevelName {
@@ -176,6 +197,7 @@ export function advisorFailureText(result: AdvisorFailureResult): string {
  */
 export class AdvisorExecutor {
   private readonly launches: AgentLaunch<AdvisorRequest, string>[];
+  private readonly providerLaunches: AgentLaunch<AdvisorRequest, string>[];
   private pending = false;
   private generation = 0;
 
@@ -183,6 +205,10 @@ export class AdvisorExecutor {
     this.launches = [
       new AgentLaunch(DEFINITION, dependencies),
       new AgentLaunch(DEFINITION, dependencies),
+    ];
+    this.providerLaunches = [
+      new AgentLaunch(ANTHROPIC_DEFINITION, dependencies),
+      new AgentLaunch(ANTHROPIC_DEFINITION, dependencies),
     ];
   }
   get busy(): boolean {
@@ -202,7 +228,9 @@ export class AdvisorExecutor {
       return await Promise.all(
         requests.map(async (request, index) => {
           const model = `${request.model.provider}/${request.model.id}`;
-          const launch = this.launches[index]!;
+          const launch = (
+            request.providerExtension === "anthropic-auth" ? this.providerLaunches : this.launches
+          )[index]!;
           let context = request.context;
           const attempt = async (input: AdvisorRequest) => {
             const start = Date.now();
@@ -237,14 +265,14 @@ export class AdvisorExecutor {
   }
   cancel(): void {
     this.generation += 1;
-    for (const launch of this.launches) launch.cancel();
+    for (const launch of [...this.launches, ...this.providerLaunches]) launch.cancel();
   }
   rotate(): void {
     this.generation += 1;
-    for (const launch of this.launches) launch.rotate();
+    for (const launch of [...this.launches, ...this.providerLaunches]) launch.rotate();
   }
   close(): void {
     this.generation += 1;
-    for (const launch of this.launches) launch.close();
+    for (const launch of [...this.launches, ...this.providerLaunches]) launch.close();
   }
 }

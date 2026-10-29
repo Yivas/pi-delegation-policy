@@ -6,7 +6,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { AdvisorExecutor, ADVISOR_AGENT_NAME } from "../src/advisor-executor.ts";
+import { AdvisorExecutor, ADVISOR_AGENT_NAME, advisorAgentName } from "../src/advisor-executor.ts";
+import {
+  ANTHROPIC_ADVISOR_AGENT,
+  ANTHROPIC_ADVISOR_EXTENSION,
+} from "../src/advisor-anthropic-provider.ts";
 import { AdvisorLog, ADVISOR_LOG_MAX_BYTES } from "../src/advisor-log.ts";
 import type { AgentLaunchModules } from "../src/agent-launch.ts";
 import {
@@ -128,7 +132,7 @@ class Bus {
       ownerRunId: request.ownerRunId,
       nodeId: request.nodeId,
       status,
-      agent: ADVISOR_AGENT_NAME,
+      agent: request.agent,
       model: `${request.model}:${request.thinking}`,
       thinking: request.thinking,
       launchContractDigest: launchTaskDigest(executionTask),
@@ -290,6 +294,49 @@ async function until(condition: () => boolean) {
 
 // Public boundary: schema parsing/effective state, saved files read by released parsers, and the
 // registered tool/hooks against a synthetic delegation event host. No provider or credentials.
+test("model commands preserve the Advisor provider opt-in instead of falling back", async () => {
+  const configured = {
+    provider: "anthropic",
+    model: "synthetic-one",
+    providerExtension: "anthropic-auth" as const,
+    thinking: { level: "low" as const },
+  };
+  const available = ["synthetic-one", "synthetic-two"].map((id) => ({
+    ...models[0]!,
+    provider: "anthropic",
+    id,
+    name: id,
+  }));
+  available.push({ ...models[0]!, provider: "example", id: "incompatible", name: "incompatible" });
+  for (const advisorLaunch of ["role", "tool"] as const) {
+    const run = await harness(
+      { ...base, advisors: [configured], advisorMode: "off", advisorLaunch },
+      available,
+    );
+    try {
+      for (const model of [
+        "anthropic/synthetic-one",
+        "anthropic/synthetic-two",
+        "example/incompatible",
+      ]) {
+        await run.command(`advisor 1 model ${model}`);
+        const saved = restoreSessionState(run.branch).advisors?.[0];
+        assert.equal(saved?.providerExtension, "anthropic-auth");
+        assert.equal(`${saved?.provider}/${saved?.model}`, model);
+        assert.deepEqual(saved?.thinking, configured.thinking);
+        assert.equal(advisorAgentName(saved!), ANTHROPIC_ADVISOR_AGENT);
+      }
+      await run.command("advisor on");
+      const state = await loadRuntime(run.ctx as never);
+      assert.equal(advisorStatusLabel(state), "A:ERR");
+      assert.match(state.advisorErrors?.join(" ") ?? "", /requires provider anthropic/);
+      assert.deepEqual(validAdvisors(state), []);
+      assert.equal(run.bus.requests.length, 0);
+    } finally {
+      await run.close();
+    }
+  }
+});
 test("removing Advisor 1 through the command clears the list and turns Advisor off", async () => {
   for (const advisors of [[first], [first, second]]) {
     const run = await harness({ ...base, advisors });
@@ -442,7 +489,7 @@ test("schema 9 preserves the first advisor on downgrade and isolates stale exten
     });
     assert.ok(parsed);
     assert.deepEqual(
-      resolveDelegateState(parsed, { schemaVersion: 9 }).advisors,
+      resolveDelegateState(parsed, { schemaVersion: CURRENT_SCHEMA_VERSION }).advisors,
       schemaVersion >= 7 ? [first] : [],
     );
   }
@@ -473,7 +520,8 @@ test("schema 9 preserves the first advisor on downgrade and isolates stale exten
     assert.deepEqual(restore020(branch).thinking?.advisor, { level: "low" });
     assert.equal(restore016(branch).advisor, null);
     assert.deepEqual(
-      resolveDelegateState({ schemaVersion: 9 }, restoreSessionState(branch)).advisors,
+      resolveDelegateState({ schemaVersion: CURRENT_SCHEMA_VERSION }, restoreSessionState(branch))
+        .advisors,
       [first, second],
     );
     const extensionPath = getAdvisorExtensionPath(run.path);
@@ -485,12 +533,14 @@ test("schema 9 preserves the first advisor on downgrade and isolates stale exten
       await writeFile(extensionPath, invalid);
       const loaded = await readConfig(run.path);
       assert.equal(loaded.diagnostics[0]?.scope, "advisor-extension");
-      const effective = resolveDelegateState(loaded.defaults, { schemaVersion: 9 });
+      const effective = resolveDelegateState(loaded.defaults, {
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+      });
       assert.deepEqual(effective.advisors, [first]);
       assert.equal(effective.advisorLaunch, "role");
       const state: RuntimeState = {
         global: loaded.defaults,
-        session: { schemaVersion: 9 },
+        session: { schemaVersion: CURRENT_SCHEMA_VERSION },
         effective,
         diagnostics: loaded.diagnostics,
         modelStatuses: new Map(),
@@ -1026,3 +1076,66 @@ test("a failed third global replacement restores the exact previous three-file s
     await run.close();
   }
 });
+
+for (const version of ["0.76.1", "0.83.1"] as const) {
+  test(`provider-specific Advisor binds its own exact extension contract on ${version}`, async () => {
+    for (const extra of [false, true]) {
+      const modules = await fakeModules("valid", version);
+      const original = modules.resolveSubagentLaunchContract;
+      const bus = new Bus();
+      bus.respond = (request) => bus.finish(request);
+      const executor = new AdvisorExecutor({
+        loader: async () => ({
+          ...modules,
+          resolveSubagentLaunchContract: async (input) => {
+            const resolved = (await original(input)) as { contract: Payload };
+            const contract = resolved.contract;
+            contract.agent = {
+              ...(contract.agent as Payload),
+              name: ANTHROPIC_ADVISOR_AGENT,
+              localName: ANTHROPIC_ADVISOR_AGENT,
+              filePath: fileURLToPath(
+                new URL(
+                  "../agents/pi-delegation-policy.advisor-anthropic-auth.md",
+                  import.meta.url,
+                ),
+              ),
+            };
+            const tools = contract.tools as Payload;
+            tools.configuredExtensions = [
+              ANTHROPIC_ADVISOR_EXTENSION,
+              ...(extra ? ["unexpected-extension"] : []),
+            ];
+            tools.extensionArgs = [
+              "prompt-runtime",
+              ANTHROPIC_ADVISOR_EXTENSION,
+              ...(extra ? ["unexpected-extension"] : []),
+            ];
+            return resolved;
+          },
+        }),
+      });
+      const [answer] = await executor.execute(
+        [
+          {
+            question: "synthetic question",
+            brief: "synthetic brief",
+            context: "fresh",
+            providerExtension: "anthropic-auth",
+            model: { provider: "anthropic", id: "synthetic-model", thinking: "low" },
+            availableModels: [
+              { provider: "anthropic", id: "synthetic-model", fullId: "anthropic/synthetic-model" },
+            ],
+          },
+        ],
+        { cwd: "/synthetic", sessionId: "synthetic-session", events: bus },
+        undefined,
+        () => undefined,
+      );
+      assert.equal(answer?.result.kind, extra ? "unavailable" : "completed");
+      assert.equal(bus.requests.length, extra ? 0 : 1);
+      if (!extra) assert.equal(bus.requests[0]?.agent, ANTHROPIC_ADVISOR_AGENT);
+      executor.close();
+    }
+  });
+}

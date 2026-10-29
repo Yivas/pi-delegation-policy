@@ -1,6 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-export const CURRENT_SCHEMA_VERSION = 9 as const;
+export const CURRENT_SCHEMA_VERSION = 10 as const;
 export const ADVISOR_LAUNCH_MODES = ["role", "tool"] as const;
 export type AdvisorLaunch = (typeof ADVISOR_LAUNCH_MODES)[number];
 
@@ -42,7 +42,10 @@ export const THINKING_LEVEL_NAMES = [
 export type ThinkingLevelName = (typeof THINKING_LEVEL_NAMES)[number];
 export type ThinkingPolicy =
   { level: ThinkingLevelName } | { min: ThinkingLevelName; max: ThinkingLevelName };
-export type AdvisorSetting = ModelRef & { thinking?: ThinkingPolicy };
+export type AdvisorSetting = ModelRef & {
+  thinking?: ThinkingPolicy;
+  providerExtension?: "anthropic-auth";
+};
 export type ThinkingSettings = Partial<Record<ModelConfigKey, ThinkingPolicy>>;
 export type SessionThinkingSettings = Partial<Record<ModelConfigKey, ThinkingPolicy | null>>;
 export const CONTEXT_SHUNT_MODES = ["off", "observe", "enforce"] as const;

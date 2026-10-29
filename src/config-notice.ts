@@ -41,7 +41,7 @@ export type NoticeProjection = {
   roles: Record<ModelRole, RoleText>;
   uiDesign: RoleText;
   thinking: Record<ModelRole | "uiDesign", ThinkingText>;
-  advisors: Array<{ model: string; thinking: ThinkingText }>;
+  advisors: Array<{ model: string; thinking: ThinkingText; providerExtension?: "anthropic-auth" }>;
   advisorMode: AdvisorMode;
   advisorLaunch: AdvisorLaunch;
   context: {
@@ -87,6 +87,7 @@ export function projectNoticeConfig(effective: EffectiveDelegateState): NoticePr
     advisors: effective.advisors.map((advisor) => ({
       model: `${advisor.provider}/${advisor.model}`,
       thinking: thinkingText(advisor.thinking),
+      ...(advisor.providerExtension ? { providerExtension: advisor.providerExtension } : {}),
     })),
     advisorMode: effective.advisorMode,
     advisorLaunch: effective.advisorLaunch,
@@ -143,6 +144,10 @@ function projectionFields(projection: NoticeProjection, advisorCount: number): N
       return [
         { label: `Advisor ${index + 1} model`, value: advisorModelValue(advisor?.model) },
         { label: `Advisor ${index + 1} thinking`, value: thinkingValue(advisor?.thinking) },
+        {
+          label: `Advisor ${index + 1} provider extension`,
+          value: advisor?.providerExtension ?? "standard",
+        },
       ];
     }).flat(),
     { label: "Context protection", value: projection.context.mode },

@@ -125,6 +125,25 @@ independent reader can run alongside it (at most three children). Abort, branch 
 detected authorization changes cancel the tool group. Partial results preserve a successful answer.
 Local timeouts and cancellation do not cap external generation, retries or cost.
 
+### Optional provider extension (unreleased source)
+
+The separate `pi-delegation-policy.advisor-anthropic-auth` profile can load the exact managed-user
+`@gotgenes/pi-anthropic-auth` 3.4.3 installation after a per-Advisor opt-in. It preserves that
+extension's normal configuration, startup hook, provider aliases and account diagnostic command;
+trusted host code can access its normal authentication and files even though the model has no tools.
+The diagnostic can query account information only when explicitly invoked and is never run by
+initialization or availability probes. This is not a sandbox or a metadata-only extension.
+
+Only the verified absolute entry is loaded; other configured extensions are not inherited. Missing
+APIs, package/entry mismatches or initialization errors leave the dispatch guard closed, without
+choosing builtin transport. The check does not sign code or eliminate a resolution-to-load race.
+ContextShunt and the original Advisor profile stay unchanged. See
+[configuration](/configuration/#provider-extension-unreleased-source) for supported installations and
+why downgrade to 0.22.2 silences all Advisors when an opt-in is saved. One bounded fresh/background
+real-provider consultation completed on Pi 1.4.0 with pi-subagents 0.83.1; launch metadata showed the
+prompt runtime and provider bridge, no required extensions and no observed tool calls. This does not
+validate fork, `consult_advisor`, other builds, or a sole cause of an earlier failure.
+
 ### Local content-free log
 
 Records are written only while a policy block is active; both delegation and Advisor off produce no events.

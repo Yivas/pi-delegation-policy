@@ -256,6 +256,42 @@ Consulting sends a brief, or with `fork` the conversation so far, to another mod
 latency and cost, including with delegation off. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
+### Provider extension (unreleased source)
+
+The default profile remains `pi-delegation-policy.advisor`, with no configured tools or extensions.
+For each configured Advisor, the **Advisor 1 provider** or **Advisor 2 provider** row offers an
+explicit **Anthropic auth 3.4.3** opt-in. It selects the separate package profile
+`pi-delegation-policy.advisor-anthropic-auth` in both role and tool mode. The model and thinking
+stay unchanged; role launches remain background. In configuration this is
+`providerExtension: "anthropic-auth"` on that Advisor entry, available in schema 10. Absence means
+the standard profile. Only provider `anthropic` is supported; an incompatible selection is an
+Advisor error, never a fallback to the standard profile or another model.
+
+This option runs the installed `@gotgenes/pi-anthropic-auth` **3.4.3** extension as trusted host
+code. Its normal global/project configuration, startup hook, provider aliases and
+`/anthropic-auth:status` command are retained. That command may query account information when
+explicitly invoked; initialization and availability checks never invoke it. The extension uses
+normal provider authentication; this package does not copy credentials or perform login. Empty
+model tools do not sandbox the provider code.
+
+Only a managed user install resolved by Pi under its agent directory's `npm/node_modules` is
+supported. The exact manifest, single entry and canonical path must match. Project candidates,
+legacy installs, unexpected entries, missing packages and incompatible host APIs make this Advisor
+unavailable. Nothing is installed automatically and other Advisors remain independent. The check
+loads no provider code while Advisor is off. It does not inventory irrelevant legacy copies; version
+labels are not signatures, and a resolution-to-load race remains. A persistent dispatch guard keeps
+initialization errors from silently choosing builtin transport. No provider payload or headers are
+reimplemented. This source change is not yet part of the installation command for published 0.22.2.
+One bounded fresh/background real-provider consultation completed on Pi 1.4.0 with pi-subagents
+0.83.1. Launch metadata showed the prompt runtime and provider bridge, no required extensions and no
+observed tool calls. Fork, `consult_advisor` and other builds were not validated by that run.
+
+With any provider opt-in saved, the extension companion uses envelope 2 containing the full schema-10
+state and an exact normalized schema-8 base with Advisor off. The legacy companion also has Advisor
+off. Readers through 0.22.2 therefore leave **all Advisors off**, preserving ordinary delegation,
+rather than run a provider-dependent Advisor as a standard one. Missing, corrupt or stale envelope-2
+state leaves them off until repaired. Without an opt-in, the envelope-1 format below is unchanged.
+
 ## Persistence and compatibility
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7 delegation only.
@@ -272,7 +308,7 @@ for the signals and the retention of the executor and its provider.
 Schema 9 accepts ordered `advisors: [{provider, model, thinking?}]` with 1–2 entries and inherited
 `advisorLaunch: role|tool`. An omitted list inherits; a list replaces both entries and their thinking;
 session `advisors: null` disables. Legacy `advisor` and `thinking.advisor` are single-advisor shorthand,
-not combinable with `advisors`. Schemas 2–8 resolve into the effective list in memory without writing.
+not combinable with `advisors`. Schemas 2–9 resolve into the schema-10 effective state in memory without writing.
 
 ### Compatible saves and interruption recovery
 

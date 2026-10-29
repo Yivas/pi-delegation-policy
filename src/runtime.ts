@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { locateAdvisorAnthropicProvider } from "./advisor-anthropic-provider.ts";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import {
   getGlobalConfigPath,
@@ -232,6 +233,16 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
             errors.push(
               `${label} thinking level "${level}" is not supported by ${setting.provider}/${setting.model}.`,
             );
+        }
+      }
+      if (setting.providerExtension) {
+        if (setting.provider !== "anthropic")
+          errors.push(
+            `${label} Anthropic provider extension requires provider anthropic; the configured model is unchanged.`,
+          );
+        else if (status.kind === "available") {
+          const location = locateAdvisorAnthropicProvider(ctx.cwd);
+          if (!location.ok) errors.push(location.message);
         }
       }
       if (index === 0) state.modelStatuses.set("advisor", status);
