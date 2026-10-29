@@ -22,13 +22,6 @@ import {
   ANTHROPIC_ADVISOR_EXTENSION,
 } from "./advisor-anthropic-provider.ts";
 
-/**
- * `pi-subagents` builds whose launch contract was checked against this profile: the original pin and
- * the build that only changed its own package version (same contract version, profile projection,
- * tool plan, runtime lists and fork wrapper). A different build is rejected before any request.
- */
-const ADMITTED_SUBAGENTS_VERSIONS: readonly string[] = ["0.76.1", "0.83.1"];
-
 export const ADVISOR_AGENT_NAME = "pi-delegation-policy.advisor";
 export type AdvisorRequest = AgentLaunchRequest & {
   question: string;
@@ -46,7 +39,6 @@ const DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
   agentPath: resolve(
     fileURLToPath(new URL("../agents/pi-delegation-policy.advisor.md", import.meta.url)),
   ),
-  admittedProtocolVersions: ADMITTED_SUBAGENTS_VERSIONS,
   allowFork: true,
   internalTools: [],
   buildTask: (request) =>

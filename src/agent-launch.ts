@@ -16,6 +16,10 @@ const PACKAGE_MANIFEST_SEARCH_DEPTH = 3;
 /** `pi-subagents` 0.76.1 `src/api/preflight.ts` and `src/shared/launch-contract.ts`. */
 const LAUNCH_CONTRACT_VERSION = 3;
 const DEFINITION_PROJECTION_VERSION = 2;
+const MIN_SUBAGENTS_VERSION = [0n, 76n, 1n] as const;
+// Stable SemVer only: build metadata does not affect precedence; prereleases are not admitted.
+const STABLE_SEMVER =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SHA256_LOWER_HEX = /^[0-9a-f]{64}$/;
 const DIAGNOSTIC_SEVERITIES = new Set(["warning", "host-required"]);
 const DELEGATION_EVENTS = {
@@ -149,12 +153,6 @@ export type AgentLaunchDefinition<Request extends AgentLaunchRequest, Value> = R
   /** Only the advisor may send a fork; reader requests remain fresh-only. */
   allowFork?: boolean;
   /**
-   * The `pi-subagents` package versions whose launch contract this profile was verified against.
-   * An exact, per-profile list: no range, wildcard or fallback, so a new build is rejected until
-   * its contract is checked.
-   */
-  admittedProtocolVersions: readonly string[];
-  /**
    * Builtin tools the child must expose. A profile that declares no tools and no
    * extensions exposes exactly these, so the contract must report the same list
    * as its effective allowlist, its required child tools, and its internal tools.
@@ -202,6 +200,19 @@ function exactStrings(value: unknown, expected: readonly string[]): boolean {
     value.length === expected.length &&
     value.every((item, index) => item === expected[index])
   );
+}
+
+function isSupportedSubagentsVersion(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match = STABLE_SEMVER.exec(value);
+  if (!match || match[0] !== value) return false;
+  for (const [index, minimum] of MIN_SUBAGENTS_VERSION.entries()) {
+    const digits = match[index + 1];
+    if (digits === undefined) return false;
+    const component = BigInt(digits);
+    if (component !== minimum) return component > minimum;
+  }
+  return true;
 }
 
 function isLowerHexDigest(value: unknown): value is string {
@@ -422,8 +433,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       contract.version !== LAUNCH_CONTRACT_VERSION ||
       !isRecord(contract.protocol) ||
       contract.protocol.lifecycleArtifactVersion !== 3 ||
-      typeof contract.protocol.packageVersion !== "string" ||
-      !definition.admittedProtocolVersions.includes(contract.protocol.packageVersion) ||
+      !isSupportedSubagentsVersion(contract.protocol.packageVersion) ||
       contract.runId !== active.requestId ||
       !isLowerHexDigest(contract.digest)
     )

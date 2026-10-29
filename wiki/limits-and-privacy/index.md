@@ -104,9 +104,10 @@ same question. Weigh disagreements; agreement is not proof. The packaged no-tool
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
   models and thinking. The extension observes matching attempts but does not launch them.
 - `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
-  advisor in parallel through the public `pi-subagents` delegation API, admitted only for the exact
-  builds whose launch contract was verified (`0.76.1` and `0.83.1`). Otherwise it returns unavailable
-  text. No model, provider or executor fallback is added.
+  advisor in parallel through the public `pi-subagents` delegation API. It requires stable SemVer
+  `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every launch must
+  still pass the strict contract and terminal-binding checks. Otherwise it returns unavailable text.
+  No model, provider or executor fallback is added.
 
 Both modes ask for consultation after orientation before substantive work, when stuck, before changing
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
@@ -249,7 +250,7 @@ Failures use bounded codes that carry no paths, content, or secrets:
 | `evidence-expired`   | The preserved source is gone, so no answer is returned without recoverable evidence.                                              |
 | `invalid-answer`     | The reader result failed the approved contract, the source ID, the line ranges, or the citation cardinality.                      |
 | `output-unavailable` | The call is not authorized, or the validated answer cannot be preserved within the cap.                                           |
-| `reader-unavailable` | The external executor is absent, or its build does not match the pinned protocol.                                                 |
+| `reader-unavailable` | The external executor is absent, below the stable SemVer minimum, or contract-incompatible.                                       |
 | `reader-busy`        | Another `context_shunt_delegate` call is in flight.                                                                               |
 | `reader-cancelled`   | The request was revoked by a branch change, by applying or discarding a panel draft, by `off` or `reset`, or by session shutdown. |
 | `reader-timed-out`   | The request used its whole local time budget.                                                                                     |
@@ -269,10 +270,12 @@ launch contract as well, before any launch.
 Both the snapshot and the answer are untrusted data rather than instructions. The extension never
 follows text inside them and never executes it.
 
-The reader needs a compatible external executor. The only verified one is `pi-subagents` `0.76.1` on Pi
-`1.1.0`; Pi `0.87.1`, the declared minimum, is not verified for the reader. A different executor build,
-including `0.69.0`, fails the contract check and returns `reader-unavailable`, with no answer and no
-fallback model, provider, or retry.
+The reader requires stable `pi-subagents` SemVer `>=0.76.1`, with no upper bound. Prereleases,
+invalid versions and older builds, including `0.69.0`, return `reader-unavailable` before REQUEST.
+Every launch must still pass the unchanged strict contract checks: the version floor does not
+promise future-build compatibility. The reader was verified with `0.76.1` on Pi `1.1.0`;
+Pi `0.87.1`, the declared minimum, is not verified for the reader. There is no fallback model,
+provider, or retry.
 
 From `0.19.0`, the reader also accepts the host's permission runtime described below. Version
 `0.18.0` and earlier reject any extra runtime, so with host permission rules their reader returns

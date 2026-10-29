@@ -19,7 +19,6 @@ import type { SourceSnapshot } from "./context-shunt.ts";
 import type { ReaderAnswer, ReaderThinking } from "./context-shunt-reader.ts";
 
 export const CONTEXT_SHUNT_READER_AGENT_NAME = "pi-delegation-policy.context-shunt-inline-reader";
-export const CONTEXT_SHUNT_READER_PROTOCOL_VERSION = "0.76.1";
 export const READER_PREFLIGHT_TIMEOUT_MS = LAUNCH_PREFLIGHT_TIMEOUT_MS;
 export const READER_TERMINAL_TIMEOUT_MS = LAUNCH_TERMINAL_TIMEOUT_MS;
 
@@ -109,7 +108,6 @@ function isReaderAnswer(value: unknown): value is ReaderAnswer {
 const READER_LAUNCH = {
   agentName: CONTEXT_SHUNT_READER_AGENT_NAME,
   agentPath: CONTEXT_SHUNT_READER_AGENT_PATH,
-  admittedProtocolVersions: [CONTEXT_SHUNT_READER_PROTOCOL_VERSION],
   internalTools: ["structured_output"],
   buildTask: buildReaderTask,
   result: {

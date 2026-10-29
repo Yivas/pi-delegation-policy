@@ -77,10 +77,10 @@ same question. Weigh disagreements; agreement is not proof. The packaged no-tool
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
   models and thinking. The extension observes matching attempts but does not launch them.
 - `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
-  advisor in parallel through the public `pi-subagents` delegation API, admitted only for the exact
-  builds whose launch contract was verified (`0.76.1` and `0.83.1`). Any other build fails closed
-  before a request is sent. Otherwise it returns unavailable text. No model, provider or executor
-  fallback is added.
+  advisor in parallel through the public `pi-subagents` delegation API. It requires a stable SemVer
+  version `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every
+  launch must still pass the strict contract and terminal-binding checks. Otherwise it returns
+  unavailable text. No model, provider or executor fallback is added.
 
 Both modes ask for consultation after orientation before substantive work, when stuck, before changing
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
@@ -264,9 +264,11 @@ one bounded line or byte range. Errors, structured results, images, binaries, mi
 unknown tool contracts stay unchanged, and nothing is launched from a hook. The reader keys
 `readerEnabled`, `readerRole`, and `answerMaxBytes` control the optional
 `context_shunt_delegate`/`context_shunt_recover` pair, which needs `enforce`, an active delegation
-intensity, a valid configuration, and a compatible external executor. The only verified executor is
-`pi-subagents` `0.76.1` on Pi `1.1.0`; Pi `0.87.1`, the declared minimum, is not verified for the
-reader. Other executor builds, including `0.69.0`, fail closed with `reader-unavailable`. Since `0.19.0`,
+intensity, a valid configuration, and a compatible external executor. The reader requires stable
+`pi-subagents` SemVer `>=0.76.1`, with no upper bound, and the unchanged strict launch contract.
+Older, prerelease, invalid or contract-incompatible builds fail closed with `reader-unavailable`.
+The reader was verified with `0.76.1` on Pi `1.1.0`; Pi `0.87.1`, the declared minimum, is not
+verified for the reader. Since `0.19.0`,
 the reader also accepts the exact `@gotgenes/pi-permission-system` `33.0.3` runtime that a host adds for
 permission rules; the host owns those rules, and the reader never reads or changes them. Delegation
 `off` suspends the layer.

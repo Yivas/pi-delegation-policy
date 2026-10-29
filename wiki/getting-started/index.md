@@ -69,8 +69,9 @@ Configure **Advisor 1**, optional **Advisor 2**, and per-entry thinking in `/del
 to consult every valid entry in one background call. Optional **tool** mode uses explicit
 `consult_advisor({ question, brief? })` through the authorized external executor, never from hooks.
 Fresh needs a self-contained brief; fork sends the conversation to each provider. The tool's executor
-is admitted only for the exact `pi-subagents` builds whose launch contract was verified (`0.76.1` and
-`0.83.1`). `A:PART` means one of two entries is valid and usable.
+requires stable `pi-subagents` SemVer `>=0.76.1`, with no upper bound, and the strict launch
+contract; prereleases and invalid versions are rejected. `A:PART` means one of two entries is valid
+and usable.
 
 With delegation `off` and mode `on`, status shows `D:OFF A:ON`: consultation-only guidance is
 injected and ordinary roles are not required. Mode `off` silences consultation and keeps the saved

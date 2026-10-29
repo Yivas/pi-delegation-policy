@@ -209,9 +209,10 @@ same question. Weigh disagreements; agreement is not proof. The packaged no-tool
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
   models and thinking. The extension observes matching attempts but does not launch them.
 - `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
-  advisor in parallel through the public `pi-subagents` delegation API, admitted only for the exact
-  builds whose launch contract was verified (`0.76.1` and `0.83.1`). Otherwise it returns unavailable
-  text. No model, provider or executor fallback is added.
+  advisor in parallel through the public `pi-subagents` delegation API. It requires stable SemVer
+  `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every launch must
+  still pass the strict contract and terminal-binding checks. Otherwise it returns unavailable text.
+  No model, provider or executor fallback is added.
 
 Both modes ask for consultation after orientation before substantive work, when stuck, before changing
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
@@ -355,9 +356,10 @@ further keys control the opt-in inline reader:
   its citations and envelope.
 
 The reader also needs an effective mode of `enforce`, an active delegation intensity, and a valid
-configuration. It requires a compatible external executor: `pi-subagents` `0.76.1` on Pi `1.1.0` is the
-only verified combination, and another build, including `0.69.0`, fails closed with
-`reader-unavailable`. **Context advanced** in the panel edits
+configuration. It requires stable `pi-subagents` SemVer `>=0.76.1`, with no upper bound, and the
+unchanged strict launch contract. Older, prerelease, invalid or contract-incompatible builds fail
+closed with `reader-unavailable`. The reader was verified with `0.76.1` on Pi `1.1.0`.
+**Context advanced** in the panel edits
 these values and each limit, and **Reset ContextShunt draft** clears all branch values. Schema 4 still
 accepts a positive `limits.readerOutputBytes` from older files, but ignores it and never writes it
 again.

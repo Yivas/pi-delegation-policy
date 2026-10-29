@@ -6,7 +6,6 @@ import { join, resolve } from "node:path";
 import test, { after } from "node:test";
 import {
   CONTEXT_SHUNT_READER_AGENT_NAME,
-  CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
   ContextShuntExecutor,
   createDefaultReaderExecutorLoader,
   READER_PREFLIGHT_TIMEOUT_MS,
@@ -117,7 +116,7 @@ function contract(
     version: 3,
     protocol: {
       lifecycleArtifactVersion: 3,
-      packageVersion: CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
+      packageVersion: "0.76.1",
     },
     runId: requestId,
     digest,
@@ -917,31 +916,36 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
   }
 });
 
-test("accepts the pi-subagents 0.76.1 preflight and binds its terminal result", async () => {
-  const bus = new FakeEventBus();
-  const executor = new ContextShuntExecutor({
-    loader: async () =>
-      modules(async (input) => {
-        const fields = preflightFields(input);
-        return pi076Preflight(fields.runId as string, fields.cwd as string);
-      }),
-  });
-  const pending = executor.execute(request, {
-    cwd: "/workspace",
-    sessionId: "session-1",
-    events: bus,
-  });
-  const emitted = await waitForRequest(bus);
-  assert.deepEqual(emitted.intercomBridge, { mode: "off" });
-  start(bus, emitted);
-  bus.emit(events.responseEvent, {
-    ...completed(emitted),
-    launchContractDigest: pi076LaunchDigest,
-  });
-  assert.equal((await pending).kind, "completed");
+test("accepts stable pi-subagents releases from 0.76.1 and binds the reader terminal result", async () => {
+  for (const packageVersion of ["0.76.1", "0.83.1", "0.84.0", "1.0.0+build.01"]) {
+    const bus = new FakeEventBus();
+    const executor = new ContextShuntExecutor({
+      loader: async () =>
+        modules(async (input) => {
+          const fields = preflightFields(input);
+          return pi076Preflight(fields.runId as string, fields.cwd as string, (value) => {
+            (value.protocol as Record<string, unknown>).packageVersion = packageVersion;
+          });
+        }),
+    });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
+    const emitted = await waitForRequest(bus);
+    assert.deepEqual(emitted.intercomBridge, { mode: "off" });
+    start(bus, emitted);
+    bus.emit(events.responseEvent, {
+      ...completed(emitted),
+      launchContractDigest: pi076LaunchDigest,
+    });
+    assert.equal((await pending).kind, "completed", packageVersion);
+    executor.close();
+  }
 });
 
-test("rejects pi-subagents 0.76.1 contract drift and widening before REQUEST", async () => {
+test("rejects pi-subagents contract drift and widening before REQUEST", async () => {
   const protocol = (value: Record<string, unknown>) => value.protocol as Record<string, unknown>;
   const tools = (value: Record<string, unknown>) => value.tools as Record<string, unknown>;
   const withRuntime = (runtimeExtensions: string[]) => (value: Record<string, unknown>) => {
@@ -949,7 +953,12 @@ test("rejects pi-subagents 0.76.1 contract drift and widening before REQUEST", a
     tools(value).extensionArgs = runtimeExtensions;
   };
   const mutations: Array<[string, (value: Record<string, unknown>) => void]> = [
-    ["newer package", (value) => (protocol(value).packageVersion = "0.77.0")],
+    ...["0.76.0", "0.84.0-rc.1", "not-semver", null, 84].map(
+      (packageVersion): [string, (value: Record<string, unknown>) => void] => [
+        `unsupported package ${JSON.stringify(packageVersion)}`,
+        (value) => (protocol(value).packageVersion = packageVersion),
+      ],
+    ),
     ["retired package", (value) => (protocol(value).packageVersion = "0.69.0")],
     ["relabeled runtime extension", withRuntime(["/evil/subagent-prompt-runtime.js"])],
     ["additional runtime extension", withRuntime([promptRuntimePath, "/evil/ext.js"])],

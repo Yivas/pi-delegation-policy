@@ -144,7 +144,7 @@ class Bus {
 async function fakeModules(
   preflight: "valid" | "throw" | "undefined" | "invalid" = "valid",
   fixtureVersion: "0.76.1" | "0.83.1" = "0.76.1",
-  packageVersion?: string,
+  packageVersion?: unknown,
 ): Promise<AgentLaunchModules> {
   const fixture = JSON.parse(
     await readFile(
@@ -200,7 +200,7 @@ async function harness(
     forkTaskNormalizer?: boolean;
     preflight?: "throw" | "undefined" | "invalid";
     fixtureVersion?: "0.76.1" | "0.83.1";
-    packageVersion?: string;
+    packageVersion?: unknown;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "advisor-tool-"));
@@ -768,8 +768,55 @@ test("a verified 0.83.1 contract admits the Advisor in fork and fresh and binds 
   }
 });
 
-test("a pi-subagents build outside the admitted list is rejected before any request", async () => {
-  for (const packageVersion of ["0.84.0", "0.82.0", "0.76.0"]) {
+test("stable pi-subagents releases at or above the minimum bind fork and fresh answers", async () => {
+  for (const packageVersion of [
+    "0.76.1",
+    "0.82.0",
+    "0.84.0",
+    "0.100.0",
+    "1.0.0",
+    "10.0.0+build.01",
+    "9007199254740993.0.0",
+  ]) {
+    const run = await harness(base, models, 10_000, { packageVersion });
+    try {
+      run.bus.respond = (request) => run.bus.finish(request);
+      assert.match(await run.call(), new RegExp(sentinel), packageVersion);
+      run.ctx.getContextUsage = () => ({ tokens: 60_000 });
+      assert.match(await run.call(), new RegExp(sentinel), packageVersion);
+      assert.deepEqual(
+        run.bus.requests.map((request) => request.context),
+        ["fork", "fork", "fresh", "fresh"],
+      );
+    } finally {
+      await run.close();
+    }
+  }
+});
+
+test("old, prerelease and malformed pi-subagents versions are rejected before any request", async () => {
+  for (const packageVersion of [
+    "0.76.0",
+    "0.9.99",
+    "0.76.1-rc.1",
+    "0.84.0-beta+build",
+    "1.0.0-rc.1",
+    "not-semver",
+    "0.84",
+    "v0.84.0",
+    "01.0.0",
+    "1.00.0",
+    "1.0.01",
+    "1.0.0+",
+    "1.0.0+build..1",
+    "1.0.0\n",
+    " 1.0.0",
+    "1.0.0 ",
+    null,
+    84,
+    {},
+    [],
+  ]) {
     const run = await harness(base, models, 10_000, {
       fixtureVersion: "0.83.1",
       packageVersion,
