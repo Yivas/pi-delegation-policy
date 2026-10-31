@@ -564,10 +564,16 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             "Advisor is off in /delegate for this session. Do not consult it and do not ask the user to enable it unless they raise it.",
           );
         if (!advisors.length) return text(advisorUnavailableText(state));
-        if (state.effective.advisorLaunch === "role")
+        if (state.effective.advisorLaunch === "role") {
+          const subagentTool = pi.getActiveTools().find((name) => name === "subagent");
+          if (!subagentTool)
+            return text(
+              'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another mechanism: do not use foreground execution, a CLI, or another agent.',
+            );
           return text(
-            `Advisor launch is "role": this tool is not used in role mode; do not call this tool again. Launch every listed Advisor with the host subagent tool, using each exact agent profile and model below, in the background, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run under that Advisor's thinking policy; a fixed level must not change.\n${advisorRoleLines(state)}`,
+            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". Launch every listed Advisor with the host subagent tool "${subagentTool}", using each exact agent profile and model below, in the background, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run under that Advisor's thinking policy; a fixed level must not change.\n${advisorRoleLines(state)}`,
           );
+        }
         if (advisorExecutor.busy)
           return text(
             "Advisor busy: one consultation group is already in flight for this session. Wait for its result before starting another consultation; do not duplicate the pending group.",

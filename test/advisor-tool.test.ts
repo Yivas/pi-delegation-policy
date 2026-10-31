@@ -204,6 +204,7 @@ async function harness(
     preflight?: "throw" | "undefined" | "invalid";
     fixtureVersion?: "0.76.1" | "0.83.1";
     packageVersion?: unknown;
+    activeTools?: string[];
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "advisor-tool-"));
@@ -261,6 +262,7 @@ async function harness(
     ) => commands.set(name, command),
     registerShortcut: () => undefined,
     getAllTools: () => [],
+    getActiveTools: () => options.activeTools ?? ["subagent"],
     appendEntry: (customType: string, data: unknown) =>
       branch.push({ type: "custom", customType, data }),
   } as never);
@@ -619,8 +621,9 @@ test("role redirects to one background host call with the policy's exact launch 
     const run = await harness({ ...base, advisorLaunch: "role", advisors });
     try {
       const answer = await run.call();
-      assert.match(answer, /do not call this tool again/);
-      assert.match(answer, /host subagent tool/);
+      assert.match(answer, /^Not an error:/);
+      assert.match(answer, /do not call this tool again while Advisor launch is "role"/);
+      assert.match(answer, /host subagent tool "subagent"/);
       assert.match(
         answer,
         /in the background, all listed Advisors with the same question in one call/,
@@ -648,6 +651,24 @@ test("role redirects to one background host call with the policy's exact launch 
     } finally {
       await run.close();
     }
+  }
+});
+
+test("role without an active subagent tool reports the limitation without improvising a launcher", async () => {
+  const activeTools = ["subagent-helper", "bash"];
+  const run = await harness({ ...base, advisorLaunch: "role" }, models, 10_000, { activeTools });
+  try {
+    assert.equal(
+      await run.call(),
+      'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another mechanism: do not use foreground execution, a CLI, or another agent.',
+    );
+    activeTools.push("subagent");
+    assert.match(await run.call(), /host subagent tool "subagent", using each exact agent profile/);
+    activeTools.pop();
+    assert.match(await run.call(), /Tell the user that you cannot launch the Advisor/);
+    assert.equal(run.bus.requests.length, 0);
+  } finally {
+    await run.close();
   }
 });
 
