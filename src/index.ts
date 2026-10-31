@@ -315,6 +315,20 @@ export function statusText(state: RuntimeState): string {
   if (errors.length) details.push(`details=${errors.join("; ")}`);
   return details.join(" | ");
 }
+export function advisorUnavailableText(state: RuntimeState): string {
+  const entryErrors = state.advisorEntries?.flatMap((entry) => entry.errors) ?? [];
+  const diagnostics = [
+    ...(state.advisorErrors ?? []).filter((error) => !entryErrors.includes(error)),
+    ...(state.advisorEntries ?? []).flatMap((entry) =>
+      entry.errors.map((error) => `Advisor ${entry.index + 1}: ${error}`),
+    ),
+  ];
+  const action = state.diagnostics.some((diagnostic) => diagnostic.scope === "advisor")
+    ? "Continue without Advisor consultation. Tell the user that the saved Advisor configuration is invalid and must be saved again in /delegate. Do not retry this tool."
+    : "Continue without Advisor consultation. Do not retry with the same settings or ask the user to change them unless they raise it.";
+  return `Advisor unavailable: no valid Advisors.\n${diagnostics.join("\n")}\n${action}`;
+}
+
 function notifyAppendFailure(ctx: ExtensionCommandContext, result: GuardedAppendResult): void {
   ctx.ui.notify(
     result === "guard-failed"
@@ -549,18 +563,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           return text(
             "Advisor is off in /delegate for this session. Do not consult it and do not ask the user to enable it unless they raise it.",
           );
-        if (!advisors.length) {
-          const entryErrors = state.advisorEntries?.flatMap((entry) => entry.errors) ?? [];
-          const diagnostics = [
-            ...(state.advisorErrors ?? []).filter((error) => !entryErrors.includes(error)),
-            ...(state.advisorEntries ?? []).flatMap((entry) =>
-              entry.errors.map((error) => `Advisor ${entry.index + 1}: ${error}`),
-            ),
-          ];
-          return text(
-            `Advisor unavailable: no valid Advisors.\n${diagnostics.join("\n")}\nContinue without Advisor consultation. Do not retry with the same settings or ask the user to change them unless they raise it.`,
-          );
-        }
+        if (!advisors.length) return text(advisorUnavailableText(state));
         if (state.effective.advisorLaunch === "role")
           return text(
             `Advisor launch is "role": this tool is not used in role mode; do not call this tool again. Launch every listed Advisor with the host subagent tool, using each exact agent profile and model below, in the background, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run under that Advisor's thinking policy; a fixed level must not change.\n${advisorRoleLines(state)}`,

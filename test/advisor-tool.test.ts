@@ -27,7 +27,7 @@ import {
   restoreSessionState,
   writeConfig,
 } from "../src/config.ts";
-import { createPiDelegationPolicy } from "../src/index.ts";
+import { advisorUnavailableText, createPiDelegationPolicy } from "../src/index.ts";
 import {
   advisorStatusLabel,
   loadRuntime,
@@ -699,6 +699,38 @@ test("tool without valid Advisors reports existing causes by Advisor and does no
     } finally {
       await run.close();
     }
+  }
+});
+
+test("invalid saved Advisor diagnostics tell the model to report the required user repair without retrying", () => {
+  for (const message of [
+    "Advisor settings are invalid or no longer match delegation defaults. Save them again with /delegate; delegation remains available.",
+    "Advisor session settings are invalid or do not match delegation state. Apply them again with /delegate.",
+  ]) {
+    const state: RuntimeState = {
+      global: base,
+      session: { schemaVersion: CURRENT_SCHEMA_VERSION },
+      effective: resolveDelegateState(base, { schemaVersion: CURRENT_SCHEMA_VERSION }),
+      diagnostics: [{ message, scope: "advisor", reportWhenOff: true }],
+      modelStatuses: new Map(),
+      runtimeErrors: [],
+    };
+    validateRuntime(
+      {
+        scopedModels: [],
+        modelRegistry: {
+          find: () => models[0],
+          getAvailable: () => models,
+          hasConfiguredAuth: () => true,
+        },
+      } as never,
+      state,
+    );
+    assert.deepEqual(validAdvisors(state), []);
+    assert.equal(
+      advisorUnavailableText(state),
+      `Advisor unavailable: no valid Advisors.\n${message}\nContinue without Advisor consultation. Tell the user that the saved Advisor configuration is invalid and must be saved again in /delegate. Do not retry this tool.`,
+    );
   }
 });
 
