@@ -88,6 +88,9 @@ type Payload = Record<string, unknown>;
 type Handler = (event: never, context: never) => unknown;
 type Tool = {
   name: string;
+  label: string;
+  description: string;
+  parameters: unknown;
   execute: (
     id: string,
     input: { question: string; brief?: string },
@@ -213,6 +216,7 @@ async function harness(
   const commands = new Map<string, { handler: (args: string, ctx: never) => Promise<void> }>();
   const notifications: Array<{ message: string; type: string }> = [];
   const tools = new Map<string, Tool>();
+  const registrations: string[] = [];
   const branch: unknown[] = [];
   const statuses: string[] = [];
   const ctx = {
@@ -247,7 +251,10 @@ async function harness(
   createPiDelegationPolicy({ advisorExecutor: executor, advisorLog: log })({
     events: bus,
     on: (event: string, handler: Handler) => handlers.set(event, handler),
-    registerTool: (tool: Tool) => tools.set(tool.name, tool),
+    registerTool: (tool: Tool) => {
+      registrations.push(tool.name);
+      tools.set(tool.name, tool);
+    },
     registerCommand: (
       name: string,
       command: { handler: (args: string, ctx: never) => Promise<void> },
@@ -267,6 +274,8 @@ async function harness(
     branch,
     statuses,
     notifications,
+    tools,
+    registrations,
     command: (args: string) => commands.get("delegate")!.handler(args, ctx as never),
     log,
     path,
@@ -588,19 +597,170 @@ test("each advisor validates independently and role mode groups every valid advi
   }
 });
 
-test("tool is unavailable outside its launch mode or without enabled valid advisors", async () => {
-  for (const value of [
-    { ...base, advisorLaunch: "role" as const },
-    { ...base, advisorMode: "off" as const },
-    { ...base, advisors: [{ provider: "example", model: "missing" }] },
-  ]) {
-    const run = await harness(value);
+test("off tells the model not to consult or request activation in either launch mode", async () => {
+  for (const advisorLaunch of ["role", "tool"] as const) {
+    for (const advisorMode of ["off", "with-delegation"] as const) {
+      const run = await harness({ ...base, advisorLaunch, advisorMode });
+      try {
+        assert.equal(
+          await run.call(),
+          "Advisor is off in /delegate for this session. Do not consult it and do not ask the user to enable it unless they raise it.",
+        );
+        assert.equal(run.bus.requests.length, 0);
+      } finally {
+        await run.close();
+      }
+    }
+  }
+});
+
+test("role redirects to one background host call with the policy's exact launch lines", async () => {
+  for (const advisors of [[first, second], [{ provider: "example", model: "first" }]]) {
+    const run = await harness({ ...base, advisorLaunch: "role", advisors });
     try {
-      assert.match(await run.call(), /Advisor unavailable/);
+      const answer = await run.call();
+      assert.match(answer, /do not call this tool again/);
+      assert.match(answer, /host subagent tool/);
+      assert.match(
+        answer,
+        /in the background, all listed Advisors with the same question in one call/,
+      );
+      assert.match(answer, /agent profile: "pi-delegation-policy.advisor"/);
+      if (advisors.length === 2) {
+        assert.match(answer, /pi-subagents form: "example\/first:low"/);
+        assert.match(answer, /fixed low \(must not change\)/);
+        assert.match(answer, /pi-subagents form: "example\/second:LEVEL"/);
+        assert.match(answer, /range medium\.\.high inclusive \(choose within it\)/);
+      } else {
+        assert.match(answer, /pi-subagents form: "example\/first:LEVEL"/);
+        assert.match(answer, /unset \(choose per run\)/);
+      }
+      const policy = (await run.hook("before_provider_request", {
+        payload: { model: "example", stream: true, store: false, instructions: "host" },
+      })) as { instructions: string };
+      const roleLines = policy.instructions
+        .split("\n")
+        .filter((line) => line.startsWith("- Advisor"));
+      assert.equal(roleLines.length, advisors.length);
+      for (const line of roleLines) assert.ok(answer.includes(line));
+      assert.doesNotMatch(answer, /select tool launch|enable at least|change.*\/delegate/);
       assert.equal(run.bus.requests.length, 0);
     } finally {
       await run.close();
     }
+  }
+});
+
+test("role redirection lists only valid Advisors without substituting an invalid one", async () => {
+  const run = await harness({ ...base, advisorLaunch: "role" }, [models[1]!]);
+  try {
+    const answer = await run.call();
+    assert.match(answer, /Advisor 2 \(optional\)/);
+    assert.match(answer, /example\/second:LEVEL/);
+    assert.doesNotMatch(answer, /example\/first/);
+    assert.equal(run.bus.requests.length, 0);
+  } finally {
+    await run.close();
+  }
+});
+
+test("tool without valid Advisors reports existing causes by Advisor and does not request settings changes", async () => {
+  for (const [advisors, available, expected] of [
+    [[], models, /Advisor model is not configured/],
+    [
+      [first, second],
+      [],
+      /Advisor 1: Advisor model is not registered in Pi\.[\s\S]*Advisor 2: Advisor 2 model is not registered in Pi\./,
+    ],
+    [
+      [{ ...first, thinking: { level: "high" as const } }],
+      [{ ...models[0]!, reasoning: false }],
+      /Advisor 1: Advisor thinking level "high" is not supported/,
+    ],
+    [
+      [{ provider: "anthropic", model: "synthetic", providerExtension: "anthropic-auth" as const }],
+      [{ ...models[0]!, provider: "anthropic", id: "synthetic" }],
+      /Advisor 1: Advisor provider unavailable: requires the exact managed-user/,
+    ],
+  ] as const) {
+    const run = await harness({ ...base, advisors: advisors.length ? [...advisors] : undefined }, [
+      ...available,
+    ]);
+    try {
+      const answer = await run.call();
+      assert.match(answer, /Advisor unavailable: no valid Advisors/);
+      assert.match(answer, expected);
+      assert.match(
+        answer,
+        /Continue without Advisor consultation\. Do not retry with the same settings/,
+      );
+      assert.doesNotMatch(answer, /select tool launch|enable at least|in \/delegate/);
+      assert.equal(run.bus.requests.length, 0);
+    } finally {
+      await run.close();
+    }
+  }
+});
+
+test("registered tool definitions and order stay identical across modes and repeated requests", async () => {
+  const definitions = (run: Awaited<ReturnType<typeof harness>>) =>
+    [...run.tools.values()].map(({ name, label, description, parameters }) => ({
+      name,
+      label,
+      description,
+      parameters,
+    }));
+  let baseline: ReturnType<typeof definitions> | undefined;
+  for (const value of [
+    { ...base, advisorMode: "off" as const },
+    { ...base, advisorLaunch: "role" as const },
+    { ...base, advisors: [{ provider: "example", model: "missing" }] },
+    base,
+  ]) {
+    const run = await harness(value);
+    try {
+      const initial = definitions(run);
+      baseline ??= initial;
+      assert.deepEqual(initial, baseline);
+      for (const command of [
+        "advisor off",
+        "advisor launch role",
+        "advisor on",
+        "advisor launch tool",
+      ]) {
+        await run.command(command);
+        for (let request = 0; request < 2; request++)
+          await run.hook("before_provider_request", {
+            payload: { model: "example", stream: true, store: false, instructions: "host" },
+          });
+        assert.deepEqual(definitions(run), initial);
+        assert.deepEqual(run.registrations, [
+          "consult_advisor",
+          "context_shunt_delegate",
+          "context_shunt_recover",
+        ]);
+      }
+    } finally {
+      await run.close();
+    }
+  }
+});
+
+test("invalid question and absent session identify the corrective action without launching", async () => {
+  const run = await harness();
+  try {
+    assert.equal(
+      await run.call({ question: "   ", brief: sentinel }),
+      "Advisor error: question must not be blank. Call again with a specific question.",
+    );
+    run.ctx.sessionManager.getSessionId = () => "";
+    assert.equal(
+      await run.call(),
+      "Advisor unavailable: host session identity is missing. Continue without Advisor consultation; do not retry until the host supplies a session identity.",
+    );
+    assert.equal(run.bus.requests.length, 0);
+  } finally {
+    await run.close();
   }
 });
 
@@ -636,7 +796,10 @@ test("tool starts both exact models in parallel, preserves a partial answer and 
         ["example/second", "high", "fork", sentinel],
       ],
     );
-    assert.match(await run.call(), /Advisor busy/);
+    assert.match(
+      await run.call(),
+      /Advisor busy:.*Wait for its result.*do not duplicate the pending group/,
+    );
     run.bus.finish(run.bus.requests[1]!, "failed", sentinel, hostErrorSentinel);
     run.bus.finish(run.bus.requests[0]!);
     const answer = await call;

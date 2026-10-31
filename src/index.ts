@@ -39,7 +39,12 @@ import {
   readerToolError,
   type ReaderThinking,
 } from "./context-shunt-reader.ts";
-import { type AdvisorContext, buildDelegationPolicy, selectAdvisorContext } from "./prompt.ts";
+import {
+  type AdvisorContext,
+  advisorRoleLines,
+  buildDelegationPolicy,
+  selectAdvisorContext,
+} from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
   advisorStatusLabel,
@@ -525,7 +530,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       name: "consult_advisor",
       label: "Consult Advisor",
       description:
-        "Consult the configured advisors after orientation before substantive work, when stuck, before changing approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Skip short reactive steps and mechanics within a settled approach. Supply a self-contained brief for fresh context or a rejected fork. Advice only; may send the conversation to each provider and incur cost.",
+        "Use only when advisor-launch=tool; in role mode launch Advisor with the host subagent tool instead. Consult the configured advisors after orientation before substantive work, when stuck, before changing approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Skip short reactive steps and mechanics within a settled approach. Supply a self-contained brief for fresh context or a rejected fork. Advice only; may send the conversation to each provider and incur cost.",
       parameters: Type.Object(
         {
           question: Type.String({ minLength: 1 }),
@@ -540,22 +545,44 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         });
         const state = await refreshRuntime(ctx);
         const advisors = validAdvisors(state);
-        if (state.effective.advisorLaunch !== "tool" || !advisors.length)
+        if (!isAdvisorEnabled(state.effective))
           return text(
-            "Advisor unavailable: select tool launch and enable at least one valid Advisor in /delegate.",
+            "Advisor is off in /delegate for this session. Do not consult it and do not ask the user to enable it unless they raise it.",
+          );
+        if (!advisors.length) {
+          const entryErrors = state.advisorEntries?.flatMap((entry) => entry.errors) ?? [];
+          const diagnostics = [
+            ...(state.advisorErrors ?? []).filter((error) => !entryErrors.includes(error)),
+            ...(state.advisorEntries ?? []).flatMap((entry) =>
+              entry.errors.map((error) => `Advisor ${entry.index + 1}: ${error}`),
+            ),
+          ];
+          return text(
+            `Advisor unavailable: no valid Advisors.\n${diagnostics.join("\n")}\nContinue without Advisor consultation. Do not retry with the same settings or ask the user to change them unless they raise it.`,
+          );
+        }
+        if (state.effective.advisorLaunch === "role")
+          return text(
+            `Advisor launch is "role": this tool is not used in role mode; do not call this tool again. Launch every listed Advisor with the host subagent tool, using each exact agent profile and model below, in the background, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run under that Advisor's thinking policy; a fixed level must not change.\n${advisorRoleLines(state)}`,
           );
         if (advisorExecutor.busy)
           return text(
-            "Advisor busy: one consultation group is already in flight for this session.",
+            "Advisor busy: one consultation group is already in flight for this session. Wait for its result before starting another consultation; do not duplicate the pending group.",
           );
-        if (!input.question.trim()) return text("Advisor error: question must not be blank.");
+        if (!input.question.trim())
+          return text(
+            "Advisor error: question must not be blank. Call again with a specific question.",
+          );
         const context = resolveAdvisorContext(ctx, state);
         if (context === "fresh" && !input.brief?.trim())
           return text(
             "Advisor error: fresh context requires brief. Supply a short self-contained objective, constraints, relevant facts, options, and uncertainty.",
           );
         const sessionId = currentSessionId(ctx);
-        if (!sessionId) return text("Advisor unavailable: host session identity is missing.");
+        if (!sessionId)
+          return text(
+            "Advisor unavailable: host session identity is missing. Continue without Advisor consultation; do not retry until the host supplies a session identity.",
+          );
         const results = await advisorExecutor.execute(
           advisors.map((entry) => ({
             question: input.question,
@@ -717,7 +744,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         const result = latestRuntime
           ? await shunt.recover(input, latestRuntime.effective.contextShunt)
           : {
-              error: "ContextShunt recovery is unavailable until session state is initialized.",
+              error:
+                "ContextShunt recovery is unavailable until session state is initialized. Continue without recovery; retry only after the host initializes the session.",
             };
         return {
           content: [

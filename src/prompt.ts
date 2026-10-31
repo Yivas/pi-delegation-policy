@@ -261,14 +261,10 @@ export function buildPolicyPreview(
   ];
 }
 
-export function buildDelegationPolicy(
-  state: RuntimeState,
-  advisorContext: AdvisorContext = "fresh",
-): string | undefined {
+/** Shared with role-mode tool redirection so launch models and thinking stay identical. */
+export function advisorRoleLines(state: RuntimeState): string {
   const { effective } = state;
-  const advisorEnabled = isAdvisorEnabled(effective) && !hasAdvisorError(state);
-  const advisors = advisorEnabled ? validAdvisors(state) : [];
-  const advisorRoleLine = advisors
+  return validAdvisors(state)
     .map(({ index, setting }) => {
       const thinking = roleThinking(setting.thinking);
       const label =
@@ -277,6 +273,16 @@ export function buildDelegationPolicy(
 - ${label}: ${formatReference(setting)}; exact model base: ${formatLaunchModel(setting)}; pi-subagents form: ${formatThinkingLaunchModel(setting, thinking)}; thinking policy: ${thinkingPolicyText(thinking)}; agent profile: ${promptString(advisorAgentName(setting))}${setting.providerExtension ? "; provider extension explicitly enabled: normal configuration, startup hook and account diagnostic command are trusted host code, not model tools. Never invoke the diagnostic automatically." : ""}`;
     })
     .join("");
+}
+
+export function buildDelegationPolicy(
+  state: RuntimeState,
+  advisorContext: AdvisorContext = "fresh",
+): string | undefined {
+  const { effective } = state;
+  const advisorEnabled = isAdvisorEnabled(effective) && !hasAdvisorError(state);
+  const advisors = advisorEnabled ? validAdvisors(state) : [];
+  const advisorRoleLine = advisorEnabled ? advisorRoleLines(state) : "";
   if (effective.intensity === "off" || hasRuntimeError(state)) {
     if (!advisorRoleLine) return undefined;
     return `<delegation_policy>

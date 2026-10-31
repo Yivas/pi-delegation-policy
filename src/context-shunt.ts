@@ -393,19 +393,26 @@ export class ArtifactStore {
 
   async recover(request: RecoveryRequest, maxRangeBytes: number): Promise<RecoveryResult> {
     return this.withLock(async () => {
-      if (this.closed) return { error: "Recovery artifact is unavailable or expired." };
+      const unavailable = {
+        error:
+          "Recovery artifact is unavailable or expired. Do not retry this artifact ID; use a new live artifact from an authorized bounded read if the evidence is still needed.",
+      };
+      if (this.closed) return unavailable;
       const hasLines = request.lineOffset !== undefined || request.lineLimit !== undefined;
       const hasBytes = request.byteOffset !== undefined || request.maxBytes !== undefined;
-      if (hasLines === hasBytes) return { error: "Choose either a line range or a byte range." };
+      if (hasLines === hasBytes)
+        return {
+          error:
+            "Choose either a line range or a byte range. Call again with lineOffset/lineLimit or byteOffset/maxBytes, not both.",
+        };
 
       await this.purgeUnlocked();
       const artifact = this.artifacts.get(request.artifactId);
-      if (!artifact) return { error: "Recovery artifact is unavailable or expired." };
+      if (!artifact) return unavailable;
       if (artifact.kind === "derived") {
         if (!artifact.sourceId || !(await this.readSourceUnlocked(artifact.sourceId)))
-          return { error: "Recovery artifact is unavailable or expired." };
-        if (!this.artifacts.has(request.artifactId))
-          return { error: "Recovery artifact is unavailable or expired." };
+          return unavailable;
+        if (!this.artifacts.has(request.artifactId)) return unavailable;
       }
 
       let source: Buffer;
@@ -413,11 +420,11 @@ export class ArtifactStore {
         source = await readFile(artifact.path);
       } catch {
         await this.remove(request.artifactId, artifact);
-        return { error: "Recovery artifact is unavailable or expired." };
+        return unavailable;
       }
       if (digest(source) !== artifact.digest) {
         await this.remove(request.artifactId, artifact);
-        return { error: "Recovery artifact is unavailable or expired." };
+        return unavailable;
       }
 
       if (hasBytes) {
@@ -431,11 +438,16 @@ export class ArtifactStore {
           offset > source.length ||
           offset > Number.MAX_SAFE_INTEGER - length
         ) {
-          return { error: "Invalid byte range." };
+          return {
+            error: `Invalid byte range. Call again with a nonnegative integer byteOffset within the artifact and positive integer maxBytes no greater than ${maxRangeBytes}.`,
+          };
         }
         const end = Math.min(source.length, offset + length);
         if (!isUtf8Boundary(source, offset) || !isUtf8Boundary(source, end)) {
-          return { error: "Byte ranges must start and end at UTF-8 character boundaries." };
+          return {
+            error:
+              "Byte ranges must start and end at UTF-8 character boundaries. Call again with adjusted byte boundaries or use a bounded line range.",
+          };
         }
         return {
           text: source.subarray(offset, end).toString("utf8"),
@@ -446,10 +458,16 @@ export class ArtifactStore {
       const offset = request.lineOffset ?? 0;
       const limit = request.lineLimit ?? 1;
       if (!Number.isSafeInteger(offset) || offset < 0 || !positiveInteger(limit) || limit > 250) {
-        return { error: "Invalid line range." };
+        return {
+          error:
+            "Invalid line range. Call again with a nonnegative integer lineOffset and an integer lineLimit from 1 to 250.",
+        };
       }
       const lines = splitLines(source.toString("utf8"));
-      if (offset >= lines.length) return { error: "Invalid line range." };
+      if (offset >= lines.length)
+        return {
+          error: `Invalid line range. Call again with lineOffset less than ${lines.length}.`,
+        };
       const text = lines.slice(offset, offset + limit).join("");
       if (Buffer.byteLength(text, "utf8") > maxRangeBytes) {
         return { error: "Requested line range exceeds the byte budget; use byte recovery." };

@@ -1043,7 +1043,8 @@ test("artifact cleanup is absolute, scheduled, unrefed, and not renewed by recov
   callbacks.shift()?.();
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(await store.recover({ artifactId: id, byteOffset: 0, maxBytes: 5 }, 32), {
-    error: "Recovery artifact is unavailable or expired.",
+    error:
+      "Recovery artifact is unavailable or expired. Do not retry this artifact ID; use a new live artifact from an authorized bounded read if the evidence is still needed.",
   });
   await store.close();
   assert.equal(clearCalls, 0);
@@ -1076,7 +1077,8 @@ test("artifact shutdown cancels scheduled cleanup and concurrent operations leav
   assert.equal(clearCalls, 1);
   assert.equal(callbacks.length, 1);
   assert.deepEqual(await store.recover({ artifactId: artifactIds[0], byteOffset: 0 }, 32), {
-    error: "Recovery artifact is unavailable or expired.",
+    error:
+      "Recovery artifact is unavailable or expired. Do not retry this artifact ID; use a new live artifact from an authorized bounded read if the evidence is still needed.",
   });
   await Promise.all([store.close(), store.purge()]);
 });
@@ -1114,14 +1116,22 @@ test("recovery validates safe offsets and supports empty and EOF ranges", async 
     { artifactId: id, byteOffset: 0.5, maxBytes: 1 },
     { artifactId: id, byteOffset: Number.MAX_SAFE_INTEGER, maxBytes: 1 },
   ]) {
-    assert.deepEqual(await store.recover(request, 32), { error: "Invalid byte range." });
+    assert.deepEqual(await store.recover(request, 32), {
+      error:
+        "Invalid byte range. Call again with a nonnegative integer byteOffset within the artifact and positive integer maxBytes no greater than 32.",
+    });
   }
   for (const request of [
     { artifactId: id, lineOffset: 99, lineLimit: 1 },
     { artifactId: id, lineOffset: -1, lineLimit: 1 },
     { artifactId: id, lineOffset: 0.5, lineLimit: 1 },
   ]) {
-    assert.deepEqual(await store.recover(request, 32), { error: "Invalid line range." });
+    assert.deepEqual(await store.recover(request, 32), {
+      error:
+        request.lineOffset === 99
+          ? "Invalid line range. Call again with lineOffset less than 2."
+          : "Invalid line range. Call again with a nonnegative integer lineOffset and an integer lineLimit from 1 to 250.",
+    });
   }
   assert.deepEqual(await store.recover({ artifactId: id, byteOffset: 8, maxBytes: 1 }, 32), {
     text: "",
