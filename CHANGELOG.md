@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.23.3 - 2026-10-31
+
+### Fixed
+
+- The role-mode reply from `consult_advisor` starts with `Not an error:` and limits its instruction
+  not to call the tool again to the time when Advisor launch remains `role`.
+- The reply names the exact active host tool `subagent`, discovered at invocation time through Pi's
+  public tool API. If it is absent or inactive, the reply tells the model to inform the user that it
+  cannot launch the Advisor and not to improvise foreground execution, a CLI or another agent.
+
+### Compatibility and verification
+
+- Only the role-mode tool result changes. Tool definitions, the policy block and all other replies
+  remain unchanged from 0.23.2. No configuration migration, dependency, profile, model, permission or
+  Pi minimum change; upgrade and reload as usual.
+- Registered-tool tests cover the exact launcher name, its absence and changing availability within
+  one runtime. The existing definition-identity test remains unchanged and passes. These checks do
+  not measure provider cache hits or establish real-model behavior with the new wording.
+
 ## 0.23.2 - 2026-10-31
 
 ### Fixed
