@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.23.2 - 2026-10-31
+
+### Fixed
+
+- `consult_advisor` now tells the model what to do for the effective Advisor state instead of
+  suggesting a switch to tool mode. Off means no consultation; role mode redirects to one background
+  host subagent call with every valid Advisor's exact profile, model and thinking policy, and says
+  not to call this tool again. Unavailable entries report their existing diagnostics. Invalid saved
+  Advisor settings explicitly require informing the user to save them again in `/delegate`, without
+  retrying the tool; ordinary availability errors do not ask for configuration changes.
+- Busy, blank-question and missing-session replies now state the next action. ContextShunt recovery
+  errors also explain whether to use another range, obtain live evidence or continue without recovery.
+  The reader's JSON error contract is unchanged.
+
+### Compatibility and verification
+
+- No configuration, schema, dependency, profile, permission or Pi minimum change. Upgrade and reload;
+  no migration is needed. Tool definitions stay fixed across modes and requests. The tool description
+  changes once on upgrade, but no additional policy-block or tool-definition variation is introduced.
+- Registered-tool tests cover off, role, invalid and valid tool calls, exact thinking rules and stable
+  definitions. Saved-state guidance is tested at the message constructor without corrupt files; its
+  connection to the registered tool was reviewed. Policy output was independently checked byte for
+  byte against the previous release. These checks do not measure provider cache hits or establish
+  real-model behavior after an accidental role-mode tool call.
+
 ## 0.23.1 - 2026-10-29
 
 ### Fixed
