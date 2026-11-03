@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.24.0 - 2026-11-03
+
 ### Added
 
 - A third Advisor. `/delegate` shows **Advisor 2** once Advisor 1 exists and **Advisor 3** once
