@@ -22,7 +22,10 @@
 ### Compatibility
 
 - A saved Advisor thinking policy, per entry or legacy `thinking.advisor`, still has to be well
-  formed but is ignored and dropped on the next save. No diagnostic is shown for it.
+  formed but is ignored and dropped on the next save. No diagnostic is shown for it. In tool launch,
+  an Advisor that was fixed at a lower level now runs at `high` when its model supports it, which
+  can raise cost and latency.
+- Saves with one or two Advisors stay readable by 0.21–0.23 as before.
 - No schema change. Versions 0.21–0.23 fall back to Advisor 1 when a save holds three Advisors,
   or turn every Advisor off when one uses Anthropic auth, as before. Saving from one of them drops
   Advisors 2 and 3.

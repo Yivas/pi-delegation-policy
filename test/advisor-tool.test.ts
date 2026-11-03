@@ -511,6 +511,11 @@ test("inactive policy logging creates no records and resumes cleanly after react
   }
 });
 
+/** The released reader keeps a lone standard Advisor in its legacy `advisor` field. */
+function configuredAdvisorsOf(state: { advisor?: unknown; advisors?: unknown }) {
+  return state.advisors ?? (state.advisor ? [state.advisor] : undefined);
+}
+
 test("three advisors round-trip, 0.23.3 falls back to Advisor 1, and its saves with thinking load whole", async () => {
   const third = {
     provider: "anthropic",
@@ -529,6 +534,19 @@ test("three advisors round-trip, 0.23.3 falls back to Advisor 1, and its saves w
       });
       return branch;
     };
+    // Lists the released reader already supports must still reach it whole, with no diagnostic.
+    for (const advisors of [[first], [first, second], [first, third]]) {
+      const state = { ...base, advisors };
+      assert.equal(await writeConfig(path, state), "saved");
+      const old = await read0233(path);
+      assert.deepEqual(old.diagnostics, []);
+      assert.deepEqual(configuredAdvisorsOf(old.defaults), advisors);
+      const oldSession = restore0233(
+        branchOf((writer) => appendGuardedSessionState(writer, state)),
+      );
+      assert.deepEqual(oldSession.diagnostics, []);
+      assert.deepEqual(configuredAdvisorsOf(oldSession.session), advisors);
+    }
     for (const advisors of [
       [first, second, { provider: "example", model: "third" }],
       [first, second, third],
