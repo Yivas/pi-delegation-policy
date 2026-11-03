@@ -19,6 +19,7 @@ import {
   type GlobalDefaults,
   INTENSITIES,
   type Intensity,
+  MAX_ADVISORS,
   MODEL_ROLES,
   type ModelConfigKey,
   type ModelRef,
@@ -382,6 +383,9 @@ function parseModern(
       ? parseThinking(value.thinking, session, schema as 6 | 7 | 8)
       : undefined;
   if (supportsThinking && value.thinking !== undefined && !thinking) return undefined;
+  // A saved Advisor policy stays valid input but no longer has an effect. Dropping it here, before
+  // any projection, keeps every base/companion/extension comparison working on the same shape.
+  if (thinking) delete thinking.advisor;
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
@@ -431,7 +435,7 @@ export function parseSchema10Config(value: unknown): GlobalDefaults | undefined 
   return parseModern(value, 10, false) as GlobalDefaults | undefined;
 }
 function parseAdvisors(value: unknown, providerExtensions = false): AdvisorSetting[] | undefined {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 2) return undefined;
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_ADVISORS) return undefined;
   const entries: AdvisorSetting[] = [];
   for (const entry of value) {
     if (
@@ -447,11 +451,12 @@ function parseAdvisors(value: unknown, providerExtensions = false): AdvisorSetti
     if (entry.providerExtension !== undefined && entry.providerExtension !== "anthropic-auth")
       return undefined;
     const reference = model({ provider: entry.provider, model: entry.model });
-    const thinking = entry.thinking === undefined ? undefined : thinkingPolicy(entry.thinking);
-    if (!reference || (entry.thinking !== undefined && !thinking)) return undefined;
+    // Earlier versions saved a per-entry thinking policy. It must still be well formed, but it is
+    // ignored: Advisor thinking is chosen per launch.
+    if (!reference || (entry.thinking !== undefined && !thinkingPolicy(entry.thinking)))
+      return undefined;
     entries.push({
       ...reference,
-      ...(thinking ? { thinking } : {}),
       ...(entry.providerExtension === "anthropic-auth"
         ? { providerExtension: "anthropic-auth" as const }
         : {}),
@@ -465,14 +470,7 @@ export function configuredAdvisors(
 ): AdvisorSetting[] | null | undefined {
   if (state.advisors !== undefined) return structuredClone(state.advisors);
   if (state.advisor === null) return null;
-  return state.advisor
-    ? [
-        {
-          ...state.advisor,
-          ...(state.thinking?.advisor ? { thinking: copyPolicy(state.thinking.advisor) } : {}),
-        },
-      ]
-    : undefined;
+  return state.advisor ? [{ ...state.advisor }] : undefined;
 }
 function migrate2(value: Schema2Config | Schema2Session): SessionDelegateState {
   return {
@@ -575,14 +573,8 @@ function schema8Projection(state: GlobalDefaults | SessionDelegateState) {
   const first = configuredAdvisors(state)?.[0];
   if (state.advisors !== undefined) {
     delete projected.advisor;
-    const thinking: SessionThinkingSettings = { ...state.thinking };
-    delete thinking.advisor;
-    if (first) {
-      projected.advisor = { provider: first.provider, model: first.model };
-      if (first.thinking) thinking.advisor = copyPolicy(first.thinking);
-    } else if (state.advisors === null) projected.advisor = null;
-    if (Object.keys(thinking).length) projected.thinking = thinking;
-    else delete projected.thinking;
+    if (first) projected.advisor = { provider: first.provider, model: first.model };
+    else if (state.advisors === null) projected.advisor = null;
   }
   // Old readers must never recover a provider-dependent Advisor as an ordinary one.
   if (hasProviderExtension(state)) projected.advisorMode = "off";
@@ -597,11 +589,13 @@ export function getAdvisorExtensionPath(path: string): string {
 function advisorExtension(state: GlobalDefaults | SessionDelegateState) {
   if (hasProviderExtension(state))
     return { schemaVersion: 2, base: schema8Projection(state), state };
-  const second = configuredAdvisors(state)?.[1];
+  const [, second, third] = configuredAdvisors(state) ?? [];
   return {
     schemaVersion: 1,
     base: schema8Projection(state),
     ...(second ? { advisor2: second } : {}),
+    // 0.23 and earlier reject this key and fall back to Advisor 1 only.
+    ...(third ? { advisor3: third } : {}),
     ...(state.advisorLaunch ? { advisorLaunch: state.advisorLaunch } : {}),
   };
 }
@@ -638,7 +632,7 @@ function applyAdvisorExtension<T extends GlobalDefaults | SessionDelegateState>(
   if (
     !isRecord(value) ||
     value.schemaVersion !== 1 ||
-    !only(value, ["schemaVersion", "base", "advisor2", "advisorLaunch"])
+    !only(value, ["schemaVersion", "base", "advisor2", "advisor3", "advisorLaunch"])
   )
     return undefined;
   const base = parseSessionState(value.base);
@@ -650,17 +644,16 @@ function applyAdvisorExtension<T extends GlobalDefaults | SessionDelegateState>(
   )
     return undefined;
   const second = value.advisor2 === undefined ? undefined : parseAdvisors([value.advisor2])?.[0];
-  if (value.advisor2 !== undefined && !second) return undefined;
+  const third = value.advisor3 === undefined ? undefined : parseAdvisors([value.advisor3])?.[0];
+  if ((value.advisor2 !== undefined && !second) || (value.advisor3 !== undefined && !third))
+    return undefined;
   const advisors = configuredAdvisors(state);
-  if (second && !advisors?.length) return undefined;
+  // The list has no gaps: Advisor 3 needs Advisor 2, which needs Advisor 1.
+  if ((second && !advisors?.length) || (third && !second)) return undefined;
   const extended = { ...state };
   if (second) {
-    extended.advisors = [...advisors!, second];
+    extended.advisors = [...advisors!, second, ...(third ? [third] : [])];
     delete extended.advisor;
-    const thinking: SessionThinkingSettings = { ...state.thinking };
-    delete thinking.advisor;
-    if (Object.keys(thinking).length) extended.thinking = thinking;
-    else delete extended.thinking;
   }
   if (value.advisorLaunch) extended.advisorLaunch = value.advisorLaunch as AdvisorLaunch;
   return extended;
@@ -710,16 +703,10 @@ function withoutAdvisorActivation(
   preserved: GlobalDefaults | undefined,
 ): GlobalDefaults {
   const advisor = preserved?.advisor ?? defaults.advisor;
-  const advisorThinking = preserved?.thinking?.advisor;
-  const thinking = {
-    ...defaults.thinking,
-    ...(advisorThinking ? { advisor: copyPolicy(advisorThinking) } : {}),
-  };
   return {
     ...defaults,
     ...(advisor ? { advisor: { ...advisor } } : {}),
     advisorMode: "off",
-    ...(Object.keys(thinking).length ? { thinking } : {}),
   };
 }
 function advisorScopeDiagnostic(): ConfigDiagnostic {
@@ -1072,20 +1059,8 @@ export function resolveDelegateState(
   const medium = role("medium");
   const large = role("large");
   const { thinking, source: thinkingSource } = resolveThinking(defaults, session);
-  // Legacy per-role thinking overrides remain supported until a branch chooses a schema-9 list.
-  if (
-    session.advisors === undefined &&
-    session.thinking &&
-    Object.hasOwn(session.thinking, "advisor") &&
-    advisors[0]
-  ) {
-    delete advisors[0].thinking;
-    if (session.thinking.advisor) advisors[0].thinking = copyPolicy(session.thinking.advisor);
-  }
-  if (session.advisors !== undefined || defaults.advisors !== undefined)
-    thinkingSource.advisor = localAdvisors !== undefined ? "session" : "global";
+  // Parsed documents never carry it; a state built in memory must not resurrect it either.
   delete thinking.advisor;
-  if (advisors[0]?.thinking) thinking.advisor = copyPolicy(advisors[0].thinking);
   return {
     intensity,
     preference: session.preference ?? defaults.preference ?? "standard",

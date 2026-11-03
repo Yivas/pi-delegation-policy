@@ -777,9 +777,10 @@ test("Advisor guidance names observable checkpoints and the context mode for thi
   ]) {
     assert.doesNotMatch(policy, removed);
   }
+  // A saved legacy Advisor policy is ignored: the main agent always chooses Advisor thinking.
   assert.ok(
     policy.includes(
-      'Advisor (optional): provider="example" model="advisor"; exact model base: "example/advisor"; pi-subagents form: "example/advisor:high"; thinking policy: fixed high (must not change).',
+      'Advisor (optional): provider="example" model="advisor"; exact model base: "example/advisor"; pi-subagents form: "example/advisor:LEVEL"; thinking policy: unset (choose per run).',
     ),
   );
 });
@@ -1597,10 +1598,16 @@ test("advisor is an optional tri-state role on schema 7 without rewriting schema
     "a schema 6 document cannot carry the advisor key",
   );
   assert.equal(parseSessionState({ schemaVersion: 7, advisor: null })?.advisor, null);
-  assert.deepEqual(
-    parseConfig({ schemaVersion: 7, thinking: { advisor: { level: "high" } } })?.thinking,
-    { advisor: { level: "high" } },
-    "the advisor reuses the existing thinking map",
+  const legacyThinking = parseConfig({
+    schemaVersion: 7,
+    thinking: { advisor: { level: "high" } },
+  });
+  assert.ok(legacyThinking, "a saved advisor thinking policy stays valid input");
+  assert.equal(legacyThinking.thinking, undefined, "and is ignored because thinking is automatic");
+  assert.equal(
+    parseConfig({ schemaVersion: 7, thinking: { advisor: { level: "extreme" } } }),
+    undefined,
+    "a malformed ignored policy still invalidates the document",
   );
   assert.equal(
     parseConfig({ schemaVersion: 6, thinking: { advisor: { level: "high" } } }),
@@ -1614,11 +1621,8 @@ test("advisor is an optional tri-state role on schema 7 without rewriting schema
   );
   assert.deepEqual(configured.advisor, advisor);
   assert.equal(configured.source.advisor, "global");
-  assert.deepEqual(configured.thinking.advisor, { level: "high" });
-  assert.deepEqual(defaultsFromEffectiveState(configured).advisors?.[0], {
-    ...advisor,
-    thinking: { level: "high" },
-  });
+  assert.equal(configured.thinking.advisor, undefined);
+  assert.deepEqual(defaultsFromEffectiveState(configured).advisors?.[0], advisor);
 
   const overridden = resolveDelegateState(
     { schemaVersion: CURRENT_SCHEMA_VERSION, advisor },
@@ -1669,7 +1673,7 @@ test("advisor is an optional tri-state role on schema 7 without rewriting schema
     const reloaded = (await readConfig(path)).defaults;
     assert.equal(reloaded.schemaVersion, CURRENT_SCHEMA_VERSION);
     assert.deepEqual(reloaded.advisor, advisor);
-    assert.deepEqual(reloaded.thinking?.advisor, { level: "high" });
+    assert.equal(reloaded.thinking?.advisor, undefined);
     await assert.rejects(
       writeConfig(path, { ...savedDefaults, schemaVersion: 6 } as never),
       /Refusing to write invalid delegation policy defaults/,
@@ -1766,10 +1770,9 @@ test("Advisor model errors are isolated from delegation and reader validation", 
   );
   validateRuntime(withAdvisorModel(), advisorThinking);
   assert.equal(statusLabel(advisorThinking), "D:NORM");
-  assert.match(
-    advisorThinking.advisorErrors?.join("\n") ?? "",
-    /Advisor thinking level "xhigh" is not supported/,
-  );
+  // Advisor thinking is automatic, so a leftover legacy policy cannot invalidate the Advisor.
+  assert.deepEqual(advisorThinking.advisorErrors, []);
+  assert.equal(advisorStatusLabel(advisorThinking), "A:ON");
 });
 
 test("active delegation keeps workflow code out of the chat for every active intensity", () => {
@@ -1881,26 +1884,26 @@ test("the advisor rows end the settings list and stage the same tri-state", () =
   const focus = (index: number) =>
     sendKeys(harness.panel, KEY_HOME, ...Array.from({ length: index }, () => KEY_DOWN));
 
-  focus(12);
+  focus(14);
   const advisorRow = harness.panel.render(100).join("\n");
   assert.match(advisorRow, /^> Advisor 1\s+disabled\s*$/m);
   assert.match(advisorRow, /First advice model; executes no work/);
   assert.match(advisorRow, /built-in disabled/);
+  assert.doesNotMatch(
+    advisorRow,
+    /^. Advisor (2|thinking)/m,
+    "empty slots and thinking cost no row",
+  );
 
   sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
   assert.equal(harness.panel.getDraft().advisors, null);
   assert.equal(harness.panel.isDirty(), true);
 
-  sendKeys(harness.panel, KEY_DOWN, KEY_ENTER);
-  const advisorThinking = harness.panel.render(100).join("\n");
-  assert.match(advisorThinking, /Advisor is disabled for this session; levels cannot be listed\./);
-  assert.doesNotMatch(advisorThinking, /Fixed level|Range \(min–max\)/);
-
   const configured = createPanelHarness({ rows: 30, global: { ...defaults, advisor } });
-  sendKeys(configured.panel, KEY_HOME, ...Array.from({ length: 13 }, () => KEY_DOWN));
-  const thinkingRow = configured.panel.render(100).join("\n");
-  assert.match(thinkingRow, /^> Advisor thinking\s+unset\s*$/m);
-  assert.match(thinkingRow, /built-in unset/);
+  sendKeys(configured.panel, KEY_HOME, ...Array.from({ length: 15 }, () => KEY_DOWN));
+  const secondRow = configured.panel.render(100).join("\n");
+  assert.match(secondRow, /^> Advisor 2\s+not configured\s*$/m);
+  assert.doesNotMatch(secondRow, /^. Advisor (3|thinking)/m);
 });
 
 test("status reports the advisor token and its provenance without renaming existing tokens", () => {
@@ -1913,14 +1916,10 @@ test("status reports the advisor token and its provenance without renaming exist
   assert.match(bare, /ui-design=disabled \(default\)/);
   assert.match(bare, /advisor=disabled \(default\)/);
   assert.match(bare, /thinking-ui-design=unset \(default\)/);
-  assert.match(bare, /thinking-advisor=unset \(default\)/);
+  assert.doesNotMatch(bare, /thinking-advisor=/, "Advisor thinking is not a setting");
   assert.ok(
     bare.indexOf("ui-design=") < bare.indexOf("advisor="),
     "the new token follows ui-design",
-  );
-  assert.ok(
-    bare.indexOf("thinking-ui-design=") < bare.indexOf("thinking-advisor="),
-    "the new thinking token follows the existing ones",
   );
 
   const configured = statusText(
@@ -1930,7 +1929,8 @@ test("status reports the advisor token and its provenance without renaming exist
     ),
   );
   assert.match(configured, /advisor=example\/advisor \(global\)/);
-  assert.match(configured, /thinking-advisor=fixed:high \(global\)/);
+  assert.match(configured, /advisor-1=example\/advisor; profile=pi-delegation-policy\.advisor/);
+  assert.doesNotMatch(configured, /thinking-advisor=|thinking=fixed/);
   assert.match(configured, /^.*small=example\/small \(global\).*$/m);
 });
 

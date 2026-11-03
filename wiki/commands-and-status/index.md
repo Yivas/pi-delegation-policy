@@ -34,14 +34,15 @@ Advisor configuration also works without the panel:
 
 ```text
 /delegate advisor launch role|tool
-/delegate advisor 1|2 model PROVIDER/MODEL
-/delegate advisor 1|2 model remove
-/delegate advisor 1|2 model inherit
-/delegate advisor 1|2 thinking unset|LEVEL|MIN MAX
+/delegate advisor 1|2|3 model PROVIDER/MODEL
+/delegate advisor 1|2|3 model remove
+/delegate advisor 1|2|3 model inherit
 ```
 
-Configure entry 1 before adding entry 2. Removing entry 1 removes both. `model inherit` returns the
-whole list to global inheritance; an explicit list replaces entries and thinking together.
+Entries fill in order: configure entry 1 before entry 2, and entry 2 before entry 3. Removing entry 1
+removes all; removing a later entry moves the next one up with its profile. `model inherit` returns
+the whole list to global inheritance; an explicit list replaces every entry. Advisor thinking has no
+command: `/delegate advisor N thinking` only reports that it is automatic.
 
 There is no separate off shortcut: run `/delegate off` or choose `off` in the editor. Quick commands
 write the session branch directly. **Reset draft to off** only changes the draft until Apply.
@@ -62,8 +63,8 @@ ID, and display name, and shows at most 10 rows; `Page Up` and `Page Down` move 
 results. When Pi supplies public model metadata, the selected row can show name, API, reasoning
 support, context window, and maximum output; that metadata is transient and never saved.
 
-The thinking rows — **Small thinking**, **Medium thinking**, **Large thinking**, **Visual Design
-thinking**, and **Advisor thinking** — show the effective policy as `unset`, a level such as `high`,
+The thinking rows — **Small thinking**, **Medium thinking**, **Large thinking** and **Visual Design
+thinking** — show the effective policy as `unset`, a level such as `high`,
 or an inclusive range such as `low..high`. Editing one offers **Use global default**, **Unset for this
 session (no policy)**, **Fixed level…**, and **Range (min–max)…**; a range asks for the minimum and
 then for the maximum, and the maximum list never goes below the chosen minimum. Both level lists
@@ -71,8 +72,12 @@ contain only the levels the role's configured model supports. When the role is d
 configured, or its model is not selectable, the panel states the reason and offers only the unset
 actions. Fixed and range are distinguishable from their text, not only from colour.
 
-The Advisor rows include **Advisor 1**, **Advisor 2 (optional)**, per-entry thinking,
-**Advisor mode** (inheritance, `off`, `on`, `with-delegation`) and **Advisor launch** (`role` or `tool`).
+The Advisor rows are **Advisor mode** (inheritance, `off`, `on`, `with-delegation`), **Advisor
+launch** (`role` or `tool`) and **Advisor 1**. **Advisor 2** appears once Advisor 1 exists and
+**Advisor 3** once Advisor 2 exists. Choosing an `anthropic` model in one of them asks for its
+profile, **Standard** or **Anthropic auth**, and the row shows `· Anthropic auth` when the opt-in
+is set. Advisor thinking has no row: role launch lets the main agent choose it per run, and tool
+launch picks it automatically.
 
 The panel keeps one explicit draft:
 
@@ -140,8 +145,8 @@ that is still missing or unusable keeps `D:ERR`. The event order was checked in 
 | `D:ERR`  | Execution-delegation settings are invalid; a valid Advisor can remain. | Inspect `/delegate status` and correct the role or thinking policy.         |
 | `A:OFF`  | No Advisor guidance is injected.                                       | Enable the mode or configure a model if consultation is wanted.             |
 | `A:ON`   | All configured advisors are valid.                                     | Consultation may send a brief or the conversation to that model, with cost. |
-| `A:PART` | One of two advisors is valid; consult only that entry.                 | Correct or remove the other entry.                                          |
-| `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model or its thinking policy.   |
+| `A:PART` | Some advisors are valid; consult only those entries.                   | Correct or remove the other entries.                                        |
+| `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model.                          |
 
 `/delegate status` keeps stable tokens and reports exact effective references and sources, for
 example:
@@ -150,12 +155,11 @@ example:
 small=disabled (session) | medium=provider/example-medium (global) | large=not configured (default)
 ui-design=disabled (default) | advisor=provider/example-advisor (global) | thinking-small=fixed:high (global)
 thinking-medium=range:low..high (session) | thinking-large=unset (default) | thinking-ui-design=unset (default)
-thinking-advisor=unset (default)
 advisor-mode=with-delegation (global); A:ON
 ```
 
 The source is `default`, `global`, or `session`. The optional role tokens `ui-design=` and `advisor=`
-keep their order, and `thinking-advisor=` closes the thinking group. Each thinking policy is reported
+keep their order, and `thinking-ui-design=` closes the thinking group. Each thinking policy is reported
 as `unset`, `fixed:<level>`, or `range:<min>..<max>`: the token says what the policy allows, not which
 level a launch used, and that per-run choice is never stored. `unset (session)` means the branch keeps
 no policy even when global defaults set one.
@@ -175,11 +179,11 @@ reveals session content.
 `consult_advisor({ question, brief? })` is always registered but unavailable outside tool launch mode
 or without an enabled valid advisor. Fresh needs a self-contained brief; fork sends only the question
 as task and the host supplies the conversation. Only an explicitly rejected fork retries once, with
-brief and fresh context. Labelled answers survive the other advisor's failure. One pending call per
+brief and fresh context. Labelled answers survive another advisor's failure. One pending call per
 tool: an advisor group launches one child per valid configured advisor; the reader remains independent.
 Abort, branch changes, shutdown and detected authorization changes cancel the group.
 
-Status adds `advisor-launch=`, `advisor-1=` and `advisor-2=` with thinking and sources. In tool mode
+Status adds `advisor-launch=` and one `advisor-N=` token per entry, with its profile and source. In tool mode
 policy text asks for this tool, not the generic subagent launcher, and stays stable across context
 changes. See [privacy](/limits-and-privacy/#local-content-free-log) for the local metadata log.
 

@@ -56,14 +56,11 @@ const FIELD_IDS = [
   "thinkingMedium",
   "thinkingLarge",
   "thinkingUiDesign",
-  "advisor",
-  "thinkingAdvisor",
   "advisorMode",
   "advisorLaunch",
+  "advisor",
   "advisor2",
-  "thinkingAdvisor2",
-  "advisorProvider",
-  "advisor2Provider",
+  "advisor3",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
 const THINKING_FIELDS = [
@@ -71,19 +68,26 @@ const THINKING_FIELDS = [
   "thinkingMedium",
   "thinkingLarge",
   "thinkingUiDesign",
-  "thinkingAdvisor",
-  "thinkingAdvisor2",
 ] as const;
 type ThinkingField = (typeof THINKING_FIELDS)[number];
-type ModelField = ModelConfigKey | "advisor2";
-const THINKING_FIELD_KEYS: Record<ThinkingField, ModelField> = {
+/** Roles with a configurable thinking policy; Advisor thinking is chosen per launch. */
+type ThinkingKey = ModelRole | "uiDesign";
+/** Advisor rows follow list order; each row also carries that entry's provider profile. */
+const ADVISOR_FIELDS = ["advisor", "advisor2", "advisor3"] as const;
+type AdvisorField = (typeof ADVISOR_FIELDS)[number];
+type ModelField = ThinkingKey | AdvisorField;
+const THINKING_FIELD_KEYS: Record<ThinkingField, ThinkingKey> = {
   thinkingSmall: "small",
   thinkingMedium: "medium",
   thinkingLarge: "large",
   thinkingUiDesign: "uiDesign",
-  thinkingAdvisor: "advisor",
-  thinkingAdvisor2: "advisor2",
 };
+function isAdvisorField(field: string): field is AdvisorField {
+  return (ADVISOR_FIELDS as readonly string[]).includes(field);
+}
+function advisorIndex(field: AdvisorField): number {
+  return ADVISOR_FIELDS.indexOf(field);
+}
 function isThinkingField(field: string): field is ThinkingField {
   return (THINKING_FIELDS as readonly string[]).includes(field);
 }
@@ -126,7 +130,7 @@ function isLimitField(field: AdvancedField | EditableAdvancedField): field is Li
 type PanelMode =
   | { kind: "settings" }
   | { kind: "enum"; field: EnumField; selected: number }
-  | { kind: "provider"; field: "advisorProvider" | "advisor2Provider"; selected: number }
+  | { kind: "provider"; index: number; selected: number }
   | { kind: "model"; field: ModelField; selected: number; query: string }
   | { kind: "advanced"; selected: number }
   | { kind: "advanced-reader-enabled"; selected: number }
@@ -181,13 +185,13 @@ export interface DelegatePanelOptions {
   onDone: (result: DelegatePanelResult) => void;
 }
 
-const SETTINGS_ITEMS: readonly SettingsItem[] = [
-  ...FIELD_IDS,
-  "apply",
-  "save-defaults",
-  "reset",
-  "cancel",
-];
+const PANEL_ACTIONS: readonly PanelAction[] = ["apply", "save-defaults", "reset", "cancel"];
+const PROVIDER_CHOICES = [
+  "Standard profile (no provider extension)",
+  "Anthropic auth 3.4.3 (explicit opt-in)",
+] as const;
+const PROVIDER_DESCRIPTION =
+  "Standard uses the ordinary Advisor profile. Anthropic auth uses a separate profile that loads managed-user pi-anthropic-auth 3.4.3 with its normal configuration, startup hook and account diagnostic command; no model tools are added. The model is unchanged; a missing or incompatible package disables only this Advisor.";
 
 const FIELD_LABELS: Record<DelegateField, string> = {
   intensity: "Intensity",
@@ -203,13 +207,10 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   thinkingLarge: "Large thinking",
   thinkingUiDesign: "Visual Design thinking",
   advisor: "Advisor 1",
-  advisorProvider: "Advisor 1 provider",
-  advisor2Provider: "Advisor 2 provider",
-  advisor2: "Advisor 2 (optional)",
+  advisor2: "Advisor 2",
+  advisor3: "Advisor 3",
   advisorLaunch: "Advisor launch",
-  thinkingAdvisor2: "Advisor 2 thinking",
   advisorMode: "Advisor mode",
-  thinkingAdvisor: "Advisor thinking",
 };
 
 /** One alignment column for every field value, wide enough for the longest label. */
@@ -238,17 +239,14 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
   advisorMode:
     "On works independently of delegation; off disables advice; with-delegation preserves legacy behavior. Consultations may incur cost.",
-  advisorProvider:
-    "Standard profile or explicit Anthropic auth extension. The extension runs its normal configuration, startup hook and account diagnostic command; no model tools are added.",
-  advisor2Provider:
-    "Choose independently for Advisor 2; Anthropic auth requires provider anthropic and managed-user pi-anthropic-auth 3.4.3. No installation or model change.",
-  advisor: "First advice model; executes no work. Removing it removes both advisors.",
-  advisor2: "Add a second model consulted alongside Advisor 1, or remove it with Disable.",
+  advisor:
+    "First advice model; executes no work. Anthropic models also ask for the profile. Thinking is automatic. Removing it removes every advisor.",
+  advisor2:
+    "Optional model consulted alongside Advisor 1. Disable removes it; any later advisor moves up.",
+  advisor3:
+    "Optional model consulted alongside the others; each advisor adds a consultation at every checkpoint.",
   advisorLaunch:
     "Role asks the main agent to launch; tool uses explicit consult_advisor. Neither launches from hooks.",
-  thinkingAdvisor2: "Optional fixed level or inclusive range for Advisor 2.",
-  thinkingAdvisor:
-    "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
 };
 
 const ACTION_LABELS: Record<PanelAction, string> = {
@@ -437,10 +435,34 @@ export class DelegatePanel implements Component, Focusable {
     return !sameSessionState(this.original, this.draft);
   }
 
+  /**
+   * Settings rows in order. Advisor N+1 appears only once Advisor N exists, so an unused slot costs
+   * no row and the list never offers a gap.
+   */
+  private settingsItems(): SettingsItem[] {
+    const configured = resolveDelegateState(this.global, this.draft).advisors.length;
+    return [
+      ...FIELD_IDS.filter((field) => !isAdvisorField(field) || advisorIndex(field) <= configured),
+      ...PANEL_ACTIONS,
+    ];
+  }
+
   handleInput(data: string): void {
     if (this.working) return;
     this.message = undefined;
+    // Keep the focus on the same row when an edit shows or hides Advisor rows. Navigation moves the
+    // index within the previous list and edits change the list, never both, so the row is resolved
+    // against the list that existed before this input.
+    const previousItems = this.settingsItems();
+    this.dispatchInput(data);
+    const focusedItem = previousItems[this.settingsIndex];
+    const items = this.settingsItems();
+    const focusedIndex = focusedItem ? items.indexOf(focusedItem) : -1;
+    this.settingsIndex =
+      focusedIndex >= 0 ? focusedIndex : Math.min(this.settingsIndex, items.length - 1);
+  }
 
+  private dispatchInput(data: string): void {
     if (this.isCompact()) {
       this.handleCompactInput(data);
       this.tui.requestRender();
@@ -566,7 +588,9 @@ export class DelegatePanel implements Component, Focusable {
             this.mode.kind === "advanced-reader-role" ||
             this.mode.kind === "advanced-input"
           ? "Delegation policy / Context advanced"
-          : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
+          : this.mode.kind === "provider"
+            ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
+            : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
     const status = this.working ?? (this.isDirty() ? "Modified" : "");
     const gap = Math.max(1, width - visibleWidth(modeLabel) - visibleWidth(status));
     const statusText = this.theme.fg("warning", status);
@@ -617,7 +641,8 @@ export class DelegatePanel implements Component, Focusable {
     const preview = this.renderPolicyPreview(width, budget, effective);
     const hintRows = this.settingsHintRows(width, budget - preview.length);
     const settingsBudget = Math.max(1, budget - preview.length - hintRows);
-    const blocks = SETTINGS_ITEMS.map((item, index) => {
+    const items = this.settingsItems();
+    const blocks = items.map((item, index) => {
       const selected = index === this.settingsIndex;
       if (isDelegateField(item)) {
         const row = this.settingsRow(item, this.settingsValue(item, effective), width);
@@ -628,7 +653,7 @@ export class DelegatePanel implements Component, Focusable {
       const line = selectedLine(this.theme, label, width, selected);
       return [disabled ? this.theme.fg("dim", line) : line];
     });
-    const focused = SETTINGS_ITEMS[this.settingsIndex];
+    const focused = items[this.settingsIndex];
     const hint = focused && isDelegateField(focused) ? this.settingsHint(focused, width) : [];
 
     return [
@@ -651,13 +676,10 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string {
     if (isThinkingField(field)) return this.thinkingValue(field);
-    if (field === "advisorProvider" || field === "advisor2Provider") {
-      const entry = effective.advisors[field === "advisorProvider" ? 0 : 1];
-      return !entry
-        ? "configure model first"
-        : entry.providerExtension
-          ? "Anthropic auth · advisor-anthropic-auth"
-          : "Standard · advisor";
+    if (isAdvisorField(field)) {
+      const entry = effective.advisors[advisorIndex(field)];
+      if (!entry) return field === "advisor" ? "disabled" : "not configured";
+      return `${modelText(entry)}${entry.providerExtension ? " · Anthropic auth" : ""}`;
     }
     if (
       field === "intensity" ||
@@ -672,9 +694,8 @@ export class DelegatePanel implements Component, Focusable {
         : effective.contextShunt.mode;
     if (field === "contextAdvanced")
       return `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`;
-    if (field === "advisor2") return modelText(effective.advisors[1]);
-    if (field === "uiDesign" || field === "advisor")
-      return effective[field] ? modelText(effective[field]) : "disabled";
+    if (field === "uiDesign")
+      return effective.uiDesign ? modelText(effective.uiDesign) : "disabled";
     return rawModelText(effective[field], "not configured");
   }
 
@@ -707,19 +728,11 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string[] {
     const delegationError = this.hasRuntimeError && effective.intensity !== "off";
-    const validAdvisorCount = effective.advisors.filter((setting, index) => {
-      const available = this.thinkingAvailability(
-        index === 0 ? "thinkingAdvisor" : "thinkingAdvisor2",
-      );
-      if (!("levels" in available)) return false;
-      const policy = setting.thinking;
-      return (
-        !policy ||
-        ("level" in policy ? [policy.level] : [policy.min, policy.max]).every((level) =>
-          available.levels.includes(level),
-        )
-      );
-    }).length;
+    const validAdvisorCount = effective.advisors.filter((setting) =>
+      this.candidates.some(
+        (candidate) => candidate.provider === setting.provider && candidate.id === setting.model,
+      ),
+    ).length;
     const lines = this.isDirty()
       ? buildPolicyPreview(effective, validAdvisorCount)
       : [
@@ -749,19 +762,16 @@ export class DelegatePanel implements Component, Focusable {
     state: GlobalDefaults | SessionDelegateState,
     field: ModelField,
   ): ModelRef | null | undefined {
-    if (field !== "advisor" && field !== "advisor2") return state[field];
+    if (!isAdvisorField(field)) return state[field];
     const advisors = configuredAdvisors(state);
-    return advisors === null ? null : advisors?.[field === "advisor" ? 0 : 1];
+    return advisors === null ? null : advisors?.[advisorIndex(field)];
   }
 
   private thinkingSetting(
     state: GlobalDefaults | SessionDelegateState,
-    key: ModelField,
+    key: ThinkingKey,
   ): ThinkingPolicy | null | undefined {
-    if (key !== "advisor" && key !== "advisor2") return state.thinking?.[key];
-    if (state.advisors !== undefined)
-      return state.advisors?.[key === "advisor" ? 0 : 1]?.thinking ?? null;
-    return key === "advisor" ? state.thinking?.advisor : undefined;
+    return state.thinking?.[key];
   }
 
   private thinkingValue(field: ThinkingField): string {
@@ -779,23 +789,23 @@ export class DelegatePanel implements Component, Focusable {
     const state = resolveDelegateState(this.global, this.draft);
     if (this.modelSetting(this.draft, key) === null)
       return {
-        reason: `${key === "advisor2" ? "Advisor 2" : ROLE_LABELS[key]} is disabled for this session; levels cannot be listed.`,
+        reason: `${ROLE_LABELS[key]} is disabled for this session; levels cannot be listed.`,
       };
-    const reference = key === "advisor2" ? state.advisors[1] : state[key];
+    const reference = state[key];
     if (reference === null)
       return {
-        reason: `${key === "advisor2" ? "Advisor 2" : ROLE_LABELS[key]} is disabled; levels cannot be listed.`,
+        reason: `${ROLE_LABELS[key]} is disabled; levels cannot be listed.`,
       };
     if (reference === undefined)
       return {
-        reason: `${key === "advisor2" ? "Advisor 2" : ROLE_LABELS[key]} is not configured; levels cannot be listed.`,
+        reason: `${ROLE_LABELS[key]} is not configured; levels cannot be listed.`,
       };
     const model = this.candidates.find(
       (candidate) => candidate.provider === reference.provider && candidate.id === reference.model,
     );
     if (!model)
       return {
-        reason: `${key === "advisor2" ? "Advisor 2" : ROLE_LABELS[key]} model ${reference.provider}/${reference.model} is not available; levels cannot be listed.`,
+        reason: `${ROLE_LABELS[key]} model ${reference.provider}/${reference.model} is not available; levels cannot be listed.`,
       };
     return {
       levels: getSupportedThinkingLevels(model).filter(isThinkingLevelName),
@@ -809,10 +819,7 @@ export class DelegatePanel implements Component, Focusable {
     return [
       {
         label: `${USE_GLOBAL_DEFAULT} (${global ? thinkingSummary(global) : "none"})`,
-        description:
-          key === "advisor" || key === "advisor2"
-            ? "Copy the current global entry policy; applying an advisor list overrides the whole list."
-            : "Drop this session override and keep the global policy, if any.",
+        description: "Drop this session override and keep the global policy, if any.",
         action: "inherit",
       },
       {
@@ -934,10 +941,6 @@ export class DelegatePanel implements Component, Focusable {
   }
 
   private sourceDetails(field: DelegateField): string[] {
-    if (field === "advisorProvider" || field === "advisor2Provider")
-      return [
-        "Default: standard; opt-in keeps the selected model and thinking. Missing or incompatible package disables only this Advisor.",
-      ];
     if (field === "intensity") {
       return [
         "built-in off",
@@ -978,7 +981,7 @@ export class DelegatePanel implements Component, Focusable {
         `session ${this.draft.preference ?? "inherit"}`,
       ];
     }
-    if (field === "uiDesign" || field === "advisor" || field === "advisor2") {
+    if (field === "uiDesign" || isAdvisorField(field)) {
       return [
         "built-in disabled",
         `global ${rawModelText(this.modelSetting(this.global, field), "—")}`,
@@ -1007,17 +1010,12 @@ export class DelegatePanel implements Component, Focusable {
     budget: number,
     mode: Extract<PanelMode, { kind: "provider" }>,
   ): string[] {
-    const options = [
-      "Use global provider option",
-      "Standard profile (no provider extension)",
-      "Anthropic auth 3.4.3 (explicit opt-in)",
-    ];
-    const blocks = options.map((label, index) => [
+    const blocks = PROVIDER_CHOICES.map((label, index) => [
       selectedLine(this.theme, label, width, index === mode.selected),
     ]);
     // Reserve the choices first. A wrapped explanation must never hide the selection
     // while Enter can still confirm it, including in a short, narrow terminal.
-    const description = wrapTextWithAnsi(FIELD_DESCRIPTIONS[mode.field], width).slice(
+    const description = wrapTextWithAnsi(PROVIDER_DESCRIPTION, width).slice(
       0,
       Math.max(0, budget - Math.min(blocks.length, budget)),
     );
@@ -1029,25 +1027,20 @@ export class DelegatePanel implements Component, Focusable {
 
   private handleProviderInput(data: string): void {
     if (this.mode.kind !== "provider") return;
-    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected + 2) % 3;
-    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % 3;
+    const count = PROVIDER_CHOICES.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    // Escape keeps the model just chosen with the profile it already had.
     else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
       this.mode = { kind: "settings" };
     else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
-      const index = this.mode.field === "advisorProvider" ? 0 : 1;
       const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
-      const entry = entries[index];
+      const entry = entries[this.mode.index];
       if (!entry) {
-        this.message = { kind: "error", text: "Configure this Advisor model first." };
+        this.mode = { kind: "settings" };
         return;
       }
-      const extension =
-        this.mode.selected === 0
-          ? configuredAdvisors(this.global)?.[index]?.providerExtension
-          : this.mode.selected === 2
-            ? "anthropic-auth"
-            : undefined;
-      if (extension) entry.providerExtension = extension;
+      if (this.mode.selected === 1) entry.providerExtension = "anthropic-auth";
       else delete entry.providerExtension;
       this.replaceAdvisors(entries);
       this.mode = { kind: "settings" };
@@ -1387,27 +1380,20 @@ export class DelegatePanel implements Component, Focusable {
     if (matchesKey(data, "up")) this.moveSettings(-1);
     else if (matchesKey(data, "down")) this.moveSettings(1);
     else if (matchesKey(data, "home")) this.settingsIndex = 0;
-    else if (matchesKey(data, "end")) this.settingsIndex = SETTINGS_ITEMS.length - 1;
+    else if (matchesKey(data, "end")) this.settingsIndex = this.settingsItems().length - 1;
     else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.requestClose();
     else if (matchesKey(data, "enter") || matchesKey(data, "space")) this.activateSettingsItem();
     else if (data.toLowerCase() === "a") void this.applyDraft();
   }
 
   private moveSettings(delta: number): void {
-    this.settingsIndex =
-      (this.settingsIndex + delta + SETTINGS_ITEMS.length) % SETTINGS_ITEMS.length;
+    const count = this.settingsItems().length;
+    this.settingsIndex = (this.settingsIndex + delta + count) % count;
   }
 
   private activateSettingsItem(): void {
-    const item = SETTINGS_ITEMS[this.settingsIndex];
+    const item = this.settingsItems()[this.settingsIndex];
     if (!item) return;
-    if (item === "advisorProvider" || item === "advisor2Provider") {
-      const entry = resolveDelegateState(this.global, this.draft).advisors[
-        item === "advisorProvider" ? 0 : 1
-      ];
-      this.mode = { kind: "provider", field: item, selected: entry?.providerExtension ? 2 : 1 };
-      return;
-    }
     if (item === "contextAdvanced") {
       this.mode = { kind: "advanced", selected: 0 };
       return;
@@ -1442,8 +1428,7 @@ export class DelegatePanel implements Component, Focusable {
       item === "medium" ||
       item === "large" ||
       item === "uiDesign" ||
-      item === "advisor" ||
-      item === "advisor2"
+      isAdvisorField(item)
     ) {
       this.openModelSelector(item);
       return;
@@ -1626,18 +1611,6 @@ export class DelegatePanel implements Component, Focusable {
 
   private setThinkingPolicy(field: ThinkingField, policy: ThinkingPolicy | null | undefined): void {
     const key = THINKING_FIELD_KEYS[field];
-    if (key === "advisor" || key === "advisor2") {
-      const index = key === "advisor" ? 0 : 1;
-      const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
-      const entry = entries[index];
-      if (!entry) return;
-      const inherited =
-        policy === undefined ? configuredAdvisors(this.global)?.[index]?.thinking : policy;
-      if (inherited) entry.thinking = inherited;
-      else delete entry.thinking;
-      this.replaceAdvisors(entries);
-      return;
-    }
     const thinking: SessionThinkingSettings = { ...(this.draft.thinking ?? {}) };
     if (policy === undefined) delete thinking[key];
     else thinking[key] = policy;
@@ -1895,28 +1868,31 @@ export class DelegatePanel implements Component, Focusable {
   private chooseModel(choice: ModelChoice | undefined): void {
     if (!choice || this.mode.kind !== "model") return;
     const field = this.mode.field;
-    if (field === "advisor" || field === "advisor2") {
-      const index = field === "advisor" ? 0 : 1;
+    if (isAdvisorField(field)) {
+      const index = advisorIndex(field);
       const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
-      const reference =
-        choice.kind === "global"
-          ? configuredAdvisors(this.global)?.[index]
-          : choice.kind === "model"
-            ? choice.reference
-            : undefined;
-      if (index === 1 && !entries[0] && reference) {
-        this.message = { kind: "error", text: "Configure Advisor 1 before adding Advisor 2." };
+      const previous = entries[index];
+      const global =
+        choice.kind === "global" ? configuredAdvisors(this.global)?.[index] : undefined;
+      const reference = choice.kind === "model" ? choice.reference : global;
+      if (index > entries.length && reference) {
+        this.message = {
+          kind: "error",
+          text: `Configure Advisor ${index} before adding Advisor ${index + 1}.`,
+        };
         return;
       }
       if (!reference) {
+        // Advisor 1 anchors the list; removing a later entry moves the next one up.
         if (index === 0) entries.length = 0;
         else entries.splice(index, 1);
-      } else
+      } else if (choice.kind === "global") entries[index] = structuredClone(reference);
+      else
         entries[index] = {
           ...reference,
-          ...(entries[index]?.thinking ? { thinking: entries[index]!.thinking } : {}),
-          ...(entries[index]?.providerExtension
-            ? { providerExtension: entries[index]!.providerExtension }
+          // The Anthropic profile only applies to Anthropic models; it follows a model change there.
+          ...(previous?.providerExtension && reference.provider === "anthropic"
+            ? { providerExtension: previous.providerExtension }
             : {}),
         };
       if (choice.kind === "global" && index === 0) {
@@ -1925,7 +1901,10 @@ export class DelegatePanel implements Component, Focusable {
         if (this.draft.thinking) delete this.draft.thinking.advisor;
       } else this.replaceAdvisors(entries);
       if (!entries.length && choice.kind === "disabled") this.draft.advisorMode = "off";
-      this.mode = { kind: "settings" };
+      this.mode =
+        choice.kind === "model" && choice.reference.provider === "anthropic"
+          ? { kind: "provider", index, selected: entries[index]?.providerExtension ? 1 : 0 }
+          : { kind: "settings" };
       return;
     }
     if (choice.kind === "global") delete this.draft[field];
@@ -1944,7 +1923,7 @@ export class DelegatePanel implements Component, Focusable {
   private modelChoices(field: ModelField, query: string): ModelChoice[] {
     const global = this.modelSetting(this.global, field);
     const globalDescription =
-      field === "uiDesign" || field === "advisor" || field === "advisor2"
+      field === "uiDesign" || isAdvisorField(field)
         ? global
           ? modelText(global)
           : "disabled"

@@ -123,7 +123,7 @@ On tasks longer than a few steps, consult at least once before committing to an 
 
 ${
   launch === "tool"
-    ? `Call consult_advisor with the same question for all enabled valid advisors. It launches the packaged profiles with their exact configured models and thinking; do not use the generic subagent tool for Advisor. Supply brief whenever context is fresh, and preferably also for a possible rejected fork: objective and constraints, relevant facts, options and proposal, uncertainty. The tool chooses context automatically; fork sends this conversation to each advisor's provider.`
+    ? `Call consult_advisor with the same question for all enabled valid advisors. It launches the packaged profiles with their exact configured models and chooses their thinking; do not use the generic subagent tool for Advisor. Supply brief whenever context is fresh, and preferably also for a possible rejected fork: objective and constraints, relevant facts, options and proposal, uncertainty. The tool chooses context automatically; fork sends this conversation to each advisor's provider.`
     : `Launch it with the host's subagent tool ${providerProfile ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —" : 'using agent "pi-delegation-policy.advisor" exactly — not a host agent or alias named "advisor" or "oracle" —'} with the exact model and thinking of its role line, in the background like every subagent.${count > 1 ? " Consult every listed advisor with the same question in one background call (pi-subagents: workflow runs.all or several tasks in a single call). Weigh disagreements explicitly; agreement is not proof." : ""}`
 }
 
@@ -266,7 +266,8 @@ export function advisorRoleLines(state: RuntimeState): string {
   const { effective } = state;
   return validAdvisors(state)
     .map(({ index, setting }) => {
-      const thinking = roleThinking(setting.thinking);
+      // Advisor thinking is never configured, so the main agent always chooses it per run.
+      const thinking: RoleThinking = { kind: "unset" };
       const label =
         effective.advisors.length === 1 ? "Advisor (optional)" : `Advisor ${index + 1} (optional)`;
       return `

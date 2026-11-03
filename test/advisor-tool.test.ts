@@ -25,6 +25,7 @@ import {
   readConfig,
   resolveDelegateState,
   restoreSessionState,
+  restoreSessionStateWithDiagnostics,
   writeConfig,
 } from "../src/config.ts";
 import { advisorUnavailableText, createPiDelegationPolicy } from "../src/index.ts";
@@ -45,13 +46,15 @@ import {
   readConfig as read016,
   restoreSessionState as restore016,
 } from "./fixtures/v0.16.0/config.ts";
+import {
+  appendGuardedSessionState as append0233,
+  readConfig as read0233,
+  restoreSessionStateWithDiagnostics as restore0233,
+  writeConfig as write0233,
+} from "./fixtures/v0.23.3/config.ts";
 
-const first = { provider: "example", model: "first", thinking: { level: "low" as const } };
-const second = {
-  provider: "example",
-  model: "second",
-  thinking: { min: "medium" as const, max: "high" as const },
-};
+const first = { provider: "example", model: "first" };
+const second = { provider: "example", model: "second" };
 const base: GlobalDefaults = {
   schemaVersion: CURRENT_SCHEMA_VERSION,
   advisors: [first, second],
@@ -305,12 +308,11 @@ async function until(condition: () => boolean) {
 
 // Public boundary: schema parsing/effective state, saved files read by released parsers, and the
 // registered tool/hooks against a synthetic delegation event host. No provider or credentials.
-test("model commands preserve the Advisor provider opt-in instead of falling back", async () => {
+test("model commands keep the Advisor provider opt-in only for Anthropic models", async () => {
   const configured = {
     provider: "anthropic",
     model: "synthetic-one",
     providerExtension: "anthropic-auth" as const,
-    thinking: { level: "low" as const },
   };
   const available = ["synthetic-one", "synthetic-two"].map((id) => ({
     ...models[0]!,
@@ -331,21 +333,41 @@ test("model commands preserve the Advisor provider opt-in instead of falling bac
         "example/incompatible",
       ]) {
         await run.command(`advisor 1 model ${model}`);
-        const saved = restoreSessionState(run.branch).advisors?.[0];
-        assert.equal(saved?.providerExtension, "anthropic-auth");
+        // A single standard Advisor is restored in its legacy single-entry form.
+        const saved = configuredAdvisors(restoreSessionState(run.branch))?.[0];
         assert.equal(`${saved?.provider}/${saved?.model}`, model);
-        assert.deepEqual(saved?.thinking, configured.thinking);
-        assert.equal(advisorAgentName(saved!), ANTHROPIC_ADVISOR_AGENT);
+        // The opt-in follows Anthropic models and is dropped for any other provider, as in the panel.
+        const anthropic = model.startsWith("anthropic/");
+        assert.equal(saved?.providerExtension, anthropic ? "anthropic-auth" : undefined);
+        assert.equal(
+          advisorAgentName(saved!),
+          anthropic ? ANTHROPIC_ADVISOR_AGENT : ADVISOR_AGENT_NAME,
+        );
       }
       await run.command("advisor on");
       const state = await loadRuntime(run.ctx as never);
-      assert.equal(advisorStatusLabel(state), "A:ERR");
-      assert.match(state.advisorErrors?.join(" ") ?? "", /requires provider anthropic/);
-      assert.deepEqual(validAdvisors(state), []);
+      assert.equal(advisorStatusLabel(state), "A:ON");
       assert.equal(run.bus.requests.length, 0);
     } finally {
       await run.close();
     }
+  }
+  // A hand-edited save can still pair the opt-in with another provider; runtime rejects it.
+  const mismatched = await harness(
+    {
+      ...base,
+      advisors: [{ ...configured, provider: "example", model: "incompatible" }],
+      advisorMode: "on",
+    },
+    available,
+  );
+  try {
+    const state = await loadRuntime(mismatched.ctx as never);
+    assert.equal(advisorStatusLabel(state), "A:ERR");
+    assert.match(state.advisorErrors?.join(" ") ?? "", /requires provider anthropic/);
+    assert.deepEqual(validAdvisors(state), []);
+  } finally {
+    await mismatched.close();
   }
 });
 test("removing Advisor 1 through the command clears the list and turns Advisor off", async () => {
@@ -367,24 +389,37 @@ test("removing Advisor 1 through the command clears the list and turns Advisor o
   }
 });
 
-test("Advisor thinking commands reject invalid levels without writes and save a valid range", async () => {
+test("Advisor thinking commands explain that thinking is automatic without writing", async () => {
   const run = await harness();
   try {
     const before = structuredClone(run.branch);
-    await run.command("advisor 1 thinking 2 MAX");
-    assert.deepEqual(run.branch, before);
-    assert.deepEqual(run.notifications.at(-1), {
-      message: "Use thinking unset, LEVEL, or MIN MAX.",
-      type: "error",
-    });
-    await run.command("advisor 1 thinking low high");
-    const state = await loadRuntime(run.ctx as never);
-    assert.deepEqual(state.session.advisors?.[0]?.thinking, { min: "low", max: "high" });
-    assert.deepEqual(state.effective.advisors, [
-      { ...first, thinking: { min: "low", max: "high" } },
+    for (const input of ["advisor 1 thinking low high", "advisor 3 thinking high"]) {
+      await run.command(input);
+      assert.deepEqual(run.branch, before);
+      assert.match(run.notifications.at(-1)?.message ?? "", /Advisor thinking is automatic/);
+    }
+  } finally {
+    await run.close();
+  }
+});
+
+test("Advisor 3 model commands fill the list in order and removing Advisor 2 moves Advisor 3 up", async () => {
+  const third = { provider: "example", model: "third" };
+  const run = await harness({ ...base, advisors: [first] });
+  try {
+    const before = structuredClone(run.branch);
+    await run.command("advisor 3 model example/third");
+    assert.deepEqual(run.branch, before, "Advisor 3 needs Advisor 2");
+    assert.match(run.notifications.at(-1)?.message ?? "", /Configure Advisor 2 first/);
+    await run.command("advisor 2 model example/second");
+    await run.command("advisor 3 model example/third");
+    assert.deepEqual((await loadRuntime(run.ctx as never)).effective.advisors, [
+      first,
       second,
+      third,
     ]);
-    assert.equal(advisorStatusLabel(state), "A:ON");
+    await run.command("advisor 2 model remove");
+    assert.deepEqual((await loadRuntime(run.ctx as never)).effective.advisors, [first, third]);
   } finally {
     await run.close();
   }
@@ -476,10 +511,82 @@ test("inactive policy logging creates no records and resumes cleanly after react
   }
 });
 
+test("three advisors round-trip, 0.23.3 falls back to Advisor 1, and its saves with thinking load whole", async () => {
+  const third = {
+    provider: "anthropic",
+    model: "third",
+    providerExtension: "anthropic-auth" as const,
+  };
+  const directory = await mkdtemp(join(tmpdir(), "advisor-three-"));
+  try {
+    const path = getGlobalConfigPath(directory);
+    const branchOf = (
+      write: (writer: { appendEntry: (t: string, d?: unknown) => void }) => void,
+    ) => {
+      const branch: unknown[] = [];
+      write({
+        appendEntry: (customType, data) => branch.push({ type: "custom", customType, data }),
+      });
+      return branch;
+    };
+    for (const advisors of [
+      [first, second, { provider: "example", model: "third" }],
+      [first, second, third],
+    ]) {
+      const state = { ...base, advisors };
+      assert.equal(await writeConfig(path, state), "saved");
+      const loaded = await readConfig(path);
+      assert.deepEqual(loaded.diagnostics, []);
+      assert.deepEqual(loaded.defaults.advisors, advisors);
+      const branch = branchOf((writer) => appendGuardedSessionState(writer, state));
+      assert.deepEqual(restoreSessionStateWithDiagnostics(branch).session.advisors, advisors);
+      // The released reader rejects the third entry and never misreads the list.
+      const old = await read0233(path);
+      const oldSession = restore0233(branch);
+      if ("providerExtension" in advisors[2]!) {
+        assert.equal(old.defaults.advisorMode, "off");
+        assert.equal(oldSession.session.advisorMode, "off");
+      } else {
+        assert.match(old.diagnostics[0]?.message ?? "", /Using Advisor 1 only/);
+        assert.deepEqual(old.defaults.advisor, first);
+        assert.equal(old.defaults.advisors, undefined);
+        assert.deepEqual(oldSession.session.advisor, first);
+        assert.equal(oldSession.session.advisors, undefined);
+      }
+    }
+    // Saves from 0.23.3 that still carry Advisor thinking keep every Advisor without a diagnostic.
+    for (const advisors of [
+      [
+        { ...first, thinking: { level: "low" } },
+        { ...second, thinking: { min: "low", max: "high" } },
+      ],
+      [first, { ...third, thinking: { level: "high" } }],
+    ]) {
+      const legacy = { ...base, schemaVersion: 10, advisors };
+      assert.equal(await write0233(path, legacy as never), "saved");
+      const loaded = await readConfig(path);
+      assert.deepEqual(loaded.diagnostics, []);
+      const expected = advisors.map(({ provider, model, ...rest }) => ({
+        provider,
+        model,
+        ...("providerExtension" in rest ? { providerExtension: rest.providerExtension } : {}),
+      }));
+      assert.deepEqual(loaded.defaults.advisors, expected);
+      const restored = restoreSessionStateWithDiagnostics(
+        branchOf((writer) => append0233(writer, legacy as never)),
+      );
+      assert.deepEqual(restored.diagnostics, []);
+      assert.deepEqual(restored.session.advisors, expected);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
 test("schema 9 preserves the first advisor on downgrade and isolates stale extension state", async () => {
   for (const bad of [
     [],
-    [first, second, first],
+    [first, second, first, second],
     [{ ...first, extra: true }],
     [{ ...first, thinking: { min: "high", max: "low" } }],
   ]) {
@@ -515,7 +622,7 @@ test("schema 9 preserves the first advisor on downgrade and isolates stale exten
     const old = await read020(run.path);
     assert.deepEqual(old.diagnostics, []);
     assert.deepEqual(old.defaults.advisor, { provider: "example", model: "first" });
-    assert.deepEqual(old.defaults.thinking?.advisor, { level: "low" });
+    assert.equal(old.defaults.thinking?.advisor, undefined);
     assert.equal((old.defaults as Payload).advisorLaunch, undefined);
     assert.equal((await read016(run.path)).defaults.advisor, undefined);
     assert.equal((await read016(run.path)).defaults.intensity, "normal");
@@ -528,7 +635,7 @@ test("schema 9 preserves the first advisor on downgrade and isolates stale exten
       "success",
     );
     assert.deepEqual(restore020(branch).advisor, { provider: "example", model: "first" });
-    assert.deepEqual(restore020(branch).thinking?.advisor, { level: "low" });
+    assert.equal(restore020(branch).thinking?.advisor, undefined);
     assert.equal(restore016(branch).advisor, null);
     assert.deepEqual(
       resolveDelegateState({ schemaVersion: CURRENT_SCHEMA_VERSION }, restoreSessionState(branch))
@@ -629,15 +736,10 @@ test("role redirects to one background host call with the policy's exact launch 
         /in the background, all listed Advisors with the same question in one call/,
       );
       assert.match(answer, /agent profile: "pi-delegation-policy.advisor"/);
-      if (advisors.length === 2) {
-        assert.match(answer, /pi-subagents form: "example\/first:low"/);
-        assert.match(answer, /fixed low \(must not change\)/);
-        assert.match(answer, /pi-subagents form: "example\/second:LEVEL"/);
-        assert.match(answer, /range medium\.\.high inclusive \(choose within it\)/);
-      } else {
-        assert.match(answer, /pi-subagents form: "example\/first:LEVEL"/);
-        assert.match(answer, /unset \(choose per run\)/);
-      }
+      assert.match(answer, /pi-subagents form: "example\/first:LEVEL"/);
+      assert.match(answer, /unset \(choose per run\)/);
+      assert.match(answer, /Replace LEVEL with a supported thinking level chosen per run\./);
+      assert.doesNotMatch(answer, /fixed|range/);
       const policy = (await run.hook("before_provider_request", {
         payload: { model: "example", stream: true, store: false, instructions: "host" },
       })) as { instructions: string };
@@ -692,11 +794,6 @@ test("tool without valid Advisors reports existing causes by Advisor and does no
       [first, second],
       [],
       /Advisor 1: Advisor model is not registered in Pi\.[\s\S]*Advisor 2: Advisor 2 model is not registered in Pi\./,
-    ],
-    [
-      [{ ...first, thinking: { level: "high" as const } }],
-      [{ ...models[0]!, reasoning: false }],
-      /Advisor 1: Advisor thinking level "high" is not supported/,
     ],
     [
       [{ provider: "anthropic", model: "synthetic", providerExtension: "anthropic-auth" as const }],
@@ -818,7 +915,11 @@ test("invalid question and absent session identify the corrective action without
 });
 
 test("tool starts both exact models in parallel, preserves a partial answer and never launches from hooks", async () => {
-  const run = await harness();
+  // The second model offers no `high`, so automatic thinking steps down to the next supported level.
+  const run = await harness(base, [
+    models[0]!,
+    { ...models[1]!, thinkingLevelMap: { high: null } } as (typeof models)[number],
+  ]);
   try {
     for (const name of [
       "context_with_system",
@@ -845,8 +946,8 @@ test("tool starts both exact models in parallel, preserves a partial answer and 
         request.task,
       ]),
       [
-        ["example/first", "low", "fork", sentinel],
-        ["example/second", "high", "fork", sentinel],
+        ["example/first", "high", "fork", sentinel],
+        ["example/second", "medium", "fork", sentinel],
       ],
     );
     assert.match(
@@ -973,9 +1074,9 @@ test("a verified 0.83.1 contract admits the Advisor in fork and fresh and binds 
     assert.deepEqual(
       run.bus.requests.map((request) => [request.context, request.model, request.thinking]),
       [
-        ["fork", "example/first", "low"],
+        ["fork", "example/first", "high"],
         ["fork", "example/second", "high"],
-        ["fresh", "example/first", "low"],
+        ["fresh", "example/first", "high"],
         ["fresh", "example/second", "high"],
       ],
     );

@@ -225,16 +225,8 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
     for (const [index, setting] of state.effective.advisors.entries()) {
       const status = validateModelReference(ctx, setting);
       const errors: string[] = [];
-      const label = index === 0 ? "Advisor" : "Advisor 2";
+      const label = index === 0 ? "Advisor" : `Advisor ${index + 1}`;
       if (status.kind !== "available") errors.push(`${label} model ${statusDetail(status)}.`);
-      else if (setting.thinking) {
-        for (const level of policyLevels(setting.thinking)) {
-          if (!getSupportedThinkingLevels(status.model).includes(level))
-            errors.push(
-              `${label} thinking level "${level}" is not supported by ${setting.provider}/${setting.model}.`,
-            );
-        }
-      }
       if (setting.providerExtension) {
         if (setting.provider !== "anthropic")
           errors.push(

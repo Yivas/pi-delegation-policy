@@ -64,14 +64,14 @@ diagnose it.
 
 ## 4. Enable the Advisor when you want it
 
-Configure **Advisor 1**, optional **Advisor 2**, and per-entry thinking in `/delegate`, then select
+Configure **Advisor 1** and optional **Advisor 2** and **Advisor 3** in `/delegate`, then select
 **Advisor mode** or run `/delegate advisor on`. Default **Advisor launch: role** asks the main agent
 to consult every valid entry in one background call. Optional **tool** mode uses explicit
 `consult_advisor({ question, brief? })` through the authorized external executor, never from hooks.
 Fresh needs a self-contained brief; fork sends the conversation to each provider. The tool's executor
 requires stable `pi-subagents` SemVer `>=0.76.1`, with no upper bound, and the strict launch
-contract; prereleases and invalid versions are rejected. `A:PART` means one of two entries is valid
-and usable.
+contract; prereleases and invalid versions are rejected. Advisor thinking is automatic. `A:PART`
+means only some entries are valid and usable.
 
 With delegation `off` and mode `on`, status shows `D:OFF A:ON`: consultation-only guidance is
 injected and ordinary roles are not required. Mode `off` silences consultation and keeps the saved
@@ -80,13 +80,13 @@ consultation sends a brief or, in `fork` mode, the conversation so far to anothe
 latency and cost even with delegation off.
 
 Validation is reported per axis. An enabled Advisor whose model is missing, out of scope,
-unauthenticated, or paired with an unsupported thinking level produces `A:ERR` and removes only
+or unauthenticated produces `A:ERR` and removes only
 consultation: valid delegation and an otherwise authorized ContextShunt reader keep working.
 Conversely, invalid delegation settings do not suppress a valid enabled Advisor. A malformed main
 delegation file still fails closed, and a malformed or stale Advisor companion affects only Advisor:
-the companion keeps its saved model and thinking policy only while it is readable and valid. A corrupt
-or unreadable companion cannot supply Advisor settings: settings still present in a legacy delegation
-file are retained, and otherwise the Advisor model and thinking policy must be configured again. Read
+the companion keeps its saved model only while it is readable and valid. A corrupt or unreadable
+companion cannot supply Advisor settings: settings still present in a legacy delegation file are
+retained, and otherwise the Advisor model must be configured again. Read
 [configuration](/configuration/#advisor) for the modes, and
 [limits and privacy](/limits-and-privacy/#advisor-role) for the signals and
 retention.
@@ -109,7 +109,7 @@ the reader contract, and what one request sends.
   keeps reading delegation after a downgrade.
 - Advisor settings go to the `delegation-policy.advisor.json` companion next to it; the main file
   never carries an Advisor mode.
-- Advisor 2 and launch mode live in `delegation-policy.advisor-extension.json`, bound by normalized
+- Advisors 2 and 3 and launch mode live in `delegation-policy.advisor-extension.json`, bound by normalized
   schema-8 state. Invalid or missing extension state falls back to Advisor 1 in role mode with a notice.
 - A branch saves a schema 2 off guard, extension entry, schema-8 companion, then schema-7 commit. A failure leaves the guard authoritative, so both features stay off for that branch.
 

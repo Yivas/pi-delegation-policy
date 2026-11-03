@@ -15,7 +15,7 @@ import {
   type AgentLaunchTerminalStatus,
 } from "./agent-launch.ts";
 import type { AdvisorContext } from "./prompt.ts";
-import type { AdvisorSetting, ThinkingLevelName } from "./types.ts";
+import { MAX_ADVISORS, type AdvisorSetting, type ThinkingLevelName } from "./types.ts";
 import type { ConsultationAttempt } from "./advisor-log.ts";
 import {
   ANTHROPIC_ADVISOR_AGENT,
@@ -67,11 +67,25 @@ const ANTHROPIC_DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
   configuredExtensions: [ANTHROPIC_ADVISOR_EXTENSION],
 };
 
-export function advisorThinking(setting: AdvisorSetting, model: Model<Api>): ThinkingLevelName {
-  if (setting.thinking)
-    return "level" in setting.thinking ? setting.thinking.level : setting.thinking.max;
+/** Highest first; levels above `high` are left out to bound cost across parallel advisors. */
+const ADVISOR_THINKING_PREFERENCE: readonly ThinkingLevelName[] = [
+  "high",
+  "medium",
+  "low",
+  "minimal",
+  "off",
+];
+
+/**
+ * Tool-mode thinking for an Advisor: the strongest supported level up to `high`. A model that
+ * supports none of these keeps its first reported level rather than failing the consultation.
+ */
+export function advisorThinking(model: Model<Api>): ThinkingLevelName {
   const supported = getSupportedThinkingLevels(model);
-  return supported.includes("high") ? "high" : supported[0]!;
+  return (
+    ADVISOR_THINKING_PREFERENCE.find((level) => supported.includes(level)) ??
+    (supported[0] as ThinkingLevelName)
+  );
 }
 
 type AdvisorFailureResult = Exclude<AgentLaunchResult<string>, { kind: "completed" }>;
@@ -185,7 +199,7 @@ export function advisorFailureText(result: AdvisorFailureResult): string {
 
 /**
  * One pending call per tool: an advisor group launches one child per configured advisor. The
- * independent reader may hold its own pending call, so together they can own three children.
+ * independent reader may hold its own pending call, so together they can own four children.
  */
 export class AdvisorExecutor {
   private readonly launches: AgentLaunch<AdvisorRequest, string>[];
@@ -194,14 +208,15 @@ export class AdvisorExecutor {
   private generation = 0;
 
   constructor(dependencies: AgentLaunchDependencies = {}) {
-    this.launches = [
-      new AgentLaunch(DEFINITION, dependencies),
-      new AgentLaunch(DEFINITION, dependencies),
-    ];
-    this.providerLaunches = [
-      new AgentLaunch(ANTHROPIC_DEFINITION, dependencies),
-      new AgentLaunch(ANTHROPIC_DEFINITION, dependencies),
-    ];
+    // One slot per list position; each position uses exactly one of its two profiles.
+    this.launches = Array.from(
+      { length: MAX_ADVISORS },
+      () => new AgentLaunch(DEFINITION, dependencies),
+    );
+    this.providerLaunches = Array.from(
+      { length: MAX_ADVISORS },
+      () => new AgentLaunch(ANTHROPIC_DEFINITION, dependencies),
+    );
   }
   get busy(): boolean {
     return this.pending;

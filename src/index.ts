@@ -11,7 +11,6 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
   appendGuardedSessionState,
-  isThinkingLevelName,
   parseSessionState,
   type GuardedAppendResult,
 } from "./config.ts";
@@ -67,6 +66,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   INTENSITIES,
   type Intensity,
+  MAX_ADVISORS,
   THINKING_ROLE_KEYS,
   type ThinkingPolicy,
 } from "./types.ts";
@@ -78,7 +78,8 @@ export type CommandAction =
   | { kind: "intensity"; intensity: Intensity }
   | { kind: "advisor-mode"; mode: AdvisorMode }
   | { kind: "advisor-launch"; launch: AdvisorLaunch }
-  | { kind: "advisor-config"; index: number; setting: "model" | "thinking"; values: string[] }
+  | { kind: "advisor-config"; index: number; values: string[] }
+  | { kind: "advisor-thinking" }
   | { kind: "status" }
   | { kind: "reset" }
   | { kind: "context-mode"; mode: ContextShuntMode }
@@ -95,17 +96,15 @@ export function parseCommand(args: string): CommandAction {
       ADVISOR_LAUNCH_MODES.includes(parts[2] as AdvisorLaunch)
     )
       return { kind: "advisor-launch", launch: parts[2] as AdvisorLaunch };
-    if (
-      (parts[1] === "1" || parts[1] === "2") &&
-      (parts[2] === "model" || parts[2] === "thinking") &&
-      parts.length >= 4
-    )
+    const position = Number(parts[1]);
+    const isPosition = Number.isInteger(position) && position >= 1 && position <= MAX_ADVISORS;
+    if (isPosition && parts[2] === "model" && parts.length >= 4)
       return {
         kind: "advisor-config",
-        index: Number(parts[1]) - 1,
-        setting: parts[2],
+        index: position - 1,
         values: args.trim().split(/\s+/).slice(3),
       };
+    if (isPosition && parts[2] === "thinking") return { kind: "advisor-thinking" };
     return parts.length === 2 && ADVISOR_MODES.includes(parts[1] as AdvisorMode)
       ? { kind: "advisor-mode", mode: parts[1] as AdvisorMode }
       : { kind: "invalid" };
@@ -143,10 +142,7 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
     "reset",
     ...ADVISOR_MODES.map((mode) => `advisor ${mode}`),
     ...ADVISOR_LAUNCH_MODES.map((mode) => `advisor launch ${mode}`),
-    "advisor 1 model",
-    "advisor 2 model",
-    "advisor 1 thinking",
-    "advisor 2 thinking",
+    ...Array.from({ length: MAX_ADVISORS }, (_, index) => `advisor ${index + 1} model`),
     "context off",
     "context observe",
     "context enforce",
@@ -291,9 +287,9 @@ export function statusText(state: RuntimeState): string {
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
     ...effective.advisors.map(
       (entry, index) =>
-        `advisor-${index + 1}=${formatModelRef(entry)}; thinking=${thinkingToken(entry.thinking)}; profile=${advisorAgentName(entry)} (${effective.source.advisors})`,
+        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentName(entry)} (${effective.source.advisors})`,
     ),
-    ...THINKING_ROLE_KEYS.map(
+    ...THINKING_ROLE_KEYS.filter((role) => role !== "advisor").map(
       (role) =>
         `thinking-${role === "uiDesign" ? "ui-design" : role}=${thinkingToken(effective.thinking[role])} (${effective.source.thinking[role]})`,
     ),
@@ -571,7 +567,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another mechanism: do not use foreground execution, a CLI, or another agent.',
             );
           return text(
-            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". Launch every listed Advisor with the host subagent tool "${subagentTool}", using each exact agent profile and model below, in the background, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run under that Advisor's thinking policy; a fixed level must not change.\n${advisorRoleLines(state)}`,
+            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". Launch every listed Advisor with the host subagent tool "${subagentTool}", using each exact agent profile and model below, in the background, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run.\n${advisorRoleLines(state)}`,
           );
         }
         if (advisorExecutor.busy)
@@ -603,7 +599,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             model: {
               provider: entry.model.provider,
               id: entry.model.id,
-              thinking: advisorThinking(entry.setting, entry.model),
+              thinking: advisorThinking(entry.model),
             },
             availableModels: [
               {
@@ -798,71 +794,58 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           synchronizeContextShunt(shunt, state);
           return;
         }
+        if (action.kind === "advisor-thinking") {
+          ctx.ui.notify(
+            "Advisor thinking is automatic and cannot be set: role launch lets the main agent choose it per run, and tool launch uses the highest supported level up to high.",
+            "error",
+          );
+          return;
+        }
         if (action.kind === "advisor-launch" || action.kind === "advisor-config") {
           const state = await loadRuntime(ctx);
           const draft = structuredClone(state.session);
           if (action.kind === "advisor-launch") draft.advisorLaunch = action.launch;
           else {
             const entries = structuredClone(state.effective.advisors);
-            const [value, maximum] = action.values;
-            if (action.setting === "model" && value === "inherit" && action.values.length === 1) {
+            const [value] = action.values;
+            if (action.values.length !== 1) {
+              ctx.ui.notify("Use one exact provider/model, remove, or inherit.", "error");
+              return;
+            }
+            if (value === "inherit") {
               delete draft.advisors;
               delete draft.advisor;
               if (draft.thinking) delete draft.thinking.advisor;
             } else {
-              if (action.setting === "model") {
-                if (action.values.length !== 1) {
-                  ctx.ui.notify("Use one exact provider/model or remove.", "error");
-                  return;
-                }
-                if (value === "remove") {
-                  if (action.index === 0) entries.length = 0;
-                  else entries.splice(action.index, 1);
-                  if (!entries.length) draft.advisorMode = "off";
-                } else {
-                  const slash = value?.indexOf("/") ?? -1;
-                  if (
-                    !value ||
-                    slash <= 0 ||
-                    slash === value.length - 1 ||
-                    (action.index === 1 && !entries[0])
-                  ) {
-                    ctx.ui.notify(
-                      "Configure Advisor 1 first; use an exact provider/model.",
-                      "error",
-                    );
-                    return;
-                  }
-                  entries[action.index] = {
-                    provider: value.slice(0, slash),
-                    model: value.slice(slash + 1),
-                    ...(entries[action.index]?.thinking
-                      ? { thinking: entries[action.index]!.thinking }
-                      : {}),
-                    ...(entries[action.index]?.providerExtension
-                      ? { providerExtension: entries[action.index]!.providerExtension }
-                      : {}),
-                  };
-                }
+              if (value === "remove") {
+                // Removing Advisor 1 removes the list; a later entry moves up with its profile.
+                if (action.index === 0) entries.length = 0;
+                else entries.splice(action.index, 1);
+                if (!entries.length) draft.advisorMode = "off";
               } else {
-                const entry = entries[action.index];
-                if (!entry) {
-                  ctx.ui.notify("Configure that Advisor model first.", "error");
+                const slash = value?.indexOf("/") ?? -1;
+                if (
+                  !value ||
+                  slash <= 0 ||
+                  slash === value.length - 1 ||
+                  action.index > entries.length
+                ) {
+                  ctx.ui.notify(
+                    `Configure Advisor ${Math.max(1, action.index)} first; use an exact provider/model.`,
+                    "error",
+                  );
                   return;
                 }
-                if (action.values.length === 1 && value === "unset") delete entry.thinking;
-                else if (action.values.length === 1 && isThinkingLevelName(value))
-                  entry.thinking = { level: value };
-                else if (
-                  action.values.length === 2 &&
-                  isThinkingLevelName(value) &&
-                  isThinkingLevelName(maximum)
-                )
-                  entry.thinking = { min: value, max: maximum };
-                else {
-                  ctx.ui.notify("Use thinking unset, LEVEL, or MIN MAX.", "error");
-                  return;
-                }
+                const provider = value.slice(0, slash);
+                const extension = entries[action.index]?.providerExtension;
+                entries[action.index] = {
+                  provider,
+                  model: value.slice(slash + 1),
+                  // Same rule as the panel: the Anthropic profile only follows Anthropic models.
+                  ...(extension && provider === "anthropic"
+                    ? { providerExtension: extension }
+                    : {}),
+                };
               }
               delete draft.advisor;
               if (draft.thinking) delete draft.thinking.advisor;
@@ -870,7 +853,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             }
           }
           if (!parseSessionState(draft)) {
-            ctx.ui.notify("Invalid Advisor settings or thinking range.", "error");
+            ctx.ui.notify("Invalid Advisor settings.", "error");
             return;
           }
           rememberRuntime(

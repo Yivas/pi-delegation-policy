@@ -33,7 +33,6 @@ const opted = {
   provider: "anthropic",
   model: "synthetic-model",
   providerExtension: "anthropic-auth" as const,
-  thinking: { level: "low" as const },
 };
 const settings: GlobalDefaults = {
   schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -188,7 +187,7 @@ test("mixed provider saves preserve branch boundaries and recover failed envelop
   }
 });
 
-test("provider selector keeps the selected choice visible through public render and keys", async () => {
+test("the profile step after an Anthropic model keeps the selected choice visible through public render and keys", async () => {
   const frames: unknown[] = [];
   for (const [width, rows] of [
     [30, 12],
@@ -205,7 +204,9 @@ test("provider selector keeps the selected choice visible through public render 
       } as never,
       global: settings,
       session: { schemaVersion: CURRENT_SCHEMA_VERSION },
-      candidates: [],
+      candidates: [
+        { provider: "anthropic", id: "synthetic-model", name: "Synthetic", reasoning: true },
+      ] as never,
       diagnostics: [],
       hasRuntimeError: false,
       onApply: async () => true,
@@ -213,14 +214,18 @@ test("provider selector keeps the selected choice visible through public render 
       onDone: () => undefined,
     });
     panel.render(width);
+    // Advisor 2 row, then its model selector: global, disable, anthropic/synthetic-model.
     panel.handleInput("\u001b[H");
-    for (let index = 0; index < 18; index++) panel.handleInput("\u001b[B");
+    for (let index = 0; index < 15; index++) panel.handleInput("\u001b[B");
+    panel.handleInput("\r");
+    panel.handleInput("\u001b[B");
+    panel.handleInput("\u001b[B");
     panel.handleInput("\r");
     for (const [key, label] of [
-      ["", "Standard"],
+      ["", "Anthropic auth"],
+      ["\u001b[B", "Standard"],
       ["\u001b[B", "Anthropic auth"],
-      ["\u001b[B", "Use global"],
-      ["\u001b[A", "Anthropic auth"],
+      ["\u001b[A", "Standard"],
     ]) {
       if (key) panel.handleInput(key);
       const render = panel.render(width);
@@ -231,20 +236,18 @@ test("provider selector keeps the selected choice visible through public render 
       );
       frames.push({ width, rows, label, render });
     }
+    // Escape keeps the chosen model with the profile it already had, never the highlighted one.
     panel.handleInput("\u001b");
-    assert.equal(panel.getDraft().advisors, undefined, "Escape must not choose the draft option");
+    assert.deepEqual(panel.getDraft().advisors, [standard, opted]);
+    panel.handleInput("\r");
     panel.handleInput("\r");
     panel.handleInput("\u001b[B");
-    assert.ok(panel.render(width).some((line) => line.startsWith("> Anthropic auth")));
+    assert.ok(panel.render(width).some((line) => line.startsWith("> Standard")));
     panel.handleInput("\r");
-    assert.equal(panel.getDraft().advisors?.[0]?.providerExtension, "anthropic-auth");
-    assert.deepEqual(
-      panel.getDraft().advisors?.[0] && {
-        provider: panel.getDraft().advisors![0]!.provider,
-        model: panel.getDraft().advisors![0]!.model,
-      },
+    assert.deepEqual(panel.getDraft().advisors, [
       standard,
-    );
+      { provider: "anthropic", model: "synthetic-model" },
+    ]);
   }
   if (process.env.PI_ADVISOR_UI_REPORT)
     await writeFile(process.env.PI_ADVISOR_UI_REPORT, JSON.stringify(frames, null, 2));

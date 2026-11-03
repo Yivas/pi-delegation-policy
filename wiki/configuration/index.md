@@ -48,7 +48,7 @@ it, changes nothing: the main agent chooses that role's level for each launch.
 
 ## Global defaults, session inheritance, and saving {#global-defaults-and-inheritance}
 
-Global defaults may contain intensity, preference, tri-state ordinary roles, the `uiDesign` key, ordered `advisors` with per-entry thinking, independent
+Global defaults may contain intensity, preference, tri-state ordinary roles, the `uiDesign` key, ordered `advisors`, independent
 `advisorMode` and `advisorLaunch`, and thinking policies per execution role. If global intensity is
 absent, the built-in default is `off`; preference defaults to `standard`, and Advisor mode defaults to
 `with-delegation`.
@@ -200,14 +200,17 @@ eligible visual work by task fit.
 ## Advisor
 
 Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**
-and optional **Advisor 2**, each with an exact model and thinking policy. Every valid advisor gets the
-same question. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
+and optional **Advisor 2** and **Advisor 3**, each with an exact model. Advisor thinking is not a
+setting: role launch lets the main agent choose it per run, and tool launch picks it automatically.
+Every valid advisor gets the same question, so each extra advisor adds a consultation at every
+checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
 `pi-delegation-policy.advisor` profile advises and executes nothing.
 
 **Advisor launch** inherits globally or per branch, defaulting to `role`:
 
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
-  models and thinking. The extension observes matching attempts but does not launch them.
+  models and a thinking level it chooses per run. The extension observes matching attempts but does
+  not launch them.
 - `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
   advisor in parallel through the public `pi-subagents` delegation API. It requires stable SemVer
   `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every launch must
@@ -222,12 +225,12 @@ Context is `fork` while the session fits in half of every valid advisor's window
 with an unknown window, and returns to fork below 35%. Unknown token usage keeps the last mode. Fork
 sends the conversation to each provider, with only the question as the task. Fresh requires a short
 self-contained `brief`: objective, constraints, relevant facts, options and uncertainty. The tool
-retries only an explicitly rejected fork, once with fresh and only with a supplied brief. Fixed thinking
-uses its exact level; a range uses its maximum; unset uses `high` if supported, otherwise the first
-supported level. Role mode leaves range/unset selection to the main agent.
+retries only an explicitly rejected fork, once with fresh and only with a supplied brief. The tool
+launches each advisor at the highest level its model supports among `high`, `medium`, `low`, `minimal`
+and `off`, in that order. A level above `high` is used only by a model that supports none of them.
 
 One pending call per tool: an advisor group launches one child per configured valid advisor, while the
-independent reader can run alongside it (at most three children). Abort, branch change, shutdown and
+independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
 detected authorization changes cancel the tool group. Partial results preserve a successful answer.
 Local timeouts and cancellation do not cap external generation, retries or cost.
 
@@ -236,7 +239,7 @@ Local timeouts and cancellation do not cap external generation, retries or cost.
 | Mode              | Effect                                                                                                     |
 | ----------------- | ---------------------------------------------------------------------------------------------------------- |
 | `on`              | Consult with delegation off. Requires a valid Advisor model; ordinary roles are not required in that case. |
-| `off`             | Inject no Advisor guidance and keep the saved model and thinking policy.                                   |
+| `off`             | Inject no Advisor guidance and keep the saved models.                                                      |
 | `with-delegation` | Consult only while delegation is active and an Advisor is configured. Default when the key is absent.      |
 
 `D:OFF A:ON` shows consultation-only guidance; `D:OFF A:OFF` means neither axis injects a policy block. `/delegate reset`
@@ -244,14 +247,14 @@ turns both off for the branch; `/delegate off` leaves an independently enabled A
 
 ### Errors by axis
 
-Errors are reported per axis. Each entry validates independently: `A:ON` means all valid, `A:PART` means one of two valid
-(consult that one), and `A:ERR` means none usable and removes only consultation: valid delegation and an otherwise authorized ContextShunt reader keep working.
+Errors are reported per axis. Each entry validates independently: `A:ON` means all valid, `A:PART` means some valid
+(consult those), and `A:ERR` means none usable and removes only consultation: valid delegation and an otherwise authorized ContextShunt reader keep working.
 `D:ERR` removes delegation guidance and leaves a valid enabled Advisor alone. A malformed main
 delegation file still fails closed, and a malformed or stale Advisor companion affects only Advisor:
-delegation from the main file wins, and the companion keeps its saved model and thinking policy only
-while it is readable and valid, so the next save repairs that pair. A corrupt or unreadable companion
-cannot supply Advisor settings. Settings still present in a legacy delegation file are retained;
-otherwise, configure the Advisor model and thinking policy again.
+delegation from the main file wins, and the companion keeps its saved model only while it is readable
+and valid, so the next save repairs that pair. A corrupt or unreadable companion cannot supply Advisor
+settings. Settings still present in a legacy delegation file are retained; otherwise, configure the
+Advisor model again.
 
 Consulting sends a brief, or with `fork` the conversation so far, to another model and can incur
 latency and cost, including with delegation off. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
@@ -260,10 +263,10 @@ for the signals and the retention of the executor and its provider.
 ### Provider extension
 
 The default profile remains `pi-delegation-policy.advisor`, with no configured tools or extensions.
-For each configured Advisor, the **Advisor 1 provider** or **Advisor 2 provider** row offers an
-explicit **Anthropic auth 3.4.3** opt-in. It selects the separate package profile
-`pi-delegation-policy.advisor-anthropic-auth` in both role and tool mode. The model and thinking
-stay unchanged; role launches remain background. In configuration this is
+Choosing an `anthropic` model in an **Advisor** row asks for the profile: **Standard** or an
+explicit **Anthropic auth 3.4.3** opt-in. Escape keeps the profile that entry already had. The opt-in
+selects the separate package profile `pi-delegation-policy.advisor-anthropic-auth` in both role and
+tool mode. The model stays unchanged; role launches remain background. In configuration this is
 `providerExtension: "anthropic-auth"` on that Advisor entry, available in schema 10. Absence means
 the standard profile. Only provider `anthropic` is supported; an incompatible selection is an
 Advisor error, never a fallback to the standard profile or another model.
@@ -297,19 +300,21 @@ state leaves them off until repaired. Without an opt-in, the envelope-1 format b
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7 delegation only.
 - Legacy companion: `delegation-policy.advisor.json`, envelope 1 with schema 8 state for Advisor 1.
-  Versions `0.17–0.20` see its mode, model and thinking in role mode; `0.16` sees delegation without
-  Advisor. None of those versions sees Advisor 2 or tool launch.
+  Versions `0.17–0.20` see its mode and model in role mode; `0.16` sees delegation without Advisor.
+  None of those versions sees Advisor 2, Advisor 3 or tool launch.
 - Advisor extension: `delegation-policy.advisor-extension.json`, envelope 1 with normalized schema-8
-  `base`, optional `advisor2` (including thinking), and `advisorLaunch`. Missing, invalid, unreadable
+  `base`, optional `advisor2`, optional `advisor3`, and `advisorLaunch`. Missing, invalid, unreadable
   or mismatched state falls back to Advisor 1 and role launch with a diagnostic, not `A:ERR` for a
-  valid first advisor. Older versions ignore it.
+  valid first advisor. Older versions ignore it, and `0.21`–`0.23` fall back to Advisor 1 when it
+  holds `advisor3`. A save from one of those versions then drops Advisors 2 and 3.
 - Session Apply: schema 2 off guard, extension entry, schema-8 companion, then schema-7 delegation
   commit. The legacy companion remains adjacent to that commit. A failure leaves both axes off.
 
-Schema 9 accepts ordered `advisors: [{provider, model, thinking?}]` with 1–2 entries and inherited
-`advisorLaunch: role|tool`. An omitted list inherits; a list replaces both entries and their thinking;
-session `advisors: null` disables. Legacy `advisor` and `thinking.advisor` are single-advisor shorthand,
-not combinable with `advisors`. Schemas 2–9 resolve into the schema-10 effective state in memory without writing.
+Schema 9 accepts ordered `advisors: [{provider, model}]` with 1–3 entries and inherited
+`advisorLaunch: role|tool`. An omitted list inherits; a list replaces every entry; session
+`advisors: null` disables. Legacy `advisor` and `thinking.advisor` are single-advisor shorthand,
+not combinable with `advisors`. A per-entry `thinking`, or a `thinking.advisor` saved by an earlier
+version, must still be well formed, but it is ignored and dropped on the next save. Schemas 2–9 resolve into the schema-10 effective state in memory without writing.
 
 ### Compatible saves and interruption recovery
 

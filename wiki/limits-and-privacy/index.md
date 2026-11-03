@@ -60,9 +60,9 @@ scope, or unauthenticated, or no enabled ordinary role at all. A configured Visu
 validated too. When one of these is wrong, the ordinary-role minimum is not met and delegation fails
 closed; the ContextShunt reader is unauthorized until the configuration is corrected.
 
-Delegation and Advisor are validated separately. An enabled Advisor whose model, scope,
-authentication, or thinking level is wrong produces `A:ERR` when none is valid (`A:PART` when one
-of two is valid), leaving
+Delegation and Advisor are validated separately. An enabled Advisor whose model, scope or
+authentication is wrong produces `A:ERR` when none is valid (`A:PART` when only some are valid),
+leaving
 valid delegation and an otherwise authorized reader available; invalid delegation does not suppress a
 valid enabled Advisor. With Advisor off, an unusable Advisor state is reported as a diagnostic while
 the footer keeps `A:OFF`. See
@@ -95,14 +95,17 @@ files, and unredacted logs from anything you publish.
 ## Advisor role
 
 Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**
-and optional **Advisor 2**, each with an exact model and thinking policy. Every valid advisor gets the
-same question. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
+and optional **Advisor 2** and **Advisor 3**, each with an exact model. Advisor thinking is not a
+setting: role launch lets the main agent choose it per run, and tool launch picks it automatically.
+Every valid advisor gets the same question, so each extra advisor adds a consultation, and its cost,
+at every checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
 `pi-delegation-policy.advisor` profile advises and executes nothing.
 
 **Advisor launch** inherits globally or per branch, defaulting to `role`:
 
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
-  models and thinking. The extension observes matching attempts but does not launch them.
+  models and a thinking level it chooses per run. The extension observes matching attempts but does
+  not launch them.
 - `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
   advisor in parallel through the public `pi-subagents` delegation API. It requires stable SemVer
   `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every launch must
@@ -117,12 +120,12 @@ Context is `fork` while the session fits in half of every valid advisor's window
 with an unknown window, and returns to fork below 35%. Unknown token usage keeps the last mode. Fork
 sends the conversation to each provider, with only the question as the task. Fresh requires a short
 self-contained `brief`: objective, constraints, relevant facts, options and uncertainty. The tool
-retries only an explicitly rejected fork, once with fresh and only with a supplied brief. Fixed thinking
-uses its exact level; a range uses its maximum; unset uses `high` if supported, otherwise the first
-supported level. Role mode leaves range/unset selection to the main agent.
+retries only an explicitly rejected fork, once with fresh and only with a supplied brief. The tool
+launches each advisor at the highest level its model supports among `high`, `medium`, `low`, `minimal`
+and `off`, in that order. A level above `high` is used only by a model that supports none of them.
 
 One pending call per tool: an advisor group launches one child per configured valid advisor, while the
-independent reader can run alongside it (at most three children). Abort, branch change, shutdown and
+independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
 detected authorization changes cancel the tool group. Partial results preserve a successful answer.
 Local timeouts and cancellation do not cap external generation, retries or cost.
 

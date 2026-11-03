@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- A third Advisor. `/delegate` shows **Advisor 2** once Advisor 1 exists and **Advisor 3** once
+  Advisor 2 exists, and `/delegate advisor 3 model PROVIDER/MODEL` configures it. Every valid
+  Advisor gets the same question, so each extra one adds a consultation at every checkpoint.
+
+### Changed
+
+- Advisor thinking is no longer a setting. Role launch lets the main agent choose the level per
+  run; tool launch uses the highest level the model supports among `high`, `medium`, `low`,
+  `minimal` and `off`, where it used to fall back to the first supported level.
+- The Advisor profile is chosen together with the model: picking an `anthropic` model asks for
+  **Standard** or **Anthropic auth**. With two Advisors the panel shows five Advisor rows instead
+  of eight.
+- `/delegate advisor N thinking …` is removed and now reports that Advisor thinking is automatic.
+- At most four children can run at once: three Advisors and the ContextShunt reader.
+
+### Compatibility
+
+- A saved Advisor thinking policy, per entry or legacy `thinking.advisor`, still has to be well
+  formed but is ignored and dropped on the next save. No diagnostic is shown for it.
+- No schema change. Versions 0.21–0.23 fall back to Advisor 1 when a save holds three Advisors,
+  or turn every Advisor off when one uses Anthropic auth, as before. Saving from one of them drops
+  Advisors 2 and 3.
+
 ## 0.23.3 - 2026-10-31
 
 ### Fixed
