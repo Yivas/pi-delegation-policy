@@ -21,13 +21,19 @@ import {
   ANTHROPIC_ADVISOR_AGENT,
   ANTHROPIC_ADVISOR_EXTENSION,
 } from "./advisor-anthropic-provider.ts";
+import {
+  PROVIDER_EXTENSION_ADVISOR_AGENT,
+  PROVIDER_EXTENSION_ADVISOR_EXTENSION,
+} from "./advisor-provider-extension.ts";
+import { admissionFor, type ProviderAdmissions } from "./provider-admissions.ts";
 
 export const ADVISOR_AGENT_NAME = "pi-delegation-policy.advisor";
 export type AdvisorRequest = AgentLaunchRequest & {
   question: string;
   brief?: string;
   context: AdvisorContext;
-  providerExtension?: "anthropic-auth";
+  /** Selects the child profile: Anthropic's own opt-in, or the extension admitted for the provider. */
+  providerExtension?: "anthropic-auth" | "admitted";
 };
 export type AdvisorAnswer = {
   model: string;
@@ -51,12 +57,27 @@ const DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
   },
 };
 
+/** The child profile for one Advisor; Anthropic's opt-in takes precedence over any admission. */
+export function advisorProfile(
+  setting: Pick<AdvisorSetting, "provider" | "providerExtension">,
+  admissions: ProviderAdmissions = {},
+): AdvisorRequest["providerExtension"] {
+  if (setting.providerExtension === "anthropic-auth") return "anthropic-auth";
+  return admissionFor(admissions, setting.provider) ? "admitted" : undefined;
+}
+
 export function advisorAgentName(
   setting: Pick<AdvisorSetting, "provider" | "model" | "providerExtension">,
+  admissions: ProviderAdmissions = {},
 ): string {
-  return setting.providerExtension === "anthropic-auth"
-    ? ANTHROPIC_ADVISOR_AGENT
-    : ADVISOR_AGENT_NAME;
+  switch (advisorProfile(setting, admissions)) {
+    case "anthropic-auth":
+      return ANTHROPIC_ADVISOR_AGENT;
+    case "admitted":
+      return PROVIDER_EXTENSION_ADVISOR_AGENT;
+    default:
+      return ADVISOR_AGENT_NAME;
+  }
 }
 const ANTHROPIC_DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
   ...DEFINITION,
@@ -65,6 +86,14 @@ const ANTHROPIC_DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
     new URL("../agents/pi-delegation-policy.advisor-anthropic-auth.md", import.meta.url),
   ),
   configuredExtensions: [ANTHROPIC_ADVISOR_EXTENSION],
+};
+const PROVIDER_EXTENSION_DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
+  ...DEFINITION,
+  agentName: PROVIDER_EXTENSION_ADVISOR_AGENT,
+  agentPath: fileURLToPath(
+    new URL("../agents/pi-delegation-policy.advisor-provider-extension.md", import.meta.url),
+  ),
+  configuredExtensions: [PROVIDER_EXTENSION_ADVISOR_EXTENSION],
 };
 
 /** Highest first; levels above `high` are left out to bound cost across parallel advisors. */
@@ -204,11 +233,12 @@ export function advisorFailureText(result: AdvisorFailureResult): string {
 export class AdvisorExecutor {
   private readonly launches: AgentLaunch<AdvisorRequest, string>[];
   private readonly providerLaunches: AgentLaunch<AdvisorRequest, string>[];
+  private readonly admittedLaunches: AgentLaunch<AdvisorRequest, string>[];
   private pending = false;
   private generation = 0;
 
   constructor(dependencies: AgentLaunchDependencies = {}) {
-    // One slot per list position; each position uses exactly one of its two profiles.
+    // One slot per list position; each position uses exactly one of its three profiles.
     this.launches = Array.from(
       { length: MAX_ADVISORS },
       () => new AgentLaunch(DEFINITION, dependencies),
@@ -217,6 +247,13 @@ export class AdvisorExecutor {
       { length: MAX_ADVISORS },
       () => new AgentLaunch(ANTHROPIC_DEFINITION, dependencies),
     );
+    this.admittedLaunches = Array.from(
+      { length: MAX_ADVISORS },
+      () => new AgentLaunch(PROVIDER_EXTENSION_DEFINITION, dependencies),
+    );
+  }
+  private get allLaunches(): AgentLaunch<AdvisorRequest, string>[] {
+    return [...this.launches, ...this.providerLaunches, ...this.admittedLaunches];
   }
   get busy(): boolean {
     return this.pending;
@@ -236,7 +273,11 @@ export class AdvisorExecutor {
         requests.map(async (request, index) => {
           const model = `${request.model.provider}/${request.model.id}`;
           const launch = (
-            request.providerExtension === "anthropic-auth" ? this.providerLaunches : this.launches
+            request.providerExtension === "anthropic-auth"
+              ? this.providerLaunches
+              : request.providerExtension === "admitted"
+                ? this.admittedLaunches
+                : this.launches
           )[index]!;
           let context = request.context;
           const attempt = async (input: AdvisorRequest) => {
@@ -272,14 +313,14 @@ export class AdvisorExecutor {
   }
   cancel(): void {
     this.generation += 1;
-    for (const launch of [...this.launches, ...this.providerLaunches]) launch.cancel();
+    for (const launch of this.allLaunches) launch.cancel();
   }
   rotate(): void {
     this.generation += 1;
-    for (const launch of [...this.launches, ...this.providerLaunches]) launch.rotate();
+    for (const launch of this.allLaunches) launch.rotate();
   }
   close(): void {
     this.generation += 1;
-    for (const launch of [...this.launches, ...this.providerLaunches]) launch.close();
+    for (const launch of this.allLaunches) launch.close();
   }
 }

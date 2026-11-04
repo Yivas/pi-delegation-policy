@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- Admitted provider extensions for Advisors. Choosing a model whose provider only an extension
+  supplies offers your installed packages in `/delegate`; the admission is global and per provider,
+  stored in `delegation-policy.provider-extensions.json`, and the new profile
+  `pi-delegation-policy.advisor-provider-extension` loads that one package in the child. Only the
+  package identity is checked before it runs; it is trusted code, not a sandbox.
+- `/delegate status` reports an Advisor whose provider an extension replaced in this session and
+  that has no admission, instead of letting the consultation fail.
+
+### Compatibility
+
+- No state schema change. 0.24 and earlier ignore the admissions file and launch the standard
+  profile for those Advisors.
+
 ## 0.24.0 - 2026-11-03
 
 ### Added

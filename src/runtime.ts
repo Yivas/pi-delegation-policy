@@ -1,5 +1,13 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { locateAdvisorAnthropicProvider } from "./advisor-anthropic-provider.ts";
+import {
+  admissionFor,
+  getProviderAdmissionsPath,
+  type ProviderAdmissions,
+  readProviderAdmissions,
+  RESERVED_PROVIDER,
+} from "./provider-admissions.ts";
+import { locateInstalledPackage } from "./provider-package.ts";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import {
   getGlobalConfigPath,
@@ -32,6 +40,8 @@ export type RuntimeState = {
   modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
   advisorErrors?: string[];
+  /** Global provider-extension admissions; absent means none. */
+  admissions?: ProviderAdmissions;
   advisorEntries?: Array<{
     index: number;
     setting: AdvisorSetting;
@@ -185,13 +195,20 @@ function readerRoleDiagnostic(state: RuntimeState): string | undefined {
 }
 
 export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> {
-  const loaded = await readConfig(getGlobalConfigPath());
+  const path = getGlobalConfigPath();
+  const loaded = await readConfig(path);
+  const admissions = await readProviderAdmissions(getProviderAdmissionsPath(path));
   const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
     effective: resolveDelegateState(loaded.defaults, restored.session),
     global: loaded.defaults,
     session: restored.session,
-    diagnostics: [...loaded.diagnostics, ...restored.diagnostics],
+    diagnostics: [
+      ...loaded.diagnostics,
+      ...restored.diagnostics,
+      ...(admissions.diagnostic ? [admissions.diagnostic] : []),
+    ],
+    admissions: admissions.admissions,
     modelStatuses: new Map(),
     runtimeErrors: [],
   };
@@ -236,6 +253,9 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
           const location = locateAdvisorAnthropicProvider(ctx.cwd);
           if (!location.ok) errors.push(location.message);
         }
+      } else if (status.kind === "available") {
+        const error = providerExtensionError(ctx, label, setting, state.admissions ?? {});
+        if (error) errors.push(error);
       }
       if (index === 0) state.modelStatuses.set("advisor", status);
       state.advisorEntries.push({ index, setting, status, errors });
@@ -261,6 +281,31 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
 
   const readerDiagnostic = readerRoleDiagnostic(state);
   if (readerDiagnostic) state.runtimeErrors.push(readerDiagnostic);
+}
+
+/**
+ * An admitted package must still pass the identity the child will check. Without an admission, a
+ * provider that an extension replaced natively in this session would run as a different
+ * implementation in the child, which loads no extension: report it instead of letting the
+ * consultation fail later. Config overlays and auth sources are not treated as proof: a native
+ * provider reports its own key as an environment source.
+ */
+function providerExtensionError(
+  ctx: ExtensionContext,
+  label: string,
+  setting: AdvisorSetting,
+  admissions: ProviderAdmissions,
+): string | undefined {
+  const pkg = admissionFor(admissions, setting.provider);
+  if (pkg)
+    return locateInstalledPackage(ctx.cwd, pkg, { configured: true }).ok
+      ? undefined
+      : `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; re-select the provider extension in /delegate.`;
+  if (setting.provider === RESERVED_PROVIDER) return undefined;
+  const native = ctx.modelRegistry?.getRegisteredNativeProvider?.(setting.provider);
+  return native
+    ? `${label} provider ${setting.provider} is supplied by an extension in this session, and the Advisor child does not load it; select its provider extension in /delegate.`
+    : undefined;
 }
 
 export function hasAdvisorError(state: RuntimeState): boolean {

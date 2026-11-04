@@ -7,7 +7,10 @@ import {
   resolveDelegateState,
   writeConfig,
 } from "./config.ts";
+import { ANTHROPIC_PROVIDER_PACKAGE } from "./advisor-anthropic-provider.ts";
 import { DelegatePanel, type DelegatePanelResult } from "./delegate-panel.ts";
+import { getProviderAdmissionsPath, writeProviderAdmissions } from "./provider-admissions.ts";
+import { listProviderExtensionCandidates } from "./provider-package.ts";
 import {
   hasRuntimeError,
   hasAdvisorError,
@@ -28,6 +31,12 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
 
   const state = await loadRuntime(ctx);
   const candidates = modelCandidates(ctx);
+  // This package and Anthropic's, which keeps its own opt-in, are never offered here.
+  const extensionCandidates = listProviderExtensionCandidates(ctx.cwd, [
+    "pi-delegation-policy",
+    ANTHROPIC_PROVIDER_PACKAGE,
+  ]);
+  const extensionProviders = ctx.modelRegistry?.getRegisteredProviderIds?.() ?? [];
   // A diagnostic that no error list reports yet stays informative in the panel instead of being
   // dropped, and it never becomes an Advisor error: an Advisor-scope diagnostic is already an error
   // while Advisor is on, and an ordinary one is already an error while delegation is active.
@@ -52,6 +61,17 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
             : [...state.runtimeErrors, ...(state.advisorErrors ?? []), ...advisorNotices],
         hasRuntimeError: hasRuntimeError(state),
         hasAdvisorError: hasAdvisorError(state),
+        admissions: state.admissions ?? {},
+        extensionCandidates,
+        extensionProviders,
+        onSaveAdmissions: async (admissions) => {
+          await writeProviderAdmissions(
+            admissions,
+            getProviderAdmissionsPath(getGlobalConfigPath()),
+          );
+          state.admissions = admissions;
+          return true;
+        },
         onApply: async (draft) => {
           const result = appendGuardedSessionState(pi, structuredClone(draft));
           const refreshed = await loadRuntime(ctx);

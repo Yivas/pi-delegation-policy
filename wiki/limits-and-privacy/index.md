@@ -148,6 +148,12 @@ real-provider consultation completed on Pi 1.4.0 with pi-subagents 0.83.1; launc
 prompt runtime and provider bridge, no required extensions and no observed tool calls. This does not
 validate fork, `consult_advisor`, other builds, or a sole cause of an earlier failure.
 
+An [admitted provider extension](/configuration/#admitted-provider-extensions) works the same way for
+any other provider, with a weaker check: only its installed identity and listed user source are
+verified before it runs, not its exact surface. Once loaded it is trusted host code with your files,
+network and its own accounts. Withdrawing its provider after a failed check does not undo its side
+effects, and the admission applies to every session.
+
 ### Local content-free log
 
 Records are written only while a policy block is active; both delegation and Advisor off produce no events.

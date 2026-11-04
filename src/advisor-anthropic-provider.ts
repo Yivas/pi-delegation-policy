@@ -1,10 +1,11 @@
 import * as sdk from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { locateInstalledPackage } from "./provider-package.ts";
 
-const PACKAGE_NAME = "@gotgenes/pi-anthropic-auth";
+export const ANTHROPIC_PROVIDER_PACKAGE = "@gotgenes/pi-anthropic-auth";
+const PACKAGE_NAME = ANTHROPIC_PROVIDER_PACKAGE;
 const PACKAGE_VERSION = "3.4.3";
 export const ANTHROPIC_ADVISOR_AGENT = "pi-delegation-policy.advisor-anthropic-auth";
 export const ANTHROPIC_ADVISOR_EXTENSION = fileURLToPath(import.meta.url);
@@ -15,45 +16,13 @@ type ProviderLocation = { ok: true; entry: string } | { ok: false; message: stri
 
 /** Metadata only. Never load the provider, read its configuration, query accounts or install it. */
 export function locateAdvisorAnthropicProvider(cwd: string): ProviderLocation {
-  try {
-    if (
-      typeof sdk.DefaultPackageManager !== "function" ||
-      typeof sdk.SettingsManager?.inMemory !== "function" ||
-      typeof sdk.DefaultResourceLoader !== "function" ||
-      typeof sdk.getAgentDir !== "function"
-    )
-      return { ok: false, message: UNAVAILABLE };
-    const agentDir = sdk.getAgentDir();
-    const expected = resolve(agentDir, "npm/node_modules", PACKAGE_NAME);
-    // A missing managed install must not trigger PM's legacy fallback or an installation.
-    if (!existsSync(expected)) return { ok: false, message: UNAVAILABLE };
-    const manager = new sdk.DefaultPackageManager({
-      cwd,
-      agentDir,
-      settingsManager: sdk.SettingsManager.inMemory({}),
-    });
-    if (typeof manager.getInstalledPath !== "function") return { ok: false, message: UNAVAILABLE };
-    const source = `npm:${PACKAGE_NAME}@${PACKAGE_VERSION}`;
-    const selected = manager.getInstalledPath(source, "user");
-    if (!selected || resolve(selected) !== expected || manager.getInstalledPath(source, "project"))
-      return { ok: false, message: UNAVAILABLE };
-    if (realpathSync(expected) !== expected) return { ok: false, message: UNAVAILABLE };
-    const manifest = JSON.parse(readFileSync(resolve(expected, "package.json"), "utf8"));
-    if (
-      manifest.name !== PACKAGE_NAME ||
-      manifest.version !== PACKAGE_VERSION ||
-      !Array.isArray(manifest.pi?.extensions) ||
-      manifest.pi.extensions.length !== 1 ||
-      manifest.pi.extensions[0] !== "./src/index.ts"
-    )
-      return { ok: false, message: UNAVAILABLE };
-    const entry = resolve(expected, "src/index.ts");
-    return realpathSync(entry) === entry
-      ? { ok: true, entry }
-      : { ok: false, message: UNAVAILABLE };
-  } catch {
-    return { ok: false, message: UNAVAILABLE };
-  }
+  if (typeof sdk.DefaultResourceLoader !== "function") return { ok: false, message: UNAVAILABLE };
+  const location = locateInstalledPackage(
+    cwd,
+    { package: PACKAGE_NAME, version: PACKAGE_VERSION },
+    { expectedEntry: "./src/index.ts" },
+  );
+  return location.ok ? location : { ok: false, message: UNAVAILABLE };
 }
 
 /** This adapter runs only in the separately selected, provider-specific Advisor profile. */

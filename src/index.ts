@@ -19,7 +19,9 @@ import {
   advisorFailureText,
   advisorThinking,
   advisorAgentName,
+  advisorProfile,
 } from "./advisor-executor.ts";
+import { admissionFor } from "./provider-admissions.ts";
 import { AdvisorLog } from "./advisor-log.ts";
 import {
   createConfigNotice,
@@ -61,6 +63,7 @@ import {
   type AdvisorLaunch,
   ADVISOR_MODES,
   type AdvisorMode,
+  type AdvisorSetting,
   CONTEXT_SHUNT_MODES,
   type ContextShuntMode,
   CURRENT_SCHEMA_VERSION,
@@ -272,6 +275,14 @@ function thinkingToken(policy: ThinkingPolicy | undefined): string {
   return "level" in policy ? `fixed:${policy.level}` : `range:${policy.min}..${policy.max}`;
 }
 
+function admissionText(entry: AdvisorSetting, state: RuntimeState): string {
+  const pkg =
+    advisorProfile(entry, state.admissions) === "admitted"
+      ? admissionFor(state.admissions ?? {}, entry.provider)
+      : undefined;
+  return pkg ? `; extension=${pkg.package}@${pkg.version}` : "";
+}
+
 export function statusText(state: RuntimeState): string {
   const { effective } = state;
   const context = effective.contextShunt;
@@ -287,7 +298,7 @@ export function statusText(state: RuntimeState): string {
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
     ...effective.advisors.map(
       (entry, index) =>
-        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentName(entry)} (${effective.source.advisors})`,
+        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentName(entry, state.admissions)}${admissionText(entry, state)} (${effective.source.advisors})`,
     ),
     ...THINKING_ROLE_KEYS.filter((role) => role !== "advisor").map(
       (role) =>
@@ -593,8 +604,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             question: input.question,
             ...(input.brief?.trim() ? { brief: input.brief } : {}),
             context,
-            ...(entry.setting.providerExtension
-              ? { providerExtension: entry.setting.providerExtension }
+            ...(advisorProfile(entry.setting, state.admissions)
+              ? { providerExtension: advisorProfile(entry.setting, state.admissions) }
               : {}),
             model: {
               provider: entry.model.provider,
@@ -1045,7 +1056,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             !call ||
             typeof call !== "object" ||
             !validAdvisors(latestRuntime).some(
-              (entry) => call.agent === advisorAgentName(entry.setting),
+              (entry) => call.agent === advisorAgentName(entry.setting, latestRuntime?.admissions),
             )
           )
             continue;

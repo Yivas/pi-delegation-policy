@@ -661,7 +661,7 @@ function applyAdvisorExtension<T extends GlobalDefaults | SessionDelegateState>(
 function serialize(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
-async function atomicWrite(path: string, text: string): Promise<void> {
+export async function atomicWrite(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {

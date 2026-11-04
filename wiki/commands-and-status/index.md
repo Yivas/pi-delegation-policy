@@ -76,7 +76,8 @@ The Advisor rows are **Advisor mode** (inheritance, `off`, `on`, `with-delegatio
 launch** (`role` or `tool`) and **Advisor 1**. **Advisor 2** appears once Advisor 1 exists and
 **Advisor 3** once Advisor 2 exists. Choosing an `anthropic` model in one of them asks for its
 profile, **Standard** or **Anthropic auth**, and the row shows `· Anthropic auth` when the opt-in
-is set. Advisor thinking has no row: role launch lets the main agent choose it per run, and tool
+is set. A model whose provider an extension supplies asks for its provider extension instead, and
+the row shows `· <package> <version>` once admitted. Advisor thinking has no row: role launch lets the main agent choose it per run, and tool
 launch picks it automatically.
 
 The panel keeps one explicit draft:

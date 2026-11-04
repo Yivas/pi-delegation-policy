@@ -143,6 +143,13 @@ provider bridge, with no required extensions or observed tool calls. This does n
 [configuration reference](https://yivas.github.io/pi-delegation-policy/configuration/#provider-extension)
 for the schema-10 option, trusted-code surface and installation limits.
 
+Other providers that only an extension supplies can be admitted from the same panel: choosing such a
+model offers your installed packages as `trusted extension, identity only`. The admission is global
+and per provider, and the separate profile `pi-delegation-policy.advisor-provider-extension` loads
+that one package in the child. Only the package identity is checked before it runs, so it is trusted
+code, not a sandbox. See
+[admitted provider extensions](https://yivas.github.io/pi-delegation-policy/configuration/#admitted-provider-extensions).
+
 ## Where settings live
 
 The extension stores only policy: intensity, preference, Advisor mode, model references, the optional

@@ -1,4 +1,4 @@
-import { advisorAgentName } from "./advisor-executor.ts";
+import { advisorAgentName, advisorProfile } from "./advisor-executor.ts";
 import {
   enabledOrdinaryRoles,
   hasRuntimeError,
@@ -270,8 +270,15 @@ export function advisorRoleLines(state: RuntimeState): string {
       const thinking: RoleThinking = { kind: "unset" };
       const label =
         effective.advisors.length === 1 ? "Advisor (optional)" : `Advisor ${index + 1} (optional)`;
+      const profile = advisorProfile(setting, state.admissions);
+      const extension =
+        profile === "anthropic-auth"
+          ? "; provider extension explicitly enabled: normal configuration, startup hook and account diagnostic command are trusted host code, not model tools. Never invoke the diagnostic automatically."
+          : profile === "admitted"
+            ? "; provider extension admitted by the user: it runs as trusted host code in the child, not as model tools."
+            : "";
       return `
-- ${label}: ${formatReference(setting)}; exact model base: ${formatLaunchModel(setting)}; pi-subagents form: ${formatThinkingLaunchModel(setting, thinking)}; thinking policy: ${thinkingPolicyText(thinking)}; agent profile: ${promptString(advisorAgentName(setting))}${setting.providerExtension ? "; provider extension explicitly enabled: normal configuration, startup hook and account diagnostic command are trusted host code, not model tools. Never invoke the diagnostic automatically." : ""}`;
+- ${label}: ${formatReference(setting)}; exact model base: ${formatLaunchModel(setting)}; pi-subagents form: ${formatThinkingLaunchModel(setting, thinking)}; thinking policy: ${thinkingPolicyText(thinking)}; agent profile: ${promptString(advisorAgentName(setting, state.admissions))}${extension}`;
     })
     .join("");
 }
@@ -301,7 +308,7 @@ ${advisorPolicy(
   advisorContext,
   effective.advisorLaunch,
   advisors.length,
-  advisors.some(({ setting }) => setting.providerExtension !== undefined),
+  advisors.some(({ setting }) => advisorProfile(setting, state.admissions) !== undefined),
 )}
 
 Launch requirements:
@@ -341,7 +348,7 @@ conversation to another model and can incur latency, token usage and normal exec
         advisorContext,
         effective.advisorLaunch,
         advisors.length,
-        advisors.some(({ setting }) => setting.providerExtension !== undefined),
+        advisors.some(({ setting }) => advisorProfile(setting, state.admissions) !== undefined),
       )}`
     : "";
   const decisionSteps = advisorEnabled

@@ -296,6 +296,59 @@ off. Readers through 0.22.2 therefore leave **all Advisors off**, preserving ord
 rather than run a provider-dependent Advisor as a standard one. Missing, corrupt or stale envelope-2
 state leaves them off until repaired. Without an opt-in, the envelope-1 format below is unchanged.
 
+### Admitted provider extensions {#admitted-provider-extensions}
+
+Some providers exist only because an extension registers them, for example a provider that keeps its
+keys in its own vault instead of Pi's credentials. The standard Advisor profile loads no extension, so
+such an Advisor fails with a missing credential. Choosing a model of such a provider in an
+**Advisor** row asks for its provider extension: **Standard profile (no provider extension)** or one
+of your installed packages, shown as `<package> <version> · trusted extension, identity only`. The
+row then shows `· <package> <version>`. The step appears only when an extension registered that
+provider in the current session, or when the provider already has an admission. Anthropic keeps its
+own opt-in above and never appears here.
+
+An admission is global and per provider: every Advisor with that provider, in every session, uses
+the package profile `pi-delegation-policy.advisor-provider-extension`. **Apply** and **Save** both
+store a changed admission; **Cancel** discards it and **Standard** removes it. The file is
+`~/.pi/agent/delegation-policy.provider-extensions.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "providers": {
+    "example-provider": { "package": "example-provider-extension", "version": "1.2.3" }
+  }
+}
+```
+
+Only a package you already load qualifies: your user settings must list exactly
+`npm:<package>@<version>` unfiltered, Pi's managed user install must hold that version with no
+project candidate or links, and its manifest must declare exactly one extension entry inside the
+package. The panel offers only packages that pass this check, and both `/delegate` validation and the
+Advisor child repeat it. After `pi update` changes the version, the Advisor reports an error until
+you select the extension again; it never follows the new version on its own. An invalid file is
+ignored with a diagnostic and leaves the other Advisors running.
+
+In the child, the profile reads the admission for its own model's provider and loads that one entry
+in an isolated loader. The package may listen only to `session_start`, `session_shutdown`, `input`,
+`session_before_compact`, `session_compact` and `session_before_tree`, and may not register tools,
+flags, shortcuts or renderers. Its commands are not registered: a child has no user to run them.
+After `session_start` it must have registered that provider anew and changed no other provider. An
+`input` handler that rewrites or consumes the question also counts as a failure. Any failure
+withdraws what the package registered and leaves a guard for that provider: the child's requests
+fail, with an Advisor error or Pi's own "provider is not configured", and never reach the built-in
+provider with ambient credentials. The guard covers the API of the child's own model, the only one
+an Advisor child requests.
+
+This is trusted code, not a sandbox. Only the package identity is checked before it runs; the later
+checks can withdraw its provider but cannot undo what it already did. It can read files, use the
+network and reach its own accounts. Per-process state stays per process: a quota-rotating extension
+checks quota again in each child and can pick an account the main session already exhausted. If the
+admission changes between the main session's check and the child's start, the child uses the new one
+or fails closed. A model with an extension-replaced provider and no admission is reported as an
+Advisor error in `/delegate status` instead of failing at consultation. Releases before this option
+ignore the file and launch the standard profile.
+
 ## Persistence and compatibility
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7 delegation only.

@@ -12,6 +12,13 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { configuredAdvisors, isThinkingLevelName, resolveDelegateState } from "./config.ts";
+import {
+  admissionFor,
+  type ProviderAdmissions,
+  RESERVED_PROVIDER,
+  sameAdmissions,
+} from "./provider-admissions.ts";
+import type { ProviderPackage } from "./provider-package.ts";
 import { isAdvisorEnabled } from "./runtime.ts";
 import { buildPolicyPreview } from "./prompt.ts";
 import {
@@ -131,6 +138,7 @@ type PanelMode =
   | { kind: "settings" }
   | { kind: "enum"; field: EnumField; selected: number }
   | { kind: "provider"; index: number; selected: number }
+  | { kind: "extension"; index: number; provider: string; selected: number }
   | { kind: "model"; field: ModelField; selected: number; query: string }
   | { kind: "advanced"; selected: number }
   | { kind: "advanced-reader-enabled"; selected: number }
@@ -183,6 +191,13 @@ export interface DelegatePanelOptions {
   onApply: (draft: SessionDelegateState) => Promise<boolean>;
   onSaveDefaults: (draft: SessionDelegateState) => Promise<SaveDefaultsOutcome>;
   onDone: (result: DelegatePanelResult) => void;
+  /** Global provider-extension admissions; Apply and Save both store a changed set. */
+  admissions?: ProviderAdmissions;
+  /** Installed user packages that pass the identity check, offered as provider extensions. */
+  extensionCandidates?: readonly ProviderPackage[];
+  /** Providers that an extension registered in this session; only these offer the step. */
+  extensionProviders?: readonly string[];
+  onSaveAdmissions?: (admissions: ProviderAdmissions) => Promise<boolean>;
 }
 
 const PANEL_ACTIONS: readonly PanelAction[] = ["apply", "save-defaults", "reset", "cancel"];
@@ -192,6 +207,11 @@ const PROVIDER_CHOICES = [
 ] as const;
 const PROVIDER_DESCRIPTION =
   "Standard uses the ordinary Advisor profile. Anthropic auth uses a separate profile that loads managed-user pi-anthropic-auth 3.4.3 with its normal configuration, startup hook and account diagnostic command; no model tools are added. The model is unchanged; a missing or incompatible package disables only this Advisor.";
+
+const EXTENSION_STANDARD = "Standard profile (no provider extension)";
+function extensionDescription(provider: string): string {
+  return `An Advisor child loads no extension, so a ${provider} model that an extension supplies only works once you admit that extension here. The admitted package runs as trusted code in every ${provider} Advisor, in every session; only its installed identity is checked. Apply and Save both store this choice globally; Standard removes it.`;
+}
 
 const FIELD_LABELS: Record<DelegateField, string> = {
   intensity: "Intensity",
@@ -391,6 +411,11 @@ export class DelegatePanel implements Component, Focusable {
   private readonly onApply: DelegatePanelOptions["onApply"];
   private readonly onSaveDefaults: DelegatePanelOptions["onSaveDefaults"];
   private readonly onDone: DelegatePanelOptions["onDone"];
+  private readonly onSaveAdmissions: DelegatePanelOptions["onSaveAdmissions"];
+  private readonly extensionCandidates: readonly ProviderPackage[];
+  private readonly extensionProviders: readonly string[];
+  private admissions: ProviderAdmissions;
+  private draftAdmissions: ProviderAdmissions;
   private readonly original: SessionDelegateState;
   private readonly searchInput = new Input();
   private readonly advancedInput = new Input();
@@ -416,6 +441,11 @@ export class DelegatePanel implements Component, Focusable {
     this.onApply = options.onApply;
     this.onSaveDefaults = options.onSaveDefaults;
     this.onDone = options.onDone;
+    this.onSaveAdmissions = options.onSaveAdmissions;
+    this.extensionCandidates = options.extensionCandidates ?? [];
+    this.extensionProviders = options.extensionProviders ?? [];
+    this.admissions = structuredClone(options.admissions ?? {});
+    this.draftAdmissions = structuredClone(options.admissions ?? {});
   }
 
   get focused(): boolean {
@@ -431,8 +461,16 @@ export class DelegatePanel implements Component, Focusable {
     return cloneSession(this.draft);
   }
 
+  getDraftAdmissions(): ProviderAdmissions {
+    return structuredClone(this.draftAdmissions);
+  }
+
   isDirty(): boolean {
-    return !sameSessionState(this.original, this.draft);
+    return !sameSessionState(this.original, this.draft) || this.admissionsDirty();
+  }
+
+  private admissionsDirty(): boolean {
+    return !sameAdmissions(this.admissions, this.draftAdmissions);
   }
 
   /**
@@ -472,6 +510,7 @@ export class DelegatePanel implements Component, Focusable {
     if (this.mode.kind === "settings") this.handleSettingsInput(data);
     else if (this.mode.kind === "enum") this.handleEnumInput(data);
     else if (this.mode.kind === "provider") this.handleProviderInput(data);
+    else if (this.mode.kind === "extension") this.handleExtensionInput(data);
     else if (this.mode.kind === "model") this.handleModelInput(data);
     else if (this.mode.kind === "advanced") this.handleAdvancedInput(data);
     else if (this.mode.kind === "advanced-reader-enabled")
@@ -504,6 +543,7 @@ export class DelegatePanel implements Component, Focusable {
     if (mode.kind === "settings") return this.renderSettings(width, budget);
     if (mode.kind === "enum") return this.renderEnum(width, budget, mode);
     if (mode.kind === "provider") return this.renderProvider(width, budget, mode);
+    if (mode.kind === "extension") return this.renderExtension(width, budget, mode);
     if (mode.kind === "model") return this.renderModel(width, budget, mode);
     if (mode.kind === "advanced") return this.renderAdvanced(width, budget, mode);
     if (mode.kind === "advanced-reader-enabled")
@@ -590,7 +630,9 @@ export class DelegatePanel implements Component, Focusable {
           ? "Delegation policy / Context advanced"
           : this.mode.kind === "provider"
             ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
-            : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
+            : this.mode.kind === "extension"
+              ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
+              : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
     const status = this.working ?? (this.isDirty() ? "Modified" : "");
     const gap = Math.max(1, width - visibleWidth(modeLabel) - visibleWidth(status));
     const statusText = this.theme.fg("warning", status);
@@ -679,7 +721,9 @@ export class DelegatePanel implements Component, Focusable {
     if (isAdvisorField(field)) {
       const entry = effective.advisors[advisorIndex(field)];
       if (!entry) return field === "advisor" ? "disabled" : "not configured";
-      return `${modelText(entry)}${entry.providerExtension ? " · Anthropic auth" : ""}`;
+      if (entry.providerExtension) return `${modelText(entry)} · Anthropic auth`;
+      const admitted = admissionFor(this.draftAdmissions, entry.provider);
+      return `${modelText(entry)}${admitted ? ` · ${admitted.package} ${admitted.version}` : ""}`;
     }
     if (
       field === "intensity" ||
@@ -1023,6 +1067,78 @@ export class DelegatePanel implements Component, Focusable {
       ...description,
       ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
     ];
+  }
+
+  /**
+   * Standard first, then every candidate. A current admission that no longer passes the identity
+   * check stays listed so it can be seen and replaced, never silently kept.
+   */
+  private extensionChoices(provider: string): Array<ProviderPackage | undefined> {
+    const current = admissionFor(this.draftAdmissions, provider);
+    const listed = (pkg: ProviderPackage) =>
+      this.extensionCandidates.some(
+        (candidate) => candidate.package === pkg.package && candidate.version === pkg.version,
+      );
+    return [
+      undefined,
+      ...this.extensionCandidates,
+      ...(current && !listed(current) ? [current] : []),
+    ];
+  }
+
+  private offersExtension(provider: string): boolean {
+    return (
+      provider !== RESERVED_PROVIDER &&
+      (admissionFor(this.draftAdmissions, provider) !== undefined ||
+        (this.extensionCandidates.length > 0 && this.extensionProviders.includes(provider)))
+    );
+  }
+
+  private renderExtension(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "extension" }>,
+  ): string[] {
+    const blocks = this.extensionChoices(mode.provider).map((pkg, index) => [
+      selectedLine(
+        this.theme,
+        !pkg
+          ? EXTENSION_STANDARD
+          : this.extensionCandidates.includes(pkg)
+            ? `${pkg.package} ${pkg.version} · trusted extension, identity only`
+            : `${pkg.package} ${pkg.version} · no longer installed as admitted`,
+        width,
+        index === mode.selected,
+      ),
+    ]);
+    // Same reservation as the profile step: the choices stay visible before the explanation.
+    const description = wrapTextWithAnsi(extensionDescription(mode.provider), width).slice(
+      0,
+      Math.max(0, budget - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
+  }
+
+  private handleExtensionInput(data: string): void {
+    if (this.mode.kind !== "extension") return;
+    const choices = this.extensionChoices(this.mode.provider);
+    const count = choices.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    // Escape keeps the model just chosen with the admission its provider already had.
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      const pkg = choices[this.mode.selected];
+      const admissions = { ...this.draftAdmissions };
+      delete admissions[this.mode.provider];
+      if (pkg) admissions[this.mode.provider] = { ...pkg };
+      this.draftAdmissions = admissions;
+      this.mode = { kind: "settings" };
+    }
   }
 
   private handleProviderInput(data: string): void {
@@ -1901,10 +2017,22 @@ export class DelegatePanel implements Component, Focusable {
         if (this.draft.thinking) delete this.draft.thinking.advisor;
       } else this.replaceAdvisors(entries);
       if (!entries.length && choice.kind === "disabled") this.draft.advisorMode = "off";
-      this.mode =
-        choice.kind === "model" && choice.reference.provider === "anthropic"
-          ? { kind: "provider", index, selected: entries[index]?.providerExtension ? 1 : 0 }
-          : { kind: "settings" };
+      if (choice.kind === "model" && choice.reference.provider === RESERVED_PROVIDER)
+        this.mode = {
+          kind: "provider",
+          index,
+          selected: entries[index]?.providerExtension ? 1 : 0,
+        };
+      else if (choice.kind === "model" && this.offersExtension(choice.reference.provider)) {
+        const provider = choice.reference.provider;
+        const current = admissionFor(this.draftAdmissions, provider);
+        const selected = current
+          ? this.extensionChoices(provider).findIndex(
+              (pkg) => pkg?.package === current.package && pkg.version === current.version,
+            )
+          : 0;
+        this.mode = { kind: "extension", index, provider, selected: Math.max(0, selected) };
+      } else this.mode = { kind: "settings" };
       return;
     }
     if (choice.kind === "global") delete this.draft[field];
@@ -1980,6 +2108,8 @@ export class DelegatePanel implements Component, Focusable {
     this.working = "Applying changes…";
     this.tui.requestRender();
     try {
+      // Without an admission change the session step starts in this same input, as before.
+      if (this.admissionsDirty() && !(await this.saveAdmissions())) return;
       if (await this.onApply(cloneSession(this.draft))) {
         this.onDone("applied");
         return;
@@ -2003,6 +2133,7 @@ export class DelegatePanel implements Component, Focusable {
     this.working = "Saving defaults…";
     this.tui.requestRender();
     try {
+      if (this.admissionsDirty() && !(await this.saveAdmissions())) return;
       const outcome = await this.onSaveDefaults(cloneSession(this.draft));
       if (outcome.kind === "saved") {
         this.global = structuredClone(outcome.defaults);
@@ -2034,6 +2165,26 @@ export class DelegatePanel implements Component, Focusable {
       this.working = undefined;
       this.tui.requestRender();
     }
+  }
+
+  /**
+   * Admissions are global, so Apply and Save both store a changed set before their own step. A
+   * failure stops that step and leaves the session and defaults untouched.
+   */
+  private async saveAdmissions(): Promise<boolean> {
+    let saved: boolean;
+    try {
+      saved = (await this.onSaveAdmissions?.(structuredClone(this.draftAdmissions))) ?? false;
+    } catch {
+      saved = false;
+    }
+    if (saved) this.admissions = structuredClone(this.draftAdmissions);
+    else
+      this.message = {
+        kind: "error",
+        text: "Could not save provider extensions. Nothing else was changed.",
+      };
+    return saved;
   }
 
   private syncInputFocus(): void {
