@@ -42,6 +42,8 @@ export type RuntimeState = {
   advisorErrors?: string[];
   /** Global provider-extension admissions; absent means none. */
   admissions?: ProviderAdmissions;
+  /** Advisor notes that never remove an Advisor or change the footer. */
+  advisorWarnings?: string[];
   advisorEntries?: Array<{
     index: number;
     setting: AdvisorSetting;
@@ -221,6 +223,7 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
   state.modelStatuses.clear();
   state.runtimeErrors = [];
   state.advisorErrors = [];
+  state.advisorWarnings = [];
 
   const advisorEnabled = isAdvisorEnabled(state.effective);
   for (const diagnostic of state.diagnostics) {
@@ -254,8 +257,9 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
           if (!location.ok) errors.push(location.message);
         }
       } else if (status.kind === "available") {
-        const error = providerExtensionError(ctx, label, setting, state.admissions ?? {});
-        if (error) errors.push(error);
+        const check = providerExtensionCheck(ctx, label, setting, state.admissions ?? {});
+        if (check?.kind === "error") errors.push(check.message);
+        else if (check) state.advisorWarnings.push(check.message);
       }
       if (index === 0) state.modelStatuses.set("advisor", status);
       state.advisorEntries.push({ index, setting, status, errors });
@@ -284,27 +288,34 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
 }
 
 /**
- * An admitted package must still pass the identity the child will check. Without an admission, a
- * provider that an extension replaced natively in this session would run as a different
- * implementation in the child, which loads no extension: report it instead of letting the
- * consultation fail later. Config overlays and auth sources are not treated as proof: a native
- * provider reports its own key as an environment source.
+ * An admitted package must still pass the identity the child will check: otherwise the child would
+ * refuse every request, so the Advisor is left out. Without an admission, a provider that an
+ * extension replaced natively in this session runs as a different implementation in the child,
+ * which loads no extension. That is only a warning: the built-in provider may still answer with its
+ * own credentials. Auth sources are not used as proof: a native provider reports its own key as an
+ * environment source.
  */
-function providerExtensionError(
+function providerExtensionCheck(
   ctx: ExtensionContext,
   label: string,
   setting: AdvisorSetting,
   admissions: ProviderAdmissions,
-): string | undefined {
+): { kind: "error" | "warning"; message: string } | undefined {
   const pkg = admissionFor(admissions, setting.provider);
   if (pkg)
     return locateInstalledPackage(ctx.cwd, pkg, { configured: true }).ok
       ? undefined
-      : `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; re-select the provider extension in /delegate.`;
+      : {
+          kind: "error",
+          message: `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; re-select the provider extension in /delegate.`,
+        };
   if (setting.provider === RESERVED_PROVIDER) return undefined;
   const native = ctx.modelRegistry?.getRegisteredNativeProvider?.(setting.provider);
   return native
-    ? `${label} provider ${setting.provider} is supplied by an extension in this session, and the Advisor child does not load it; select its provider extension in /delegate.`
+    ? {
+        kind: "warning",
+        message: `${label} provider ${setting.provider} is replaced by an extension in this session, and the Advisor child does not load it; if its consultations fail, select its provider extension in /delegate.`,
+      }
     : undefined;
 }
 

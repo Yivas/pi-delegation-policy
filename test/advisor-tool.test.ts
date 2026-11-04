@@ -11,6 +11,10 @@ import {
   ANTHROPIC_ADVISOR_AGENT,
   ANTHROPIC_ADVISOR_EXTENSION,
 } from "../src/advisor-anthropic-provider.ts";
+import {
+  PROVIDER_EXTENSION_ADVISOR_AGENT,
+  PROVIDER_EXTENSION_ADVISOR_EXTENSION,
+} from "../src/advisor-provider-extension.ts";
 import { AdvisorLog, ADVISOR_LOG_MAX_BYTES } from "../src/advisor-log.ts";
 import type { AgentLaunchModules } from "../src/agent-launch.ts";
 import {
@@ -1459,9 +1463,28 @@ test("a failed third global replacement restores the exact previous three-file s
   }
 });
 
+const PROVIDER_PROFILES = [
+  {
+    providerExtension: "anthropic-auth" as const,
+    agent: ANTHROPIC_ADVISOR_AGENT,
+    file: "../agents/pi-delegation-policy.advisor-anthropic-auth.md",
+    extension: ANTHROPIC_ADVISOR_EXTENSION,
+    provider: "anthropic",
+  },
+  {
+    providerExtension: "admitted" as const,
+    agent: PROVIDER_EXTENSION_ADVISOR_AGENT,
+    file: "../agents/pi-delegation-policy.advisor-provider-extension.md",
+    extension: PROVIDER_EXTENSION_ADVISOR_EXTENSION,
+    provider: "example-provider",
+  },
+];
 for (const version of ["0.76.1", "0.83.1"] as const) {
   test(`provider-specific Advisor binds its own exact extension contract on ${version}`, async () => {
-    for (const extra of [false, true]) {
+    for (const [profile, extra] of PROVIDER_PROFILES.flatMap((entry) => [
+      [entry, false] as const,
+      [entry, true] as const,
+    ])) {
       const modules = await fakeModules("valid", version);
       const original = modules.resolveSubagentLaunchContract;
       const bus = new Bus();
@@ -1474,23 +1497,18 @@ for (const version of ["0.76.1", "0.83.1"] as const) {
             const contract = resolved.contract;
             contract.agent = {
               ...(contract.agent as Payload),
-              name: ANTHROPIC_ADVISOR_AGENT,
-              localName: ANTHROPIC_ADVISOR_AGENT,
-              filePath: fileURLToPath(
-                new URL(
-                  "../agents/pi-delegation-policy.advisor-anthropic-auth.md",
-                  import.meta.url,
-                ),
-              ),
+              name: profile.agent,
+              localName: profile.agent,
+              filePath: fileURLToPath(new URL(profile.file, import.meta.url)),
             };
             const tools = contract.tools as Payload;
             tools.configuredExtensions = [
-              ANTHROPIC_ADVISOR_EXTENSION,
+              profile.extension,
               ...(extra ? ["unexpected-extension"] : []),
             ];
             tools.extensionArgs = [
               "prompt-runtime",
-              ANTHROPIC_ADVISOR_EXTENSION,
+              profile.extension,
               ...(extra ? ["unexpected-extension"] : []),
             ];
             return resolved;
@@ -1503,10 +1521,14 @@ for (const version of ["0.76.1", "0.83.1"] as const) {
             question: "synthetic question",
             brief: "synthetic brief",
             context: "fresh",
-            providerExtension: "anthropic-auth",
-            model: { provider: "anthropic", id: "synthetic-model", thinking: "low" },
+            providerExtension: profile.providerExtension,
+            model: { provider: profile.provider, id: "synthetic-model", thinking: "low" },
             availableModels: [
-              { provider: "anthropic", id: "synthetic-model", fullId: "anthropic/synthetic-model" },
+              {
+                provider: profile.provider,
+                id: "synthetic-model",
+                fullId: `${profile.provider}/synthetic-model`,
+              },
             ],
           },
         ],
@@ -1516,7 +1538,7 @@ for (const version of ["0.76.1", "0.83.1"] as const) {
       );
       assert.equal(answer?.result.kind, extra ? "unavailable" : "completed");
       assert.equal(bus.requests.length, extra ? 0 : 1);
-      if (!extra) assert.equal(bus.requests[0]?.agent, ANTHROPIC_ADVISOR_AGENT);
+      if (!extra) assert.equal(bus.requests[0]?.agent, profile.agent);
       executor.close();
     }
   });

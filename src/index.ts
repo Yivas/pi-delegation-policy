@@ -315,9 +315,11 @@ export function statusText(state: RuntimeState): string {
       ? state.diagnostics.filter(({ reportWhenOff }) => reportWhenOff).map(({ message }) => message)
       : [
           ...diagnosticMessages,
-          ...[...state.runtimeErrors, ...(state.advisorErrors ?? [])].filter(
-            (message) => !diagnosticMessages.includes(message),
-          ),
+          ...[
+            ...state.runtimeErrors,
+            ...(state.advisorErrors ?? []),
+            ...(state.advisorWarnings ?? []),
+          ].filter((message) => !diagnosticMessages.includes(message)),
         ];
   if (errors.length) details.push(`details=${errors.join("; ")}`);
   return details.join(" | ");

@@ -345,9 +345,13 @@ checks can withdraw its provider but cannot undo what it already did. It can rea
 network and reach its own accounts. Per-process state stays per process: a quota-rotating extension
 checks quota again in each child and can pick an account the main session already exhausted. If the
 admission changes between the main session's check and the child's start, the child uses the new one
-or fails closed. A model with an extension-replaced provider and no admission is reported as an
-Advisor error in `/delegate status` instead of failing at consultation. Releases before this option
-ignore the file and launch the standard profile.
+or fails closed. An Advisor whose provider an extension replaced in the main session, with no
+admission, gets a warning in `/delegate status` and stays consulted, because the built-in provider
+may still answer with its own credentials. An admission whose package no longer passes the check is
+an Advisor error instead. The candidate list holds every pinned user package, not only providers;
+choosing one that does not register the provider runs its code in the child before the Advisor
+refuses it. Releases before this option ignore the file and launch the standard profile, which may
+answer through the built-in provider or fail as before.
 
 ## Persistence and compatibility
 

@@ -210,7 +210,7 @@ const PROVIDER_DESCRIPTION =
 
 const EXTENSION_STANDARD = "Standard profile (no provider extension)";
 function extensionDescription(provider: string): string {
-  return `An Advisor child loads no extension, so a ${provider} model that an extension supplies only works once you admit that extension here. The admitted package runs as trusted code in every ${provider} Advisor, in every session; only its installed identity is checked. Apply and Save both store this choice globally; Standard removes it.`;
+  return `An Advisor child loads no extension, so a ${provider} model that an extension supplies only works once you admit that extension here. The admitted package runs as trusted code in every ${provider} Advisor, in every session; only its installed identity is checked. The list holds every pinned user package, not only providers: one that does not register ${provider} still runs before the Advisor refuses it. Apply and Save both store this choice globally; Standard removes it.`;
 }
 
 const FIELD_LABELS: Record<DelegateField, string> = {

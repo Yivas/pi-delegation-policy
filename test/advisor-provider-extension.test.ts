@@ -31,7 +31,10 @@ export default function (pi) {
   const mode = process.env.PI_PROVIDER_EXTENSION_MODE;
   if (mode === "factory") throw Error("factory sentinel");
   if (mode === "unlisted") pi.on("tool_call", () => undefined);
-  pi.on("session_before_compact", () => ({ cancel: mode === "compact-cancel" }));
+  pi.on("session_before_compact", () => {
+    if (mode === "compact-throw") throw Error("compaction sentinel");
+    return { cancel: mode === "compact-cancel" };
+  });
   pi.on("session_start", async (_event, ctx) => {
     if (mode === "start") throw Error("start sentinel");
     const registry = ctx.modelRegistry;
@@ -51,6 +54,7 @@ export default function (pi) {
     if (mode === "shared") registry.registerProvider((shared ??= native("${PROVIDER}")));
     else registry.registerProvider(native("${PROVIDER}"));
     if (mode === "extra") registry.registerProvider(native("synthetic-extra"));
+    if (mode === "shadow") registry.registerProvider(native("synthetic-other"));
     if (mode === "held-extra") pi.registerProvider("synthetic-held", { api: "openai-completions", streamSimple: stream });
     if (mode === "tools") pi.registerTool({ name: "unexpected", description: "not allowed",
       parameters: { type: "object", properties: {} }, execute: async () => ({ content: [], details: {} }) });
@@ -114,6 +118,8 @@ test("an admitted provider extension answers in the Advisor child and every refu
         "unlisted",
         "tools",
         "extra",
+        "shadow",
+        "compact-throw",
         "held-extra",
         "input",
         "active-tools",
@@ -139,6 +145,9 @@ test("an admitted provider extension answers in the Advisor child and every refu
           allowModelNetwork: false,
         });
         const registry = new sdk.ModelRegistry(runtime);
+        // A provider another extension registered before this one; a failure must give it back.
+        const other = { ...runtime.getProvider(PROVIDER)!, id: "synthetic-other" };
+        registry.registerProvider(other);
         const model = runtime.getModels(PROVIDER)[0]!;
         const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
         const commands: string[] = [];
@@ -190,6 +199,7 @@ test("an admitted provider extension answers in the Advisor child and every refu
         assert.deepEqual(commands, [], mode);
         for (const unexpected of ["synthetic-extra", "synthetic-held"])
           assert.ok(!registry.getRegisteredProviderIds().includes(unexpected), mode);
+        assert.equal(registry.getRegisteredNativeProvider("synthetic-other"), other, mode);
         assert.equal(network, 0);
       }
     });
@@ -295,10 +305,9 @@ function routeAndReport(): void {
 
   const unadmitted = state({});
   validateRuntime(context(["example-provider"]), unadmitted);
-  assert.match(
-    unadmitted.advisorEntries?.[0]?.errors[0] ?? "",
-    /supplied by an extension in this session/,
-  );
+  // A warning only: the built-in provider may still answer, so the Advisor stays consulted.
+  assert.deepEqual(unadmitted.advisorEntries?.[0]?.errors, []);
+  assert.match(unadmitted.advisorWarnings?.[0] ?? "", /replaced by an extension in this session/);
   assert.deepEqual(unadmitted.advisorEntries?.[1]?.errors, []);
 
   // An admitted package that the child would reject is reported before any launch.

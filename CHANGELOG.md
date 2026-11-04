@@ -9,8 +9,8 @@
   stored in `delegation-policy.provider-extensions.json`, and the new profile
   `pi-delegation-policy.advisor-provider-extension` loads that one package in the child. Only the
   package identity is checked before it runs; it is trusted code, not a sandbox.
-- `/delegate status` reports an Advisor whose provider an extension replaced in this session and
-  that has no admission, instead of letting the consultation fail.
+- `/delegate status` warns about an Advisor whose provider an extension replaced in this session
+  and that has no admission. The Advisor stays consulted.
 
 ### Compatibility
 

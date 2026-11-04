@@ -31,10 +31,12 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
 
   const state = await loadRuntime(ctx);
   const candidates = modelCandidates(ctx);
-  // This package and Anthropic's, which keeps its own opt-in, are never offered here.
+  // Never offered: this package, Anthropic's (it keeps its own opt-in) and the permission
+  // runtime, which the host already adds to every child.
   const extensionCandidates = listProviderExtensionCandidates(ctx.cwd, [
     "pi-delegation-policy",
     ANTHROPIC_PROVIDER_PACKAGE,
+    "@gotgenes/pi-permission-system",
   ]);
   const extensionProviders = ctx.modelRegistry?.getRegisteredProviderIds?.() ?? [];
   // A diagnostic that no error list reports yet stays informative in the panel instead of being
@@ -58,7 +60,12 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
             ? state.diagnostics
                 .filter(({ reportWhenOff }) => reportWhenOff)
                 .map(({ message }) => message)
-            : [...state.runtimeErrors, ...(state.advisorErrors ?? []), ...advisorNotices],
+            : [
+                ...state.runtimeErrors,
+                ...(state.advisorErrors ?? []),
+                ...(state.advisorWarnings ?? []),
+                ...advisorNotices,
+              ],
         hasRuntimeError: hasRuntimeError(state),
         hasAdvisorError: hasAdvisorError(state),
         admissions: state.admissions ?? {},
@@ -82,6 +89,9 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
           state.modelStatuses = refreshed.modelStatuses;
           state.runtimeErrors = refreshed.runtimeErrors;
           state.advisorErrors = refreshed.advisorErrors;
+          state.advisorWarnings = refreshed.advisorWarnings;
+          state.advisorEntries = refreshed.advisorEntries;
+          state.admissions = refreshed.admissions;
           return result === "success";
         },
         onSaveDefaults: async (draft) => {
