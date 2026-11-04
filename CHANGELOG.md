@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.25.0 - 2026-11-04
+
 ### Added
 
 - Admitted provider extensions for Advisors. Choosing a model whose provider only an extension
@@ -16,6 +18,12 @@
 
 - No state schema change. 0.24 and earlier ignore the admissions file and launch the standard
   profile for those Advisors.
+
+### Limits
+
+- No real-provider consultation was run through the new profile. Startup was checked with a real
+  provider extension, without network or requests; authentication, requests, compaction and
+  retries in a real child are not validated.
 
 ## 0.24.0 - 2026-11-03
 
