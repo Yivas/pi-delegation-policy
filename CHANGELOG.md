@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.26.0 - 2026-11-10
+
 ### Added
 
 - Launch check. While delegation is active, a `subagent` call is refused before it launches when a
