@@ -42,8 +42,8 @@ The refusal lists the accepted launches. The check applies to every `subagent` t
 session, including ones other skills request: council mode, which uses a workflow script, is refused
 while delegation is active. Slash commands, RPC and schedules created earlier do not pass through
 this tool call and are not checked. The check sees only the call: it cannot decide whether work
-should have been delegated, and an invalid delegation configuration refuses every new launch until
-it is fixed.
+should have been delegated. An invalid delegation configuration refuses new ordinary launches until
+it is fixed; valid Advisors keep working.
 
 ## Configuration change notice
 

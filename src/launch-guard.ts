@@ -169,8 +169,9 @@ export function checkSubagentLaunch(
       ? refuse("a control action cannot also carry children")
       : undefined;
   }
-  if (delegation && hasRuntimeError(state))
-    return refuse("the delegation configuration is invalid; fix it in /delegate before launching");
+  // An invalid delegation configuration refuses ordinary children only: a valid Advisor keeps
+  // working, as the consultation-only policy block still asks for it.
+  const invalid = delegation && hasRuntimeError(state);
 
   // A script chooses its models in code this policy cannot read, inline or through options.script.
   const script =
@@ -207,6 +208,10 @@ export function checkSubagentLaunch(
     const agent = typeof child.agent === "string" ? child.agent : "";
     const isAdvisorAgent = ADVISOR_AGENTS.has(agent);
     if (!isAdvisorAgent && !delegation) continue;
+    if (!isAdvisorAgent && invalid)
+      return refuse(
+        `${label}the delegation configuration is invalid; fix it in /delegate before launching`,
+      );
     if (typeof child.model !== "string" || !child.model.trim())
       return refuse(
         `${label}no model was given; state the exact role model, never an inherited default`,

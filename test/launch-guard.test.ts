@@ -164,4 +164,12 @@ test("delegation off checks only Advisor launches, and both axes off check nothi
       "",
     /configuration is invalid/,
   );
+  // A valid Advisor is still consulted while delegation is broken.
+  assert.equal(
+    checkSubagentLaunch(
+      { agent: "pi-delegation-policy.advisor", task: "q", model: "advice/advisor-model:low" },
+      broken,
+    ),
+    undefined,
+  );
 });
