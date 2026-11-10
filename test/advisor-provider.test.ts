@@ -400,6 +400,22 @@ test("final provider location rejects path escape, project shadowing and unavail
     );
     await writeFile(join(root, "src/index.ts"), "throw Error('must not import');");
     assert.equal(locateAdvisorAnthropicProvider(directory).ok, true);
+    // Only reviewed releases: 3.4.4 is admitted, an unreviewed later one is not.
+    for (const [version, ok] of [
+      ["3.4.4", true],
+      ["3.4.5", false],
+      ["3.4.3", true],
+    ] as const) {
+      await writeFile(
+        join(root, "package.json"),
+        JSON.stringify({
+          name: "@gotgenes/pi-anthropic-auth",
+          version,
+          pi: { extensions: ["./src/index.ts"] },
+        }),
+      );
+      assert.equal(locateAdvisorAnthropicProvider(directory).ok, ok, version);
+    }
     Reflect.set(sdk.DefaultPackageManager.prototype, "getInstalledPath", undefined);
     assert.equal(locateAdvisorAnthropicProvider(directory).ok, false);
     Reflect.set(sdk.DefaultPackageManager.prototype, "getInstalledPath", method);

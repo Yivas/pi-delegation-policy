@@ -6,23 +6,27 @@ import { locateInstalledPackage } from "./provider-package.ts";
 
 export const ANTHROPIC_PROVIDER_PACKAGE = "@gotgenes/pi-anthropic-auth";
 const PACKAGE_NAME = ANTHROPIC_PROVIDER_PACKAGE;
-const PACKAGE_VERSION = "3.4.3";
+/** Exact releases reviewed for this adapter; 3.4.4 changed only documentation and comments. */
+const PACKAGE_VERSIONS = ["3.4.3", "3.4.4"] as const;
 export const ANTHROPIC_ADVISOR_AGENT = "pi-delegation-policy.advisor-anthropic-auth";
 export const ANTHROPIC_ADVISOR_EXTENSION = fileURLToPath(import.meta.url);
 const UNAVAILABLE =
-  "Advisor provider unavailable: requires the exact managed-user pi-anthropic-auth 3.4.3 installation and compatible public host APIs.";
+  "Advisor provider unavailable: requires the exact managed-user pi-anthropic-auth 3.4.3 or 3.4.4 installation and compatible public host APIs.";
 
 type ProviderLocation = { ok: true; entry: string } | { ok: false; message: string };
 
 /** Metadata only. Never load the provider, read its configuration, query accounts or install it. */
 export function locateAdvisorAnthropicProvider(cwd: string): ProviderLocation {
   if (typeof sdk.DefaultResourceLoader !== "function") return { ok: false, message: UNAVAILABLE };
-  const location = locateInstalledPackage(
-    cwd,
-    { package: PACKAGE_NAME, version: PACKAGE_VERSION },
-    { expectedEntry: "./src/index.ts" },
-  );
-  return location.ok ? location : { ok: false, message: UNAVAILABLE };
+  for (const version of PACKAGE_VERSIONS) {
+    const location = locateInstalledPackage(
+      cwd,
+      { package: PACKAGE_NAME, version },
+      { expectedEntry: "./src/index.ts" },
+    );
+    if (location.ok) return location;
+  }
+  return { ok: false, message: UNAVAILABLE };
 }
 
 /** This adapter runs only in the separately selected, provider-specific Advisor profile. */

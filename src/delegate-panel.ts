@@ -203,10 +203,10 @@ export interface DelegatePanelOptions {
 const PANEL_ACTIONS: readonly PanelAction[] = ["apply", "save-defaults", "reset", "cancel"];
 const PROVIDER_CHOICES = [
   "Standard profile (no provider extension)",
-  "Anthropic auth 3.4.3 (explicit opt-in)",
+  "Anthropic auth 3.4.3/3.4.4 (explicit opt-in)",
 ] as const;
 const PROVIDER_DESCRIPTION =
-  "Standard uses the ordinary Advisor profile. Anthropic auth uses a separate profile that loads managed-user pi-anthropic-auth 3.4.3 with its normal configuration, startup hook and account diagnostic command; no model tools are added. The model is unchanged; a missing or incompatible package disables only this Advisor.";
+  "Standard uses the ordinary Advisor profile. Anthropic auth uses a separate profile that loads managed-user pi-anthropic-auth 3.4.3 or 3.4.4 with its normal configuration, startup hook and account diagnostic command; no model tools are added. The model is unchanged; a missing or incompatible package disables only this Advisor.";
 
 const EXTENSION_STANDARD = "Standard profile (no provider extension)";
 function extensionDescription(provider: string): string {

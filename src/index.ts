@@ -22,6 +22,7 @@ import {
   advisorProfile,
 } from "./advisor-executor.ts";
 import { admissionFor } from "./provider-admissions.ts";
+import { checkSubagentLaunch } from "./launch-guard.ts";
 import { AdvisorLog } from "./advisor-log.ts";
 import {
   createConfigNotice,
@@ -1042,6 +1043,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       shunt.clearConsumed();
     });
     pi.on("tool_call", async (event) => {
+      if (event.toolName === "subagent") {
+        const refusal = checkSubagentLaunch(event.input, latestRuntime);
+        if (refusal) return { block: true, reason: refusal };
+      }
       if (
         latestRuntime?.effective.advisorLaunch === "role" &&
         event.toolName === "subagent" &&

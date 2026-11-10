@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- Launch check. While delegation is active, a `subagent` call is refused before it launches when a
+  child has no model, a model that is not its role's, a missing or disallowed thinking level, or an
+  Advisor profile with another model. Parallel tasks and chain steps are checked one by one, with a
+  top-level model applying to children without one. Workflow scripts, inline or through
+  `options.script`, are refused because their models are not visible. Management actions pass. The
+  refusal lists the accepted launches. The check covers every `subagent` tool call in the session,
+  including ones other skills request, such as council mode's workflow script.
+- The Anthropic auth profile also admits `@gotgenes/pi-anthropic-auth` 3.4.4, which changed only
+  documentation.
+
+### Changed
+
+- The policy's Limits paragraph now describes the launch check instead of saying the extension
+  cannot enforce anything.
+
 ## 0.25.0 - 2026-11-04
 
 ### Added

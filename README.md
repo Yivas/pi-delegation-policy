@@ -128,7 +128,7 @@ for the signals and the retention of the executor and its provider.
 
 ### Provider extension
 
-Each Advisor has an explicit **Anthropic auth 3.4.3** profile option in the native panel: choosing an
+Each Advisor has an explicit **Anthropic auth 3.4.3/3.4.4** profile option in the native panel: choosing an
 `anthropic` model for an Advisor row asks for **Standard** or **Anthropic auth**. It selects
 `pi-delegation-policy.advisor-anthropic-auth`, a separate no-tools profile that preserves the installed
 provider extension's normal configuration, startup hook and account diagnostic command. It does not

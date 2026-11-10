@@ -264,14 +264,14 @@ for the signals and the retention of the executor and its provider.
 
 The default profile remains `pi-delegation-policy.advisor`, with no configured tools or extensions.
 Choosing an `anthropic` model in an **Advisor** row asks for the profile: **Standard** or an
-explicit **Anthropic auth 3.4.3** opt-in. Escape keeps the profile that entry already had. The opt-in
+explicit **Anthropic auth 3.4.3/3.4.4** opt-in. Escape keeps the profile that entry already had. The opt-in
 selects the separate package profile `pi-delegation-policy.advisor-anthropic-auth` in both role and
 tool mode. The model stays unchanged; role launches remain background. In configuration this is
 `providerExtension: "anthropic-auth"` on that Advisor entry, available in schema 10. Absence means
 the standard profile. Only provider `anthropic` is supported; an incompatible selection is an
 Advisor error, never a fallback to the standard profile or another model.
 
-This option runs the installed `@gotgenes/pi-anthropic-auth` **3.4.3** extension as trusted host
+This option runs the installed `@gotgenes/pi-anthropic-auth` **3.4.3** or **3.4.4** extension as trusted host
 code. Its normal global/project configuration, startup hook, provider aliases and
 `/anthropic-auth:status` command are retained. That command may query account information when
 explicitly invoked; initialization and availability checks never invoke it. The extension uses

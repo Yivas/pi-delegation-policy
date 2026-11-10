@@ -25,6 +25,26 @@ mode. Default role mode leaves Advisor launches to the main agent. Neither repla
 backends, delegation, or Pi's main model or thinking. There is no network telemetry or direct network
 client; the executor performs model calls. A content-free local log is described below.
 
+### Launch check
+
+From 0.26.0, while delegation is active, the extension refuses a `subagent` call before anything
+launches when a child has no model, a model that is not the exact model of an enabled role, no
+thinking level or one outside the role's policy or the model's support, or an Advisor profile with
+a model that is not that Advisor's. Parallel tasks and chain steps are checked one by one, and one
+invalid child refuses the whole call; a top-level `model` applies to children that state none.
+Workflow scripts, inline, by path, by name or through `options.script`, are refused because their
+models live in code the extension cannot read: launch one child, use `tasks` or `chain`, or
+`workflow: "parallel"` with every model stated. Calls with `action` are management or control and
+pass; `resume` keeps the child's original model. With delegation off and Advisor on, only Advisor
+profile launches are checked, and scripts are not.
+
+The refusal lists the accepted launches. The check applies to every `subagent` tool call in the
+session, including ones other skills request: council mode, which uses a workflow script, is refused
+while delegation is active. Slash commands, RPC and schedules created earlier do not pass through
+this tool call and are not checked. The check sees only the call: it cannot decide whether work
+should have been delegated, and an invalid delegation configuration refuses every new launch until
+it is fixed.
+
 ## Configuration change notice
 
 From `0.22.0`, an effective configuration change can add an ephemeral notice to the next user turn's
@@ -132,7 +152,7 @@ Local timeouts and cancellation do not cap external generation, retries or cost.
 ### Optional provider extension
 
 The separate `pi-delegation-policy.advisor-anthropic-auth` profile can load the exact managed-user
-`@gotgenes/pi-anthropic-auth` 3.4.3 installation after a per-Advisor opt-in. It preserves that
+`@gotgenes/pi-anthropic-auth` 3.4.3 or 3.4.4 installation after a per-Advisor opt-in. It preserves that
 extension's normal configuration, startup hook, provider aliases and account diagnostic command;
 trusted host code can access its normal authentication and files even though the model has no tools.
 The diagnostic can query account information only when explicitly invoked and is never run by

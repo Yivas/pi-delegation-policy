@@ -715,7 +715,10 @@ test("each advisor validates independently and role mode groups every valid advi
       if (available.length === 2) {
         assert.match(payload.instructions, /Advisor 1 \(optional\)/);
         assert.match(payload.instructions, /Advisor 2 \(optional\)/);
-        assert.match(payload.instructions, /runs\.all or several tasks in a single call/);
+        assert.match(
+          payload.instructions,
+          /workflow parallel with args\.tasks, one task per advisor/,
+        );
         assert.match(payload.instructions, /agreement is not proof/);
       } else if (available.length === 1) {
         assert.match(payload.instructions, /example\/first/);

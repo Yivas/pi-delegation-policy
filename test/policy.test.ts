@@ -2824,6 +2824,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/context-shunt.ts",
     "src/delegate-panel.ts",
     "src/index.ts",
+    "src/launch-guard.ts",
     "src/prompt.ts",
     "src/provider-admissions.ts",
     "src/provider-package.ts",
@@ -3513,8 +3514,9 @@ test("generated guidance states obligations, conditions, and exceptions in a fix
     /1\. Decide under the active intensity whether this work should be delegated/,
   );
 
-  // The block must stay honest: it states obligations but cannot enforce them.
-  assert.match(policy, /The extension cannot enforce\s+them at runtime/);
+  // The block must stay honest: it refuses only what a call states and cannot judge delegation.
+  assert.match(policy, /refuses a\s+subagent call before it launches/);
+  assert.match(policy, /cannot judge\s+whether work should be delegated/);
   assert.doesNotMatch(policy, /will be enforced|guarantees delegation/);
 });
 
@@ -3534,7 +3536,9 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // of the literal policy text so request-local updates can identify only this extension's section.
   // They were regenerated for the workflow disclosure paragraph, which adds text to the active
   // blocks only; the consultation-only block is unchanged. Front 34 regenerated them for the launch
-  // requirement that asks for background launches and grouped simultaneous children.
+  // requirement that asks for background launches and grouped simultaneous children. Front 42
+  // regenerated them for the Limits paragraph: the extension now refuses invalid subagent calls, so
+  // the sentence that denied any runtime enforcement was replaced; obligations are unchanged.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3543,8 +3547,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "dd227984666186a2529a5e69898c002d6c4c32d2e4a489655cad36f94124f32e",
-    aggressive: "af8c9099486fe504bf83a1e46cc20bea8260694112b5d725e3b5aa315132316e",
+    normal: "17b6c52e77fcc0e30c6bc9c67524743bf52b154e788635e3e184024a5df68c0b",
+    aggressive: "f1c36180914dd8da1215423dc53596a399625aef58750f6e82f00e234407268e",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
