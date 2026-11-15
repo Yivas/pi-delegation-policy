@@ -32,6 +32,32 @@ const LAUNCH_CARRIERS = ["tasks", "chain"] as const;
 type Child = { agent?: unknown; model?: unknown };
 type Role = ModelRole | "uiDesign";
 
+/** Closed causes a launch is refused for; the local log records the code, never the message. */
+export type LaunchRefusalCode =
+  | "control-with-children"
+  | "invalid-config"
+  | "workflow-script"
+  | "missing-children"
+  | "invalid-child"
+  | "missing-model"
+  | "wrong-model"
+  | "missing-thinking"
+  | "thinking-unsupported"
+  | "thinking-outside-policy"
+  | "advisor-mismatch"
+  | "advisor-off";
+/** The role a child executes, or `unknown` when its model is not an enabled role's. */
+export type LaunchChildRole = Role | "advisor" | "unknown";
+type Refusal = { code: LaunchRefusalCode; message: string };
+/** What one subagent call states: whether it launches, its refusal, and one role code per child. */
+export type SubagentLaunchCheck = {
+  /** False for a control or management action, which names a target and launches no child. */
+  launch: boolean;
+  refusal: Refusal | undefined;
+  children: readonly LaunchChildRole[];
+};
+type StatedChildren = { entries: unknown[]; shared: string | undefined };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -98,11 +124,22 @@ function checkThinking(
   level: ThinkingLevelName | undefined,
   supported: readonly string[] | undefined,
   policy: ThinkingPolicy | undefined,
-): string | undefined {
-  if (!level) return "it has no thinking level; append :LEVEL to the model";
+): Refusal | undefined {
+  if (!level)
+    return {
+      code: "missing-thinking",
+      message: "it has no thinking level; append :LEVEL to the model",
+    };
   if (supported && !supported.includes(level))
-    return `the model does not support thinking "${level}"`;
-  if (!inPolicy(level, policy)) return `thinking "${level}" is outside the role policy`;
+    return {
+      code: "thinking-unsupported",
+      message: `the model does not support thinking "${level}"`,
+    };
+  if (!inPolicy(level, policy))
+    return {
+      code: "thinking-outside-policy",
+      message: `thinking "${level}" is outside the role policy`,
+    };
   return undefined;
 }
 
@@ -111,15 +148,21 @@ function checkAdvisorChild(
   agent: string,
   base: string,
   level?: ThinkingLevelName,
-): string | undefined {
+): Refusal | undefined {
   const match = validAdvisors(state).find(
     ({ setting }) =>
       reference(setting) === base && advisorAgentName(setting, state.admissions) === agent,
   );
   if (!isAdvisorEnabled(state.effective))
-    return `the Advisor role is off, so agent "${agent}" cannot launch`;
+    return {
+      code: "advisor-off",
+      message: `the Advisor role is off, so agent "${agent}" cannot launch`,
+    };
   if (!match)
-    return `agent "${agent}" with model "${base}" is not a configured Advisor; each Advisor uses its exact model with its own profile`;
+    return {
+      code: "advisor-mismatch",
+      message: `agent "${agent}" with model "${base}" is not a configured Advisor; each Advisor uses its exact model with its own profile`,
+    };
   return checkThinking(level, getSupportedThinkingLevels(match.model), undefined);
 }
 
@@ -127,47 +170,111 @@ function checkOrdinaryChild(
   state: RuntimeState,
   base: string,
   level?: ThinkingLevelName,
-): string | undefined {
+): Refusal | undefined {
   const candidates = enabledRoles(state).filter(
     (role) => reference(roleSetting(state, role)) === base,
   );
   if (!candidates.length) {
     const advisor = validAdvisors(state).some(({ setting }) => reference(setting) === base);
-    return advisor
-      ? `model "${base}" belongs only to an Advisor; Advisors launch with their own profile and never execute work`
-      : `model "${base}" is not the model of any enabled role (use the exact provider/model form)`;
+    return {
+      code: "wrong-model",
+      message: advisor
+        ? `model "${base}" belongs only to an Advisor; Advisors launch with their own profile and never execute work`
+        : `model "${base}" is not the model of any enabled role (use the exact provider/model form)`,
+    };
   }
-  // A role passes when its model supports the level and its policy allows it.
-  const failures = candidates.map((role) => {
+  // A role passes when its model supports the level and its policy allows it, so the level is
+  // refused only when every role sharing the model rejects it.
+  const failures = candidates.flatMap((role) => {
     const status = state.modelStatuses.get(role);
     const supported =
       status?.kind === "available" ? getSupportedThinkingLevels(status.model) : undefined;
     const why = checkThinking(level, supported, state.effective.thinking[role]);
-    return why && `${ROLE_LABELS[role]}: ${why}`;
+    return why ? [{ code: why.code, message: `${ROLE_LABELS[role]}: ${why.message}` }] : [];
   });
-  return failures.every(Boolean) ? failures.join("; ") : undefined;
+  if (failures.length !== candidates.length) return undefined;
+  // The code names the first failing role; the message lists every failure.
+  return {
+    code: failures[0].code,
+    message: failures.map((failure) => failure.message).join("; "),
+  };
+}
+
+/** The children a call states, or undefined when a parallel workflow states none. */
+export function statedChildren(input: Record<string, unknown>): StatedChildren | undefined {
+  const shared = typeof input.model === "string" ? input.model : undefined;
+  if (input.workflow === "parallel") {
+    const tasks = isRecord(input.args) ? input.args.tasks : undefined;
+    return Array.isArray(tasks) && tasks.length ? { entries: tasks, shared } : undefined;
+  }
+  // A chain step is one child or a parallel group; every model is stated in the call.
+  if (Array.isArray(input.chain))
+    return {
+      entries: input.chain.flatMap((step) =>
+        isRecord(step) && Array.isArray(step.parallel) ? step.parallel : [step],
+      ),
+      shared,
+    };
+  if (Array.isArray(input.tasks)) return { entries: input.tasks, shared };
+  return { entries: [input], shared };
+}
+
+/** One role code per child, read from the model that child states. */
+function childRoles(state: RuntimeState, stated: StatedChildren): LaunchChildRole[] {
+  return stated.entries.map((entry) => {
+    if (!isRecord(entry)) return "unknown";
+    const child: Child =
+      entry.model === undefined && stated.shared ? { ...entry, model: stated.shared } : entry;
+    if (ADVISOR_AGENTS.has(typeof child.agent === "string" ? child.agent : "")) return "advisor";
+    if (typeof child.model !== "string" || !child.model.trim()) return "unknown";
+    const { base } = splitModel(child.model.trim());
+    const role = enabledRoles(state).find(
+      (candidate) => reference(roleSetting(state, candidate)) === base,
+    );
+    return role ?? "unknown";
+  });
 }
 
 /**
- * Refuses a `subagent` call that does not follow the active policy, before anything launches.
- * It sees only what the call states: the decision to delegate, and launches made inside a
- * workflow script, stay with the main agent. Returns the refusal reason, or undefined to allow.
+ * Checks a `subagent` call against the active policy, before anything launches. It sees only what
+ * the call states: the decision to delegate, and launches made inside a workflow script, stay with
+ * the main agent. The refusal carries a closed code and the children carry role codes, so the
+ * content-free log can record both without reading a task, a path or a message.
  */
-export function checkSubagentLaunch(
+export function inspectSubagentLaunch(
   input: unknown,
   state: RuntimeState | undefined,
-): string | undefined {
-  if (!state || !isRecord(input)) return undefined;
+): SubagentLaunchCheck {
+  const allowed = (
+    children: readonly LaunchChildRole[] = [],
+    launch = true,
+  ): SubagentLaunchCheck => ({ launch, refusal: undefined, children });
+  if (!state || !isRecord(input)) return allowed();
   const delegation = state.effective.intensity !== "off";
   const advisor = isAdvisorEnabled(state.effective);
-  if (!delegation && !advisor) return undefined;
-  const refuse = (why: string) =>
-    `Launch refused by the delegation policy: ${why}. Nothing was launched.\n${allowedLines(state, delegation)}`;
+  if (!delegation && !advisor) return allowed();
+  const refuse = (
+    code: LaunchRefusalCode,
+    why: string,
+    children: readonly LaunchChildRole[] = [],
+  ): SubagentLaunchCheck => ({
+    launch: true,
+    refusal: {
+      code,
+      message: `Launch refused by the delegation policy: ${why}. Nothing was launched.\n${allowedLines(state, delegation)}`,
+    },
+    children,
+  });
 
   if (typeof input.action === "string") {
-    return delegation && LAUNCH_CARRIERS.some((key) => input[key] !== undefined)
-      ? refuse("a control action cannot also carry children")
-      : undefined;
+    if (!delegation || !LAUNCH_CARRIERS.some((key) => input[key] !== undefined))
+      return allowed([], false);
+    const stated = statedChildren(input);
+    return refuse(
+      "control-with-children",
+      "a control action cannot also carry children",
+      stated ? childRoles(state, stated) : [],
+    );
   }
   // An invalid delegation configuration refuses ordinary children only: a valid Advisor keeps
   // working, as the consultation-only policy block still asks for it.
@@ -180,47 +287,54 @@ export function checkSubagentLaunch(
   if (script)
     return delegation
       ? refuse(
+          "workflow-script",
           'workflow scripts hide each child\'s model; launch one child, use tasks or chain, or workflow "parallel" with every model stated',
         )
-      : undefined;
+      : allowed();
 
-  let children: unknown[];
-  if (input.workflow === "parallel") {
-    const tasks = isRecord(input.args) ? input.args.tasks : undefined;
-    if (!Array.isArray(tasks) || !tasks.length)
-      return refuse("a parallel workflow needs args.tasks");
-    children = tasks;
-  } else if (Array.isArray(input.chain)) {
-    // A chain step is one child or a parallel group; every model is stated in the call.
-    children = input.chain.flatMap((step) =>
-      isRecord(step) && Array.isArray(step.parallel) ? step.parallel : [step],
-    );
-  } else if (Array.isArray(input.tasks)) children = input.tasks;
-  else children = [input];
-  // The host applies a top-level model to every child that states none.
-  const shared = typeof input.model === "string" ? input.model : undefined;
+  const stated = statedChildren(input);
+  if (!stated) return refuse("missing-children", "a parallel workflow needs args.tasks");
+  const children = childRoles(state, stated);
 
   // The whole call is checked first: no partial launch.
-  for (const [index, entry] of children.entries()) {
-    if (!isRecord(entry)) return refuse(`child ${index + 1} is not an object`);
-    const child: Child = entry.model === undefined && shared ? { ...entry, model: shared } : entry;
-    const label = children.length > 1 ? `child ${index + 1}: ` : "";
+  for (const [index, entry] of stated.entries.entries()) {
+    if (!isRecord(entry))
+      return refuse("invalid-child", `child ${index + 1} is not an object`, children);
+    const child: Child =
+      entry.model === undefined && stated.shared ? { ...entry, model: stated.shared } : entry;
+    const label = stated.entries.length > 1 ? `child ${index + 1}: ` : "";
     const agent = typeof child.agent === "string" ? child.agent : "";
     const isAdvisorAgent = ADVISOR_AGENTS.has(agent);
     if (!isAdvisorAgent && !delegation) continue;
     if (!isAdvisorAgent && invalid)
       return refuse(
+        "invalid-config",
         `${label}the delegation configuration is invalid; fix it in /delegate before launching`,
+        children,
       );
     if (typeof child.model !== "string" || !child.model.trim())
       return refuse(
+        "missing-model",
         `${label}no model was given; state the exact role model, never an inherited default`,
+        children,
       );
     const { base, level } = splitModel(child.model.trim());
     const why = isAdvisorAgent
       ? checkAdvisorChild(state, agent, base, level)
       : checkOrdinaryChild(state, base, level);
-    if (why) return refuse(`${label}${why}`);
+    if (why) return refuse(why.code, `${label}${why.message}`, children);
   }
-  return undefined;
+  return allowed(children);
+}
+
+/**
+ * Refuses a `subagent` call that does not follow the active policy, before anything launches.
+ * Returns the refusal reason, or undefined to allow; `inspectSubagentLaunch` adds the code and the
+ * role of each child.
+ */
+export function checkSubagentLaunch(
+  input: unknown,
+  state: RuntimeState | undefined,
+): string | undefined {
+  return inspectSubagentLaunch(input, state).refusal?.message;
 }

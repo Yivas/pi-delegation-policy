@@ -380,12 +380,20 @@ transaction. All three previous files must be readable or absent. On failure, re
 our committed prefix, never a detected foreign write; otherwise report partial save and reload disk.
 Checks are not locks. A crash can leave Advisor off or Advisor 1 only in role mode until repaired.
 
-Content-free events go to `~/.pi/agent/delegation-policy.events.jsonl` (or Pi's configured agent dir):
-time, extension version, SHA-256 policy-block hash when it changes, intensity, Advisor modes, context
-and count; consultation model IDs, status, context and duration. Role observations are attempts, not
-proof of completion; duration zero means unknown. Questions, briefs, answers, conversations, project
-paths and raw errors are excluded. Writes are serialized, rotate at 256 KiB to one `.1` backup, and
-failures never break a request. Shutdown drains queued writes for at most five seconds. No network telemetry is sent; model identifiers can still be sensitive.
+Content-free events go to `~/.pi/agent/delegation-policy.events.jsonl` (or Pi's configured agent dir)
+while a policy block is active: time, extension version, SHA-256 policy-block hash when it changes,
+intensity, Advisor modes, context and count; consultation model IDs, status, context and duration;
+one `task` summary per main-agent task from a user prompt to the next settle (duration, tool calls,
+edits, the position of the first edit and of the first consult, whether the consult came before the
+first edit, subagent launches and refusals); one `launch` record per subagent call that launches
+children (allowed or refused, a closed refusal code, child count and one role code per child).
+Consultation, `task` and `launch` records repeat the policy hash they ran under. `advisorConsults`
+counts attempts: a `consult_advisor` call counts whether or not it reached a model, and its real
+outcome is the `consultation` event. Role observations are attempts, not proof of completion;
+duration zero means unknown. Questions, briefs, answers, conversations, project paths and raw errors
+are excluded. Writes are serialized, rotate at 256 KiB to one `.1` backup, and failures never break a
+request. Shutdown drains queued writes for at most five seconds. No network telemetry is sent; model
+identifiers can still be sensitive.
 
 ### Downgrade
 

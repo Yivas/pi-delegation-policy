@@ -134,6 +134,34 @@ test("valid launches pass and every policy violation is refused before launching
   }
 });
 
+test("a thinking level passes while any role sharing the model accepts it", () => {
+  const shared = state({
+    large: small,
+    thinking: { small: { level: "high" }, large: { level: "low" } },
+  });
+  const smallStatus = shared.modelStatuses.get("small");
+  assert.ok(smallStatus);
+  shared.modelStatuses.set("large", smallStatus);
+  // Small allows only `high` and Large only `low`, so each level passes through one of them.
+  for (const level of ["high", "low"])
+    assert.equal(
+      checkSubagentLaunch(
+        { agent: "worker", task: "t", model: `example/small-model:${level}` },
+        shared,
+      ),
+      undefined,
+      level,
+    );
+  // A level both roles reject is refused, and the message names every failing role.
+  const refused =
+    checkSubagentLaunch(
+      { agent: "worker", task: "t", model: "example/small-model:medium" },
+      shared,
+    ) ?? "";
+  assert.match(refused, /Small: thinking "medium" is outside the role policy/);
+  assert.match(refused, /Large: thinking "medium" is outside the role policy/);
+});
+
 test("delegation off checks only Advisor launches, and both axes off check nothing", () => {
   const advisorOnly = state({ intensity: "off" });
   assert.equal(checkSubagentLaunch({ agent: "worker", task: "t" }, advisorOnly), undefined);

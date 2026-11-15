@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Two content-free events in the local log. A `task` record summarises one main-agent task, from the
+  user prompt to the next settle: duration, tool calls, edits, the position of the first edit and of
+  the first consult, whether the consult came before the first edit, and subagent launches and
+  refusals. A `launch` record covers one `subagent` call that launches children: allowed or refused,
+  a closed refusal code, child count and one role code per child. Control actions such as
+  `{action:"status"}` record nothing, and both records repeat the policy hash they ran under.
+
 ## 0.26.0 - 2026-11-10
 
 ### Added

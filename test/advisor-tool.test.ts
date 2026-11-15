@@ -309,6 +309,11 @@ async function until(condition: () => boolean) {
     await new Promise((resolveTick) => setTimeout(resolveTick, 5));
   }
 }
+const logEvents = async (path: string): Promise<Payload[]> =>
+  (await readFile(path, "utf8"))
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as Payload);
 
 // Public boundary: schema parsing/effective state, saved files read by released parsers, and the
 // registered tool/hooks against a synthetic delegation event host. No provider or credentials.
@@ -1370,6 +1375,281 @@ test("logs rotate, deduplicate policy hashes, contain metadata only and tolerate
     });
     broken.consultation("tool", []);
     await assert.doesNotReject(broken.flush());
+  } finally {
+    await run.close();
+  }
+});
+
+test("a task logs whether the first Advisor consult came before its first edit", async () => {
+  const run = await harness({ ...base, advisorLaunch: "role" });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    const call = (toolName: string, input: Payload = {}) =>
+      run.hook("tool_call", { toolName, input });
+    const consult = () =>
+      call("subagent", { agent: ADVISOR_AGENT_NAME, model: "example/first:low", task: sentinel });
+    const edit = () =>
+      call("edit", { path: "/synthetic/file", oldText: sentinel, newText: sentinel });
+    await run.hook("input", { source: "user" });
+    await call("read", { path: "/synthetic/file" });
+    // The shape the policy asks for: one parallel call, one task per Advisor.
+    await call("subagent", {
+      workflow: "parallel",
+      args: { tasks: [{ agent: ADVISOR_AGENT_NAME, model: "example/first:low", task: sentinel }] },
+    });
+    await edit();
+    await run.hook("agent_settled");
+    await run.hook("input", { source: "user" });
+    await edit();
+    await consult();
+    await run.hook("agent_settled");
+    // An extension prompt opens no task, and a settle without one writes nothing.
+    await run.hook("input", { source: "extension" });
+    await run.hook("agent_settled");
+    await run.log.flush();
+    const text = await readFile(run.logPath, "utf8");
+    assert.doesNotMatch(text, new RegExp(sentinel));
+    assert.doesNotMatch(text, /synthetic/);
+    const tasks = text
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.event === "task");
+    assert.equal(tasks.length, 2);
+    assert.deepEqual(Object.keys(tasks[0]).sort(), [
+      "advisorConsults",
+      "consultBeforeFirstEdit",
+      "durationMs",
+      "edits",
+      "event",
+      "firstConsultIndex",
+      "firstEditIndex",
+      "launchRefusals",
+      "policyHash",
+      "subagentLaunches",
+      "time",
+      "toolCalls",
+      "version",
+    ]);
+    // The task carries the hash of the policy block it ran under, as a consultation does.
+    assert.match(tasks[0].policyHash, /^[0-9a-f]{64}$/);
+    assert.deepEqual(
+      {
+        toolCalls: tasks[0].toolCalls,
+        edits: tasks[0].edits,
+        firstEditIndex: tasks[0].firstEditIndex,
+        advisorConsults: tasks[0].advisorConsults,
+        firstConsultIndex: tasks[0].firstConsultIndex,
+        consultBeforeFirstEdit: tasks[0].consultBeforeFirstEdit,
+        subagentLaunches: tasks[0].subagentLaunches,
+        launchRefusals: tasks[0].launchRefusals,
+      },
+      {
+        toolCalls: 3,
+        edits: 1,
+        firstEditIndex: 2,
+        advisorConsults: 1,
+        firstConsultIndex: 1,
+        consultBeforeFirstEdit: true,
+        subagentLaunches: 0,
+        launchRefusals: 0,
+      },
+    );
+    assert.equal(typeof tasks[0].durationMs, "number");
+    assert.ok(tasks[0].durationMs >= 0);
+    assert.equal(tasks[1].firstEditIndex, 0);
+    assert.equal(tasks[1].firstConsultIndex, 1);
+    assert.equal(tasks[1].consultBeforeFirstEdit, false);
+  } finally {
+    await run.close();
+  }
+});
+
+test("launch events record an outcome, a closed code and role codes only", async () => {
+  const run = await harness({
+    ...base,
+    intensity: "normal",
+    small: first,
+    medium: null,
+    large: null,
+    advisors: [second],
+  });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    const launch = (input: Payload) => run.hook("tool_call", { toolName: "subagent", input });
+    assert.equal(
+      await launch({ agent: "worker", model: "example/first:low", task: sentinel }),
+      undefined,
+    );
+    assert.equal(
+      await launch({ agent: ADVISOR_AGENT_NAME, model: "example/second:low", task: sentinel }),
+      undefined,
+    );
+    const refused = (await launch({ agent: "worker", model: "example/first", task: sentinel })) as {
+      block: boolean;
+      reason: string;
+    };
+    assert.equal(refused.block, true);
+    assert.match(refused.reason, /no thinking level/);
+    await run.log.flush();
+    const text = await readFile(run.logPath, "utf8");
+    assert.doesNotMatch(text, new RegExp(sentinel));
+    const launches = text
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.event === "launch");
+    assert.equal(launches.length, 3);
+    assert.deepEqual(Object.keys(launches[0]).sort(), [
+      "children",
+      "event",
+      "outcome",
+      "policyHash",
+      "reason",
+      "roles",
+      "time",
+      "version",
+    ]);
+    assert.deepEqual(
+      launches.map((event) => [event.outcome, event.reason, event.children, event.roles]),
+      [
+        ["allowed", null, 1, ["small"]],
+        ["allowed", null, 1, ["advisor"]],
+        ["refused", "missing-thinking", 1, ["small"]],
+      ],
+    );
+  } finally {
+    await run.close();
+  }
+});
+
+test("a refused Advisor launch counts as a refusal, never as a consult", async () => {
+  const run = await harness({ ...base, advisorLaunch: "role" });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    await run.hook("input", { source: "user" });
+    const refused = (await run.hook("tool_call", {
+      toolName: "subagent",
+      input: { agent: ADVISOR_AGENT_NAME, model: "example/first", task: sentinel },
+    })) as { block: boolean; reason: string };
+    assert.equal(refused.block, true);
+    assert.match(refused.reason, /no thinking level/);
+    await run.hook("agent_settled");
+    await run.log.flush();
+    const events = await logEvents(run.logPath);
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(sentinel));
+    const task = events.find((event) => event.event === "task");
+    assert.deepEqual(
+      {
+        advisorConsults: task?.advisorConsults,
+        firstConsultIndex: task?.firstConsultIndex,
+        subagentLaunches: task?.subagentLaunches,
+        launchRefusals: task?.launchRefusals,
+      },
+      { advisorConsults: 0, firstConsultIndex: null, subagentLaunches: 0, launchRefusals: 1 },
+    );
+  } finally {
+    await run.close();
+  }
+});
+
+test("a control action is neither counted as a launch nor recorded", async () => {
+  const run = await harness({
+    ...base,
+    intensity: "normal",
+    small: first,
+    medium: null,
+    large: null,
+  });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    await run.hook("input", { source: "user" });
+    assert.equal(
+      await run.hook("tool_call", { toolName: "subagent", input: { action: "status", id: "run" } }),
+      undefined,
+    );
+    assert.equal(
+      await run.hook("tool_call", {
+        toolName: "subagent",
+        input: { agent: "worker", model: "example/first:low", task: sentinel },
+      }),
+      undefined,
+    );
+    await run.hook("agent_settled");
+    await run.log.flush();
+    const events = await logEvents(run.logPath);
+    const launches = events.filter((event) => event.event === "launch");
+    assert.equal(launches.length, 1);
+    assert.deepEqual(launches[0]?.roles, ["small"]);
+    const task = events.find((event) => event.event === "task");
+    assert.equal(task?.toolCalls, 2);
+    assert.equal(task?.subagentLaunches, 1);
+    assert.equal(task?.launchRefusals, 0);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a steer keeps the task already open instead of restarting it", async () => {
+  const run = await harness({ ...base, advisorLaunch: "role" });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    await run.hook("input", { source: "user" });
+    await run.hook("tool_call", { toolName: "read", input: { path: "/synthetic/file" } });
+    // The host emits `input` for a steer before the message it queues.
+    await run.hook("input", { source: "user" });
+    await run.hook("tool_call", { toolName: "read", input: { path: "/synthetic/file" } });
+    await run.hook("agent_settled");
+    await run.log.flush();
+    const tasks = (await logEvents(run.logPath)).filter((event) => event.event === "task");
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]?.toolCalls, 2);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a branch move drops the task that was in flight", async () => {
+  const run = await harness({ ...base, advisorLaunch: "role" });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    await run.hook("input", { source: "user" });
+    await run.hook("tool_call", { toolName: "read", input: { path: "/synthetic/file" } });
+    await run.hook("session_tree");
+    await run.hook("agent_settled");
+    await run.log.flush();
+    const events = await logEvents(run.logPath);
+    assert.equal(events.filter((event) => event.event === "task").length, 0);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a shutdown mid-task writes no task", async () => {
+  const run = await harness({ ...base, advisorLaunch: "role" });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    await run.hook("input", { source: "user" });
+    await run.hook("tool_call", { toolName: "read", input: { path: "/synthetic/file" } });
+    await run.hook("session_shutdown");
+    await run.hook("agent_settled");
+    await run.log.flush();
+    const events = await logEvents(run.logPath);
+    assert.equal(events.filter((event) => event.event === "task").length, 0);
   } finally {
     await run.close();
   }

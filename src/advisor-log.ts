@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getGlobalConfigPath } from "./config.ts";
+import type { LaunchChildRole, LaunchRefusalCode } from "./launch-guard.ts";
 import type { AdvisorContext } from "./prompt.ts";
 import type { AdvisorLaunch, AdvisorMode, Intensity } from "./types.ts";
 
@@ -27,6 +28,26 @@ export type ConsultationAttempt = {
   status: ConsultationStatus;
   context: AdvisorContext | "unknown";
   durationMs: number;
+};
+/** Counters for one main-agent task, from its user prompt to the next settle. */
+export type TaskSummary = {
+  durationMs: number;
+  toolCalls: number;
+  edits: number;
+  firstEditIndex: number | null;
+  /** Attempts: a `consult_advisor` call counts even when it reached no model. */
+  advisorConsults: number;
+  firstConsultIndex: number | null;
+  consultBeforeFirstEdit: boolean;
+  subagentLaunches: number;
+  launchRefusals: number;
+};
+export type LaunchOutcome = "allowed" | "refused";
+export type LaunchRecord = {
+  outcome: LaunchOutcome;
+  /** The closed refusal code, or null when the call was allowed. */
+  reason: LaunchRefusalCode | null;
+  children: readonly LaunchChildRole[];
 };
 
 /** An allowlisted, content-free local record. No executor payloads or errors enter this writer. */
@@ -89,6 +110,39 @@ export class AdvisorLog {
         context: attempt.context,
         durationMs: Math.max(0, Math.round(attempt.durationMs)),
       })),
+    });
+  }
+
+  /** One summary per main-agent task: counts and positions only, never a prompt, task or path. */
+  task(summary: TaskSummary): void {
+    if (!this.lastHash) return;
+    this.enqueue({
+      event: "task",
+      version: VERSION,
+      policyHash: this.lastHash,
+      durationMs: Math.max(0, Math.round(summary.durationMs)),
+      toolCalls: summary.toolCalls,
+      edits: summary.edits,
+      firstEditIndex: summary.firstEditIndex,
+      advisorConsults: summary.advisorConsults,
+      firstConsultIndex: summary.firstConsultIndex,
+      consultBeforeFirstEdit: summary.consultBeforeFirstEdit,
+      subagentLaunches: summary.subagentLaunches,
+      launchRefusals: summary.launchRefusals,
+    });
+  }
+
+  /** One record per subagent call the guard checked: its outcome, a closed code and role codes. */
+  launch(record: LaunchRecord): void {
+    if (!this.lastHash) return;
+    this.enqueue({
+      event: "launch",
+      version: VERSION,
+      policyHash: this.lastHash,
+      outcome: record.outcome,
+      reason: record.reason,
+      children: record.children.length,
+      roles: record.children,
     });
   }
 

@@ -176,14 +176,22 @@ effects, and the admission applies to every session.
 
 ### Local content-free log
 
-Records are written only while a policy block is active; both delegation and Advisor off produce no events.
-Content-free events go to `~/.pi/agent/delegation-policy.events.jsonl` (or Pi's configured agent dir):
-time, extension version, SHA-256 policy-block hash when it changes, intensity, Advisor modes, context
-and count; consultation model IDs, status, context and duration. Role observations are attempts, not
-proof of completion; duration zero means unknown. Questions, briefs, answers, conversations, project
-paths and raw errors are excluded. Writes are serialized, rotate at 256 KiB to one `.1` backup, and
-failures never break a request. Shutdown drains queued writes for at most five seconds, then drops
-remaining work. An in-flight filesystem operation may finish later, but starts no further operation.
+Records are written only while a policy block is active; both delegation and Advisor off produce no
+events, except one written in the short window before the next request notices that the policy is
+off. Content-free events go to `~/.pi/agent/delegation-policy.events.jsonl` (or Pi's configured agent
+dir): time, extension version, SHA-256 policy-block hash when it changes, intensity, Advisor modes,
+context and count; consultation model IDs, status, context and duration; one `task` summary per
+main-agent task from a user prompt to the next settle (duration, tool calls, edits, the position of
+the first edit and of the first consult, whether the consult came before the first edit, subagent
+launches and refusals); one `launch` record per subagent call that launches children (allowed or
+refused, a closed refusal code, child count and one role code per child). Consultation, `task` and
+`launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a
+`consult_advisor` call counts whether or not it reached a model, and its real outcome is the
+`consultation` event. Role observations are attempts, not proof of completion; duration zero means
+unknown. Questions, briefs, answers, conversations, project paths and raw errors are excluded. Writes
+are serialized, rotate at 256 KiB to one `.1` backup, and failures never break a request. Shutdown
+drains queued writes for at most five seconds, then drops remaining work. An in-flight filesystem
+operation may finish later, but starts no further operation.
 No network telemetry is sent; model identifiers can still be sensitive.
 
 The writer serializes within one process, not across processes; concurrent sessions share no lock.

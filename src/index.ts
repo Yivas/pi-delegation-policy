@@ -5,6 +5,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
   InputSource,
+  ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -22,8 +23,8 @@ import {
   advisorProfile,
 } from "./advisor-executor.ts";
 import { admissionFor } from "./provider-admissions.ts";
-import { checkSubagentLaunch } from "./launch-guard.ts";
-import { AdvisorLog } from "./advisor-log.ts";
+import { inspectSubagentLaunch, statedChildren, type SubagentLaunchCheck } from "./launch-guard.ts";
+import { AdvisorLog, type TaskSummary } from "./advisor-log.ts";
 import {
   createConfigNotice,
   noticeLines,
@@ -215,6 +216,46 @@ function endOutcome(messages: AgentEndEvent["messages"]): AgentActivityOutcome |
 }
 function synchronizeContextShunt(shunt: ContextShuntAdapter, state: RuntimeState): void {
   if (isContextShuntDisabled(state)) shunt.clearPending();
+}
+
+/** The children of a subagent call that name a configured Advisor profile. */
+function advisorChildren(
+  state: RuntimeState,
+  input: Record<string, unknown>,
+): Record<string, unknown>[] {
+  const advisors = validAdvisors(state);
+  // Same reading as the launch check, so parallel workflows, chains and a shared top-level model
+  // count: the policy itself asks for one parallel call per consultation.
+  const stated = statedChildren(input);
+  return (stated?.entries ?? []).flatMap((call) => {
+    if (typeof call !== "object" || call === null) return [];
+    const entry = call as Record<string, unknown>;
+    const child =
+      entry.model === undefined && stated?.shared ? { ...entry, model: stated.shared } : entry;
+    return advisors.some(
+      (entry) => child.agent === advisorAgentName(entry.setting, state.admissions),
+    )
+      ? [child]
+      : [];
+  });
+}
+
+/** Counters for one main-agent task: a user prompt to the next settle. */
+type TaskMetrics = Omit<TaskSummary, "durationMs" | "consultBeforeFirstEdit"> & {
+  startedAt: number;
+};
+
+function startTaskMetrics(): TaskMetrics {
+  return {
+    startedAt: Date.now(),
+    toolCalls: 0,
+    edits: 0,
+    firstEditIndex: null,
+    advisorConsults: 0,
+    firstConsultIndex: null,
+    subagentLaunches: 0,
+    launchRefusals: 0,
+  };
 }
 
 type ReaderAuthorization = Readonly<{
@@ -444,6 +485,34 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const invalidateReaderAuthorization = (): void => {
       readerEpoch += 1;
       executor.cancel();
+    };
+    // One task runs from a user prompt to the next settle. It counts calls and positions only:
+    // no tool input, task body or path reaches the log.
+    let taskMetrics: TaskMetrics | undefined;
+    const countTaskToolCall = (
+      event: ToolCallEvent,
+      check: SubagentLaunchCheck | undefined,
+    ): void => {
+      const task = taskMetrics;
+      if (!task) return;
+      const index = task.toolCalls;
+      task.toolCalls += 1;
+      if (event.toolName === "edit" || event.toolName === "write") {
+        task.edits += 1;
+        task.firstEditIndex ??= index;
+      }
+      // A refused launch never consulted, and a control action neither launches nor consults.
+      const consulted =
+        event.toolName === "consult_advisor" ||
+        (check !== undefined &&
+          check.refusal === undefined &&
+          latestRuntime !== undefined &&
+          advisorChildren(latestRuntime, event.input).length > 0);
+      if (consulted) {
+        task.advisorConsults += 1;
+        task.firstConsultIndex ??= index;
+      } else if (check?.refusal) task.launchRefusals += 1;
+      else if (check?.launch) task.subagentLaunches += 1;
     };
     // The notice follows the user's turns, not host turns. `input` reports where the next prompt
     // comes from, `before_agent_start` opens one run per fresh prompt, and the comparison runs on
@@ -934,6 +1003,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorExecutor.rotate();
       shunt.clearPending();
       advisorContext = undefined;
+      // A task that was in flight belongs to the branch the session left.
+      taskMetrics = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
     });
     // The host emits this after every `session_start` handler has run, so a model catalog another
@@ -952,6 +1023,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // earlier prompt instead of skipping an extension one. No public signal can detect that
       // change, so it stays a documented residual.
       inputSource = event.source;
+      // A prompt an extension sends belongs to no user task, so it opens none, and a steer or
+      // follow-up keeps the task already open instead of restarting its counters.
+      if (event.source !== "extension" && taskMetrics === undefined)
+        taskMetrics = startTaskMetrics();
     });
     pi.on("before_agent_start", async () => {
       const source = inputSource;
@@ -1019,6 +1094,24 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       };
     });
     pi.on("agent_settled", async () => {
+      const task = taskMetrics;
+      taskMetrics = undefined;
+      if (task)
+        advisorLog.task({
+          durationMs: Date.now() - task.startedAt,
+          toolCalls: task.toolCalls,
+          edits: task.edits,
+          firstEditIndex: task.firstEditIndex,
+          advisorConsults: task.advisorConsults,
+          firstConsultIndex: task.firstConsultIndex,
+          // Only a task that both consulted and edited can show the consult came first.
+          consultBeforeFirstEdit:
+            task.firstEditIndex !== null &&
+            task.firstConsultIndex !== null &&
+            task.firstConsultIndex < task.firstEditIndex,
+          subagentLaunches: task.subagentLaunches,
+          launchRefusals: task.launchRefusals,
+        });
       // The notice is consumed when the last outcome the run reported was a completed response:
       // `agent_end` reports one outcome per low-level run, and this event marks the end of the whole
       // run, emitted once in the host's `finally` after retries, compaction and queued continuations.
@@ -1043,9 +1136,20 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       shunt.clearConsumed();
     });
     pi.on("tool_call", async (event) => {
-      if (event.toolName === "subagent") {
-        const refusal = checkSubagentLaunch(event.input, latestRuntime);
-        if (refusal) return { block: true, reason: refusal };
+      const check =
+        event.toolName === "subagent"
+          ? inspectSubagentLaunch(event.input, latestRuntime)
+          : undefined;
+      countTaskToolCall(event, check);
+      if (check) {
+        // A control or management action launches nothing, so it records no `launch` event.
+        if (check.launch)
+          advisorLog.launch({
+            outcome: check.refusal ? "refused" : "allowed",
+            reason: check.refusal?.code ?? null,
+            children: check.children,
+          });
+        if (check.refusal) return { block: true, reason: check.refusal.message };
       }
       if (
         latestRuntime?.effective.advisorLaunch === "role" &&
@@ -1057,16 +1161,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             (entry) => `${entry.setting.provider}/${entry.setting.model}`,
           ),
         );
-        const calls = Array.isArray(event.input.tasks) ? event.input.tasks : [event.input];
-        for (const call of calls) {
-          if (
-            !call ||
-            typeof call !== "object" ||
-            !validAdvisors(latestRuntime).some(
-              (entry) => call.agent === advisorAgentName(entry.setting, latestRuntime?.admissions),
-            )
-          )
-            continue;
+        for (const call of advisorChildren(latestRuntime, event.input)) {
           const requested = typeof call.model === "string" ? call.model : "";
           const model = [...allowed].find(
             (id) => requested === id || requested.startsWith(`${id}:`),
@@ -1109,6 +1204,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("session_shutdown", async (_event, ctx) => {
       readerEpoch += 1;
       latestRuntime = undefined;
+      taskMetrics = undefined;
       configBaseline = undefined;
       presentedNotice = undefined;
       runOutcome = undefined;
