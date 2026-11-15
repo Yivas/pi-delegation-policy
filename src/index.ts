@@ -23,7 +23,12 @@ import {
   advisorProfile,
 } from "./advisor-executor.ts";
 import { admissionFor } from "./provider-admissions.ts";
-import { inspectSubagentLaunch, statedChildren, type SubagentLaunchCheck } from "./launch-guard.ts";
+import {
+  inspectSubagentLaunch,
+  statedChildren,
+  type LaunchChildRole,
+  type SubagentLaunchCheck,
+} from "./launch-guard.ts";
 import { AdvisorLog, type TaskSummary } from "./advisor-log.ts";
 import {
   createConfigNotice,
@@ -226,18 +231,20 @@ function advisorChildren(
   const advisors = validAdvisors(state);
   // Same reading as the launch check, so parallel workflows, chains and a shared top-level model
   // count: the policy itself asks for one parallel call per consultation.
-  const stated = statedChildren(input);
-  return (stated?.entries ?? []).flatMap((call) => {
-    if (typeof call !== "object" || call === null) return [];
-    const entry = call as Record<string, unknown>;
-    const child =
-      entry.model === undefined && stated?.shared ? { ...entry, model: stated.shared } : entry;
+  return (statedChildren(input)?.entries ?? []).flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const child = entry as Record<string, unknown>;
     return advisors.some(
-      (entry) => child.agent === advisorAgentName(entry.setting, state.admissions),
+      ({ setting }) => child.agent === advisorAgentName(setting, state.admissions),
     )
       ? [child]
       : [];
   });
+}
+
+/** A call whose children are all Advisors consults, so it never counts as a launch. */
+function launchesOnlyAdvisors(children: readonly LaunchChildRole[]): boolean {
+  return children.length > 0 && children.every((role) => role === "advisor");
 }
 
 /** Counters for one main-agent task: a user prompt to the next settle. */
@@ -501,7 +508,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         task.edits += 1;
         task.firstEditIndex ??= index;
       }
-      // A refused launch never consulted, and a control action neither launches nor consults.
+      // A call that launches only Advisors is a consult, a mixed call is both, and a refused call
+      // never consulted. A control action neither launches nor consults.
       const consulted =
         event.toolName === "consult_advisor" ||
         (check !== undefined &&
@@ -511,8 +519,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       if (consulted) {
         task.advisorConsults += 1;
         task.firstConsultIndex ??= index;
-      } else if (check?.refusal) task.launchRefusals += 1;
-      else if (check?.launch) task.subagentLaunches += 1;
+      }
+      if (check?.refusal) task.launchRefusals += 1;
+      else if (check?.launch && !launchesOnlyAdvisors(check.children)) task.subagentLaunches += 1;
     };
     // The notice follows the user's turns, not host turns. `input` reports where the next prompt
     // comes from, `before_agent_start` opens one run per fresh prompt, and the comparison runs on

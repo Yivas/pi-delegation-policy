@@ -29,7 +29,6 @@ const ADVISOR_AGENTS: ReadonlySet<string> = new Set([
  */
 const LAUNCH_CARRIERS = ["tasks", "chain"] as const;
 
-type Child = { agent?: unknown; model?: unknown };
 type Role = ModelRole | "uiDesign";
 
 /** Closed causes a launch is refused for; the local log records the code, never the message. */
@@ -56,7 +55,8 @@ export type SubagentLaunchCheck = {
   refusal: Refusal | undefined;
   children: readonly LaunchChildRole[];
 };
-type StatedChildren = { entries: unknown[]; shared: string | undefined };
+/** The children a call states, each already carrying the model the host will run. */
+type StatedChildren = { entries: unknown[] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -130,11 +130,15 @@ function checkThinking(
       code: "missing-thinking",
       message: "it has no thinking level; append :LEVEL to the model",
     };
-  if (supported && !supported.includes(level))
+  if (supported && !supported.includes(level)) {
+    const available = supported.length
+      ? `supported levels: ${supported.join(", ")}`
+      : "no level is supported";
     return {
       code: "thinking-unsupported",
-      message: `the model does not support thinking "${level}"`,
+      message: `the model does not support thinking "${level}" (${available})`,
     };
+  }
   if (!inPolicy(level, policy))
     return {
       code: "thinking-outside-policy",
@@ -200,34 +204,38 @@ function checkOrdinaryChild(
   };
 }
 
-/** The children a call states, or undefined when a parallel workflow states none. */
+/**
+ * The children a call states, or undefined when a parallel workflow states none. The host applies a
+ * top-level `model` to every child that states none, so the shared model is resolved here once and
+ * every reader of the call sees the same models.
+ */
 export function statedChildren(input: Record<string, unknown>): StatedChildren | undefined {
   const shared = typeof input.model === "string" ? input.model : undefined;
+  let entries: unknown[];
   if (input.workflow === "parallel") {
     const tasks = isRecord(input.args) ? input.args.tasks : undefined;
-    return Array.isArray(tasks) && tasks.length ? { entries: tasks, shared } : undefined;
-  }
-  // A chain step is one child or a parallel group; every model is stated in the call.
-  if (Array.isArray(input.chain))
-    return {
-      entries: input.chain.flatMap((step) =>
-        isRecord(step) && Array.isArray(step.parallel) ? step.parallel : [step],
-      ),
-      shared,
-    };
-  if (Array.isArray(input.tasks)) return { entries: input.tasks, shared };
-  return { entries: [input], shared };
+    if (!Array.isArray(tasks) || !tasks.length) return undefined;
+    entries = tasks;
+  } else if (Array.isArray(input.chain)) {
+    // A chain step is one child or a parallel group; every model is stated in the call.
+    entries = input.chain.flatMap((step) =>
+      isRecord(step) && Array.isArray(step.parallel) ? step.parallel : [step],
+    );
+  } else entries = Array.isArray(input.tasks) ? input.tasks : [input];
+  return {
+    entries: entries.map((entry) =>
+      shared && isRecord(entry) && entry.model === undefined ? { ...entry, model: shared } : entry,
+    ),
+  };
 }
 
 /** One role code per child, read from the model that child states. */
 function childRoles(state: RuntimeState, stated: StatedChildren): LaunchChildRole[] {
   return stated.entries.map((entry) => {
     if (!isRecord(entry)) return "unknown";
-    const child: Child =
-      entry.model === undefined && stated.shared ? { ...entry, model: stated.shared } : entry;
-    if (ADVISOR_AGENTS.has(typeof child.agent === "string" ? child.agent : "")) return "advisor";
-    if (typeof child.model !== "string" || !child.model.trim()) return "unknown";
-    const { base } = splitModel(child.model.trim());
+    if (ADVISOR_AGENTS.has(typeof entry.agent === "string" ? entry.agent : "")) return "advisor";
+    if (typeof entry.model !== "string" || !entry.model.trim()) return "unknown";
+    const { base } = splitModel(entry.model.trim());
     const role = enabledRoles(state).find(
       (candidate) => reference(roleSetting(state, candidate)) === base,
     );
@@ -300,10 +308,8 @@ export function inspectSubagentLaunch(
   for (const [index, entry] of stated.entries.entries()) {
     if (!isRecord(entry))
       return refuse("invalid-child", `child ${index + 1} is not an object`, children);
-    const child: Child =
-      entry.model === undefined && stated.shared ? { ...entry, model: stated.shared } : entry;
     const label = stated.entries.length > 1 ? `child ${index + 1}: ` : "";
-    const agent = typeof child.agent === "string" ? child.agent : "";
+    const agent = typeof entry.agent === "string" ? entry.agent : "";
     const isAdvisorAgent = ADVISOR_AGENTS.has(agent);
     if (!isAdvisorAgent && !delegation) continue;
     if (!isAdvisorAgent && invalid)
@@ -312,13 +318,13 @@ export function inspectSubagentLaunch(
         `${label}the delegation configuration is invalid; fix it in /delegate before launching`,
         children,
       );
-    if (typeof child.model !== "string" || !child.model.trim())
+    if (typeof entry.model !== "string" || !entry.model.trim())
       return refuse(
         "missing-model",
         `${label}no model was given; state the exact role model, never an inherited default`,
         children,
       );
-    const { base, level } = splitModel(child.model.trim());
+    const { base, level } = splitModel(entry.model.trim());
     const why = isAdvisorAgent
       ? checkAdvisorChild(state, agent, base, level)
       : checkOrdinaryChild(state, base, level);

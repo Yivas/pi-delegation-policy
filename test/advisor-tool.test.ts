@@ -1392,7 +1392,7 @@ test("a task logs whether the first Advisor consult came before its first edit",
       call("subagent", { agent: ADVISOR_AGENT_NAME, model: "example/first:low", task: sentinel });
     const edit = () =>
       call("edit", { path: "/synthetic/file", oldText: sentinel, newText: sentinel });
-    await run.hook("input", { source: "user" });
+    await run.hook("input", { source: "interactive" });
     await call("read", { path: "/synthetic/file" });
     // The shape the policy asks for: one parallel call, one task per Advisor.
     await call("subagent", {
@@ -1401,7 +1401,7 @@ test("a task logs whether the first Advisor consult came before its first edit",
     });
     await edit();
     await run.hook("agent_settled");
-    await run.hook("input", { source: "user" });
+    await run.hook("input", { source: "interactive" });
     await edit();
     await consult();
     await run.hook("agent_settled");
@@ -1435,6 +1435,7 @@ test("a task logs whether the first Advisor consult came before its first edit",
     ]);
     // The task carries the hash of the policy block it ran under, as a consultation does.
     assert.match(tasks[0].policyHash, /^[0-9a-f]{64}$/);
+    // Its only subagent call launches one Advisor, so it counts as a consult and not as a launch.
     assert.deepEqual(
       {
         toolCalls: tasks[0].toolCalls,
@@ -1533,7 +1534,7 @@ test("a refused Advisor launch counts as a refusal, never as a consult", async (
     await run.hook("before_provider_request", {
       payload: { model: "example", stream: true, store: false, instructions: "host" },
     });
-    await run.hook("input", { source: "user" });
+    await run.hook("input", { source: "interactive" });
     const refused = (await run.hook("tool_call", {
       toolName: "subagent",
       input: { agent: ADVISOR_AGENT_NAME, model: "example/first", task: sentinel },
@@ -1559,6 +1560,57 @@ test("a refused Advisor launch counts as a refusal, never as a consult", async (
   }
 });
 
+test("a call that launches an Advisor and a worker counts as both", async () => {
+  const run = await harness({
+    ...base,
+    intensity: "normal",
+    small: first,
+    medium: null,
+    large: null,
+    advisors: [second],
+    advisorLaunch: "role",
+  });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    await run.hook("input", { source: "interactive" });
+    assert.equal(
+      await run.hook("tool_call", {
+        toolName: "subagent",
+        input: {
+          workflow: "parallel",
+          args: {
+            tasks: [
+              { agent: ADVISOR_AGENT_NAME, model: "example/second:low", task: sentinel },
+              { agent: "worker", model: "example/first:low", task: sentinel },
+            ],
+          },
+        },
+      }),
+      undefined,
+    );
+    await run.hook("agent_settled");
+    await run.log.flush();
+    const events = await logEvents(run.logPath);
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(sentinel));
+    const launch = events.find((event) => event.event === "launch");
+    assert.deepEqual(launch?.roles, ["advisor", "small"]);
+    const task = events.find((event) => event.event === "task");
+    assert.deepEqual(
+      {
+        advisorConsults: task?.advisorConsults,
+        firstConsultIndex: task?.firstConsultIndex,
+        subagentLaunches: task?.subagentLaunches,
+        launchRefusals: task?.launchRefusals,
+      },
+      { advisorConsults: 1, firstConsultIndex: 0, subagentLaunches: 1, launchRefusals: 0 },
+    );
+  } finally {
+    await run.close();
+  }
+});
+
 test("a control action is neither counted as a launch nor recorded", async () => {
   const run = await harness({
     ...base,
@@ -1571,7 +1623,7 @@ test("a control action is neither counted as a launch nor recorded", async () =>
     await run.hook("before_provider_request", {
       payload: { model: "example", stream: true, store: false, instructions: "host" },
     });
-    await run.hook("input", { source: "user" });
+    await run.hook("input", { source: "interactive" });
     assert.equal(
       await run.hook("tool_call", { toolName: "subagent", input: { action: "status", id: "run" } }),
       undefined,
@@ -1604,10 +1656,10 @@ test("a steer keeps the task already open instead of restarting it", async () =>
     await run.hook("before_provider_request", {
       payload: { model: "example", stream: true, store: false, instructions: "host" },
     });
-    await run.hook("input", { source: "user" });
+    await run.hook("input", { source: "interactive" });
     await run.hook("tool_call", { toolName: "read", input: { path: "/synthetic/file" } });
     // The host emits `input` for a steer before the message it queues.
-    await run.hook("input", { source: "user" });
+    await run.hook("input", { source: "interactive" });
     await run.hook("tool_call", { toolName: "read", input: { path: "/synthetic/file" } });
     await run.hook("agent_settled");
     await run.log.flush();
@@ -1625,7 +1677,7 @@ test("a branch move drops the task that was in flight", async () => {
     await run.hook("before_provider_request", {
       payload: { model: "example", stream: true, store: false, instructions: "host" },
     });
-    await run.hook("input", { source: "user" });
+    await run.hook("input", { source: "interactive" });
     await run.hook("tool_call", { toolName: "read", input: { path: "/synthetic/file" } });
     await run.hook("session_tree");
     await run.hook("agent_settled");
@@ -1643,7 +1695,7 @@ test("a shutdown mid-task writes no task", async () => {
     await run.hook("before_provider_request", {
       payload: { model: "example", stream: true, store: false, instructions: "host" },
     });
-    await run.hook("input", { source: "user" });
+    await run.hook("input", { source: "interactive" });
     await run.hook("tool_call", { toolName: "read", input: { path: "/synthetic/file" } });
     await run.hook("session_shutdown");
     await run.hook("agent_settled");
