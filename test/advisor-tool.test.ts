@@ -1650,6 +1650,43 @@ test("a control action is neither counted as a launch nor recorded", async () =>
   }
 });
 
+test("a control action that names an Advisor neither consults nor records a consultation", async () => {
+  const run = await harness({ ...base, advisorLaunch: "role" });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    await run.hook("input", { source: "interactive" });
+    // The host runs a control action, so naming an Advisor profile targets it without launching.
+    assert.equal(
+      await run.hook("tool_call", {
+        toolName: "subagent",
+        input: { action: "status", agent: ADVISOR_AGENT_NAME },
+      }),
+      undefined,
+    );
+    await run.hook("agent_settled");
+    await run.log.flush();
+    const events = await logEvents(run.logPath);
+    assert.deepEqual(
+      events.filter((event) => event.event === "launch" || event.event === "consultation"),
+      [],
+    );
+    const task = events.find((event) => event.event === "task");
+    assert.deepEqual(
+      {
+        advisorConsults: task?.advisorConsults,
+        firstConsultIndex: task?.firstConsultIndex,
+        subagentLaunches: task?.subagentLaunches,
+        launchRefusals: task?.launchRefusals,
+      },
+      { advisorConsults: 0, firstConsultIndex: null, subagentLaunches: 0, launchRefusals: 0 },
+    );
+  } finally {
+    await run.close();
+  }
+});
+
 test("a steer keeps the task already open instead of restarting it", async () => {
   const run = await harness({ ...base, advisorLaunch: "role" });
   try {

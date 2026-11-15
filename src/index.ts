@@ -509,10 +509,11 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         task.firstEditIndex ??= index;
       }
       // A call that launches only Advisors is a consult, a mixed call is both, and a refused call
-      // never consulted. A control action neither launches nor consults.
+      // never consulted. A control action launches nothing, so it never consults either, even when
+      // it names an Advisor as its target.
       const consulted =
         event.toolName === "consult_advisor" ||
-        (check !== undefined &&
+        (check?.launch === true &&
           check.refusal === undefined &&
           latestRuntime !== undefined &&
           advisorChildren(latestRuntime, event.input).length > 0);
@@ -1160,9 +1161,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           });
         if (check.refusal) return { block: true, reason: check.refusal.message };
       }
+      // A control action names a target instead of launching, so it records no `consultation`
+      // either, even when that target is an Advisor.
       if (
         latestRuntime?.effective.advisorLaunch === "role" &&
         event.toolName === "subagent" &&
+        typeof event.input.action !== "string" &&
         validAdvisors(latestRuntime).length
       ) {
         const allowed = new Set(

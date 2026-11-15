@@ -184,9 +184,10 @@ modes, context and count; consultation model IDs, status, context and duration; 
 per main-agent task from a user prompt to the next settle (duration, tool calls, edits, the position
 of the first edit and of the first consult, whether the consult came before the first edit, subagent
 launches and refusals); one `launch` record per subagent call that launches children (allowed or
-refused, a closed refusal code, child count and one role code per child); a record with no children
-appears only in that off window, and such a call still counts as a launch. Consultation, `task` and
-`launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a
+refused, a closed refusal code, child count and one role code per child); an allowed record with no
+children appears only in that off window and still counts as a launch, while a refusal (for example
+a workflow script or a parallel call without tasks) can also carry no children. Consultation, `task`
+and `launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a
 `consult_advisor` call counts whether or not it reached a model, and its real outcome is the
 `consultation` event. `subagentLaunches` counts allowed calls that launch a child other than an
 Advisor: a call that launches only Advisors counts as a consult, a mixed call counts as both, and a
