@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkSubagentLaunch } from "../src/launch-guard.ts";
+import { checkSubagentLaunch, inspectSubagentLaunch } from "../src/launch-guard.ts";
+import { ADVISOR_AGENT_NAME } from "../src/advisor-executor.ts";
+import { ANTHROPIC_ADVISOR_AGENT } from "../src/advisor-anthropic-provider.ts";
+import { PROVIDER_EXTENSION_ADVISOR_AGENT } from "../src/advisor-provider-extension.ts";
 import { resolveDelegateState } from "../src/config.ts";
 import type { RuntimeState } from "../src/runtime.ts";
 import { CURRENT_SCHEMA_VERSION, type GlobalDefaults } from "../src/types.ts";
@@ -78,6 +81,10 @@ test("valid launches pass and every policy violation is refused before launching
         { parallel: [{ agent: "b", task: "t", model: "other/large-model:high" }] },
       ],
     },
+    // Unambiguous cases are corrected instead of refused, so they launch.
+    { agent: "worker", task: "t", model: "example/small-model" },
+    { agent: "reviewer", task: "t", model: "advice/advisor-model:low" },
+    { agent: "worker", task: "t", model: "small" },
   ])
     assert.equal(checkSubagentLaunch(allowed, active), undefined, JSON.stringify(allowed));
 
@@ -87,12 +94,7 @@ test("valid launches pass and every policy violation is refused before launching
       { agent: "worker", task: "t", model: "wrong/small-model:low" },
       /not the model of any enabled role/,
     ],
-    [{ agent: "worker", task: "t", model: "example/small-model" }, /no thinking level/],
     [{ agent: "worker", task: "t", model: "other/large-model:low" }, /outside the role policy/],
-    [
-      { agent: "reviewer", task: "t", model: "advice/advisor-model:low" },
-      /belongs only to an Advisor/,
-    ],
     [
       { agent: "pi-delegation-policy.advisor", task: "q", model: "example/small-model:low" },
       /not a configured Advisor/,
@@ -163,18 +165,14 @@ test("a configured Advisor that failed validation is named with its reason, not 
   assert.match(reason, /- Advisor 1: agent/);
   assert.match(reason, /- Advisor 3: agent/);
   assert.doesNotMatch(reason, /No launch is allowed right now/);
-  // A valid slot still refuses another Advisor's profile.
-  assert.match(
-    checkSubagentLaunch(
-      {
-        agent: "pi-delegation-policy.advisor-anthropic-auth",
-        task: "q",
-        model: "advice/advisor-model:low",
-      },
-      three,
-    ) ?? "",
-    /not a configured Advisor/,
-  );
+  // Another Advisor's profile with this slot's model is corrected to the slot that owns the model.
+  const corrected = {
+    agent: "pi-delegation-policy.advisor-anthropic-auth",
+    task: "q",
+    model: "advice/advisor-model:low",
+  };
+  assert.equal(checkSubagentLaunch(corrected, three), undefined);
+  assert.equal(corrected.agent, "pi-delegation-policy.advisor");
 
   // With no valid Advisor and delegation off, the refusal still reports the configured slot.
   const alone = state({ advisors: [second], intensity: "off" });
@@ -261,4 +259,248 @@ test("delegation off checks only Advisor launches, and both axes off check nothi
     ),
     undefined,
   );
+});
+
+test("an unambiguous launch is corrected in place and the note names what was applied", () => {
+  const active = state({
+    thinking: { small: { min: "low", max: "high" }, large: { level: "high" } },
+  });
+  const single = { agent: "worker", task: "t", model: "small" };
+  const check = inspectSubagentLaunch(single, active);
+  assert.equal(check.refusal, undefined);
+  // A role name becomes that role's exact model, with the lowest level inside its range policy.
+  assert.equal(single.model, "example/small-model:low");
+  assert.deepEqual(check.corrections, [
+    { code: "role-alias", roleName: "small", applied: "example/small-model:low" },
+  ]);
+  assert.match(check.note ?? "", /corrected this subagent call before it ran/);
+  assert.match(check.note ?? "", /model "small" → "example\/small-model:low"/);
+
+  // A missing level takes the fixed policy, the range floor, or the model's clamped default.
+  const fixed = { agent: "worker", task: "t", model: "other/large-model" };
+  assert.equal(inspectSubagentLaunch(fixed, active).refusal, undefined);
+  assert.equal(fixed.model, "other/large-model:high");
+  const noPolicy = { agent: "worker", task: "t", model: "other/large-model" };
+  assert.equal(inspectSubagentLaunch(noPolicy, state({ thinking: {} })).refusal, undefined);
+  assert.equal(noPolicy.model, "other/large-model:medium");
+
+  // An Advisor model gives the child that Advisor's profile, whatever profile it named.
+  const profile = { agent: "reviewer", task: "t", model: "advice/advisor-model:low" };
+  const profileCheck = inspectSubagentLaunch(profile, active);
+  assert.equal(profileCheck.refusal, undefined);
+  assert.equal(profile.agent, "pi-delegation-policy.advisor");
+  assert.deepEqual(profileCheck.corrections, [
+    { code: "advisor-profile", applied: "pi-delegation-policy.advisor" },
+  ]);
+
+  // The advisor role name sets both the exact model and its profile, and matching is case-insensitive.
+  const advisorAlias = { agent: "worker", task: "t", model: "ADVISOR" };
+  assert.equal(inspectSubagentLaunch(advisorAlias, active).refusal, undefined);
+  assert.equal(advisorAlias.model, "advice/advisor-model:medium");
+  assert.equal(advisorAlias.agent, "pi-delegation-policy.advisor");
+
+  // A shared top-level model is corrected once for every child that inherits it.
+  const parallel = {
+    workflow: "parallel",
+    model: "small",
+    args: {
+      tasks: [
+        { agent: "a", task: "t" },
+        { agent: "b", task: "t" },
+      ],
+    },
+  };
+  assert.equal(inspectSubagentLaunch(parallel, active).refusal, undefined);
+  assert.equal(parallel.model, "example/small-model:low");
+  // The children inherit the corrected shared model and are not rewritten themselves.
+  assert.deepEqual(parallel.args.tasks, [
+    { agent: "a", task: "t" },
+    { agent: "b", task: "t" },
+  ]);
+
+  // Chain steps and parallel groups inside a chain are corrected where they are stated.
+  const chain = {
+    chain: [
+      { agent: "a", task: "t", model: "small" },
+      { parallel: [{ agent: "b", task: "t", model: "other/large-model" }] },
+    ],
+  };
+  assert.equal(inspectSubagentLaunch(chain, active).refusal, undefined);
+  assert.deepEqual(chain.chain, [
+    { agent: "a", task: "t", model: "example/small-model:low" },
+    { parallel: [{ agent: "b", task: "t", model: "other/large-model:high" }] },
+  ]);
+});
+
+test("an ambiguous launch stays refused, and block mode refuses every corrected case unchanged", () => {
+  const second = { provider: "advice", model: "advisor-model" };
+  const shared = state({ advisors: [advisor, second] });
+  const available = (ref: typeof small) => ({
+    kind: "available" as const,
+    model: model(ref) as never,
+  });
+  shared.advisorEntries = [
+    { index: 0, setting: advisor, status: available(advisor), errors: [] },
+    { index: 1, setting: second, status: available(second), errors: [] },
+  ];
+  // Two Advisors share the model, so the profile cannot be chosen: the call is refused, not guessed.
+  assert.match(
+    checkSubagentLaunch(
+      { agent: "worker", task: "t", model: "advice/advisor-model:low" },
+      shared,
+    ) ?? "",
+    /belongs to more than one configured Advisor/,
+  );
+
+  // Two roles share the model with different policies, so no level follows from the model alone.
+  const roles = state({
+    large: small,
+    thinking: { small: { level: "high" }, large: { level: "low" } },
+  });
+  roles.modelStatuses.set("large", roles.modelStatuses.get("small")!);
+  assert.match(
+    checkSubagentLaunch({ agent: "worker", task: "t", model: "example/small-model" }, roles) ?? "",
+    /the roles sharing this model choose different ones/,
+  );
+
+  // Block mode keeps the previous behaviour: the same cases are refused and nothing is written.
+  const blocking = state();
+  blocking.launchCorrection = "block";
+  for (const [input, why] of [
+    [{ agent: "worker", task: "t", model: "example/small-model" }, /no thinking level/],
+    [{ agent: "worker", task: "t", model: "small" }, /not the model of any enabled role/],
+    [
+      { agent: "reviewer", task: "t", model: "advice/advisor-model:low" },
+      /belongs only to an Advisor/,
+    ],
+  ] as const) {
+    const before = structuredClone(input);
+    const result = inspectSubagentLaunch(input, blocking);
+    assert.match(result.refusal?.message ?? "", why, JSON.stringify(input));
+    assert.deepEqual(input, before, JSON.stringify(input));
+    assert.deepEqual(result.corrections, []);
+    assert.equal(result.note, undefined);
+  }
+});
+
+test("an Advisor role name selects the slot it names, never the next valid one", () => {
+  const second = { provider: "advice", model: "second-advisor" };
+  const third = { provider: "other-advice", model: "third-advisor" };
+  const available = (ref: typeof small) => ({
+    kind: "available" as const,
+    model: model(ref) as never,
+  });
+  const slots = (valid: readonly boolean[]) => {
+    const three = state({ advisors: [advisor, second, third] });
+    const settings = [advisor, second, third];
+    three.advisorEntries = settings.map((setting, index) => ({
+      index,
+      setting,
+      status: available(setting),
+      errors: valid[index] ? [] : ["Advisor provider unavailable."],
+    }));
+    return three;
+  };
+
+  // A gap in the middle must not shift the slot: advisor-2 is invalid and advisor-3 keeps its model.
+  const middleGap = slots([true, false, true]);
+  const requested = { agent: "worker", task: "q", model: "advisor-2" };
+  const before = structuredClone(requested);
+  const refused = inspectSubagentLaunch(requested, middleGap);
+  assert.equal(refused.refusal?.code, "advisor-mismatch");
+  assert.match(refused.refusal?.message ?? "", /"advisor-2" is not a configured Advisor/);
+  assert.deepEqual(requested, before);
+  assert.deepEqual(refused.corrections, []);
+  const thirdSlot = { agent: "worker", task: "q", model: "advisor-3" };
+  assert.equal(inspectSubagentLaunch(thirdSlot, middleGap).refusal, undefined);
+  assert.equal(thirdSlot.model, "other-advice/third-advisor:medium");
+
+  // A gap in the first slot must not let the bare name pick Advisor 2.
+  const firstGap = slots([false, true, true]);
+  const bare = { agent: "worker", task: "q", model: "advisor" };
+  assert.match(
+    inspectSubagentLaunch(bare, firstGap).refusal?.message ?? "",
+    /"advisor" is not a configured Advisor/,
+  );
+  assert.equal(bare.model, "advisor");
+
+  // A gap in the last slot refuses that name and leaves the input alone.
+  const lastGap = slots([true, true, false]);
+  const last = { agent: "worker", task: "q", model: "advisor-3" };
+  assert.match(
+    inspectSubagentLaunch(last, lastGap).refusal?.message ?? "",
+    /"advisor-3" is not a configured Advisor/,
+  );
+  assert.equal(last.model, "advisor-3");
+});
+
+test("a role name binds its own thinking policy even when another role shares the model", () => {
+  const shared = state({
+    large: small,
+    thinking: { small: { level: "high" }, large: { level: "low" } },
+  });
+  shared.modelStatuses.set("large", shared.modelStatuses.get("small")!);
+
+  // The named role's policy is binding, so another role accepting the level cannot admit it.
+  const named = { agent: "worker", task: "t", model: "small:low" };
+  const before = structuredClone(named);
+  const refused = inspectSubagentLaunch(named, shared);
+  assert.equal(refused.refusal?.code, "thinking-outside-policy");
+  assert.match(refused.refusal?.message ?? "", /Small: thinking "low" is outside the role policy/);
+  assert.deepEqual(named, before);
+  assert.deepEqual(refused.corrections, []);
+  assert.equal(
+    inspectSubagentLaunch({ agent: "worker", task: "t", model: "small:high" }, shared).refusal,
+    undefined,
+  );
+
+  // An exact reference names no role, so any role sharing the model still accepts the level.
+  assert.equal(
+    checkSubagentLaunch({ agent: "worker", task: "t", model: "example/small-model:low" }, shared),
+    undefined,
+  );
+});
+
+test("an ordinary role name never runs as an Advisor consultation", () => {
+  const visual = { provider: "visual", model: "visual-model" };
+  const anthropicAdvisor = {
+    provider: "anthropic",
+    model: "visual-model",
+    providerExtension: "anthropic-auth" as const,
+  };
+  const admittedAdvisor = { provider: "admitted", model: "visual-model" };
+  const available = (ref: { provider: string; model: string }) => ({
+    kind: "available" as const,
+    model: model(ref) as never,
+  });
+  const collision = (setting: typeof anthropicAdvisor | typeof admittedAdvisor) => {
+    const shared = state({ uiDesign: visual, advisors: [setting] });
+    shared.admissions = { admitted: { package: "admitted-extension", version: "1.0.0" } };
+    shared.modelStatuses.set("uiDesign", available(visual));
+    shared.advisorEntries = [{ index: 0, setting, status: available(setting), errors: [] }];
+    return shared;
+  };
+
+  // Visual Design and an Advisor share the model: the named role still runs ordinary work.
+  for (const [setting, profile] of [
+    [anthropicAdvisor, ANTHROPIC_ADVISOR_AGENT],
+    [admittedAdvisor, PROVIDER_EXTENSION_ADVISOR_AGENT],
+    [anthropicAdvisor, ADVISOR_AGENT_NAME],
+  ] as const) {
+    const input = { agent: profile, task: "t", model: "visual-design:low" };
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, collision(setting));
+    assert.equal(refused.refusal?.code, "advisor-mismatch", profile);
+    assert.match(
+      refused.refusal?.message ?? "",
+      /Visual Design runs with an ordinary agent profile/,
+    );
+    assert.deepEqual(input, before, profile);
+    assert.deepEqual(refused.corrections, [], profile);
+  }
+
+  // The same role name with an ordinary profile is corrected and allowed.
+  const ordinary = { agent: "worker", task: "t", model: "visual-design:low" };
+  assert.equal(inspectSubagentLaunch(ordinary, collision(anthropicAdvisor)).refusal, undefined);
+  assert.equal(ordinary.model, "visual/visual-model:low");
 });

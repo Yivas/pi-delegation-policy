@@ -78,7 +78,7 @@ const MAX_ANSWER_MAX_BYTES = 16384;
 export type ConfigDiagnostic = {
   message: string;
   reportWhenOff?: boolean;
-  scope?: "advisor" | "advisor-extension";
+  scope?: "advisor" | "advisor-extension" | "launch-correction";
 };
 export type LoadedDefaults = {
   defaults: GlobalDefaults;

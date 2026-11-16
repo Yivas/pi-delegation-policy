@@ -17,6 +17,11 @@ import {
   type ConfigDiagnostic,
 } from "./config.ts";
 import {
+  getLaunchCorrectionPath,
+  readLaunchCorrectionMode,
+  type LaunchCorrectionMode,
+} from "./launch-correction-mode.ts";
+import {
   type AdvisorSetting,
   MODEL_ROLES,
   ROLE_LABELS,
@@ -42,6 +47,8 @@ export type RuntimeState = {
   advisorErrors?: string[];
   /** Global provider-extension admissions; absent means none. */
   admissions?: ProviderAdmissions;
+  /** How the launch check treats a call it can correct; absent means `correct`. */
+  launchCorrection?: LaunchCorrectionMode;
   /** Advisor notes that never remove an Advisor or change the footer. */
   advisorWarnings?: string[];
   advisorEntries?: Array<{
@@ -200,6 +207,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
   const path = getGlobalConfigPath();
   const loaded = await readConfig(path);
   const admissions = await readProviderAdmissions(getProviderAdmissionsPath(path));
+  const correction = await readLaunchCorrectionMode(getLaunchCorrectionPath(path));
   const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
     effective: resolveDelegateState(loaded.defaults, restored.session),
@@ -209,14 +217,22 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
       ...loaded.diagnostics,
       ...restored.diagnostics,
       ...(admissions.diagnostic ? [admissions.diagnostic] : []),
+      ...(correction.diagnostic ? [correction.diagnostic] : []),
     ],
     admissions: admissions.admissions,
+    launchCorrection: correction.mode,
     modelStatuses: new Map(),
     runtimeErrors: [],
   };
   validateRuntime(ctx, state);
   return state;
 }
+
+/** Scopes that report a side setting and never invalidate the delegation axis. */
+const SIDE_SETTING_SCOPES: ReadonlySet<string> = new Set([
+  "advisor-extension",
+  "launch-correction",
+]);
 
 export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): void {
   state.effective = resolveDelegateState(state.global, state.session);
@@ -231,7 +247,10 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
       // An unusable Advisor state is only an error while Advisor is on; otherwise the diagnostic
       // stays informative in `details=` and the footer keeps reporting A:OFF.
       if (advisorEnabled) state.advisorErrors.push(diagnostic.message);
-    } else if (diagnostic.scope !== "advisor-extension" && state.effective.intensity !== "off") {
+    } else if (
+      !SIDE_SETTING_SCOPES.has(diagnostic.scope ?? "") &&
+      state.effective.intensity !== "off"
+    ) {
       // Every other diagnostic belongs to the delegation axis, so a valid enabled Advisor keeps
       // working while delegation is reported broken.
       state.runtimeErrors.push(diagnostic.message);

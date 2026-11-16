@@ -27,10 +27,27 @@ client; the executor performs model calls. A content-free local log is described
 
 ### Launch check
 
-From 0.26.0, while delegation is active, the extension refuses a `subagent` call before anything
-launches when a child has no model, a model that is not the exact model of an enabled role, no
-thinking level or one outside the role's policy or the model's support, or an Advisor profile with
-a model that is not that Advisor's. Parallel tasks and chain steps are checked one by one, and one
+From 0.26.0, while delegation is active, the extension checks a `subagent` call before anything
+launches. From the unreleased version after 0.27.0 it corrects the three cases that are unambiguous
+instead of refusing them:
+
+- a role name in place of a model (`small`, `medium`, `large`, `visual-design`, `ui-design`,
+  `uidesign`, `advisor`, `advisor-1` to `advisor-3`, case-insensitive) becomes that role's exact
+  provider/model with a level;
+- a role's exact model with no `:LEVEL` gains one: the role's fixed level, the lowest supported level
+  inside its range, or `medium` clamped to what the model supports when it has no policy;
+- a child whose model is exactly one configured Advisor's runs with that Advisor's profile, whatever
+  profile it named or omitted.
+
+The correction is written into the call the host already validated, so it changes what executes; the
+stored transcript keeps what the model sent. The extension then appends a note to that call's tool
+result saying what it applied, so the agent sees the difference. Corrections apply per child and to a
+shared top-level `model` once; a call whose children would resolve differently, or whose model fits
+more than one role or Advisor, is refused instead of guessed.
+
+Everything else is refused as before: a child with no model, a model that is not the exact model of
+an enabled role, a thinking level or Advisor profile it cannot settle, or an Advisor profile with a
+model that is not that Advisor's. Parallel tasks and chain steps are checked one by one, and one
 invalid child refuses the whole call; a top-level `model` applies to children that state none.
 Workflow scripts, inline, by path, by name or through `options.script`, are refused because their
 models live in code the extension cannot read: launch one child, use `tasks` or `chain`, or
@@ -44,6 +61,11 @@ while delegation is active. Slash commands, RPC and schedules created earlier do
 this tool call and are not checked. The check sees only the call: it cannot decide whether work
 should have been delegated. An invalid delegation configuration refuses new ordinary launches until
 it is fixed; valid Advisors keep working.
+
+A test mode refuses every corrected case instead, keeping the pre-correction behaviour for
+measurement. It is the global **Launch correction** row in `/delegate`, stored in
+`delegation-policy.launch-correction.json` next to the global defaults and described in the
+[configuration reference](/configuration/#launch-correction-mode).
 
 ## Configuration change notice
 
@@ -184,7 +206,8 @@ modes, context and count; consultation model IDs, status, context and duration; 
 per main-agent task from a user prompt to the next settle (duration, tool calls, edits, the position
 of the first edit and of the first consult, whether the consult came before the first edit, subagent
 launches and refusals); one `launch` record per subagent call that launches children (allowed or
-refused, a closed refusal code, child count and one role code per child); an allowed record with no
+refused, a closed refusal code, child count, one role code per child, and the closed kinds of
+correction applied); an allowed record with no
 children appears only in that off window and still counts as a launch, while a refusal (for example
 a workflow script or a parallel call without tasks) can also carry no children. Consultation, `task`
 and `launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -51,6 +51,12 @@ import {
   type RuntimeState,
 } from "../src/runtime.ts";
 import { openDelegateEditor } from "../src/ui.ts";
+import {
+  getLaunchCorrectionPath,
+  readLaunchCorrectionMode,
+  writeLaunchCorrectionMode,
+} from "../src/launch-correction-mode.ts";
+import { readProviderAdmissions, writeProviderAdmissions } from "../src/provider-admissions.ts";
 import {
   CURRENT_SCHEMA_VERSION,
   type GlobalDefaults,
@@ -1497,6 +1503,12 @@ function createPanelHarness(
     hasRuntimeError?: boolean;
     onApply?: (draft: SessionDelegateState) => Promise<boolean>;
     onSaveDefaults?: DelegatePanelOptions["onSaveDefaults"];
+    launchCorrection?: DelegatePanelOptions["launchCorrection"];
+    onSaveLaunchCorrection?: DelegatePanelOptions["onSaveLaunchCorrection"];
+    admissions?: DelegatePanelOptions["admissions"];
+    extensionCandidates?: DelegatePanelOptions["extensionCandidates"];
+    extensionProviders?: DelegatePanelOptions["extensionProviders"];
+    onSaveAdmissions?: DelegatePanelOptions["onSaveAdmissions"];
   } = {},
 ) {
   const terminal = { rows: options.rows ?? 30 };
@@ -1521,6 +1533,12 @@ function createPanelHarness(
     hasRuntimeError: options.hasRuntimeError ?? false,
     onApply: options.onApply ?? (async () => true),
     onSaveDefaults: options.onSaveDefaults ?? (async () => ({ kind: "saved", defaults })),
+    launchCorrection: options.launchCorrection,
+    onSaveLaunchCorrection: options.onSaveLaunchCorrection,
+    admissions: options.admissions,
+    extensionCandidates: options.extensionCandidates,
+    extensionProviders: options.extensionProviders,
+    onSaveAdmissions: options.onSaveAdmissions,
     onDone: (result) => done.push(result),
   });
   panel.focused = true;
@@ -2182,7 +2200,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
 test("the settings list keeps one row per field and one hint block that follows the focus", () => {
   const harness = createPanelHarness({ rows: 24 });
   const item =
-    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design |Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
+    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design |Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
   const view = (steps: number) => {
     for (let step = 0; step < steps; step += 1) sendKeys(harness.panel, KEY_DOWN);
     const lines = harness.panel.render(80);
@@ -2193,7 +2211,7 @@ test("the settings list keeps one row per field and one hint block that follows 
   };
 
   const first = view(0);
-  // On 24 rows the preview and the reserved hint leave 13 of the 16 settings rows visible.
+  // On 24 rows the preview and the reserved hint leave 13 of the settings rows visible.
   assert.equal(first.rows, 13, "one row per field");
   assert.match(first.body, /When delegation is worth considering/);
 
@@ -2412,6 +2430,231 @@ test("the delegate panel preserves dirty drafts when apply or default saving fai
   sendKeys(repairedDefaults.panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
   await new Promise((resolve) => setImmediate(resolve));
   assert.doesNotMatch(repairedDefaults.panel.render(80).join("\n"), /global defaults are invalid/);
+});
+
+test("a saved global step is named when the defaults step cannot confirm its write", async () => {
+  await withAgentDirectory(async (directory) => {
+    const main = getGlobalConfigPath(directory);
+    await writeConfig(main, defaults);
+    // An unreadable previous state makes the defaults save report `unchanged` without writing.
+    await rm(main);
+    await mkdir(main);
+
+    let view = "";
+    const saveContext = context({
+      runCustom: async (component) => {
+        sendKeys(
+          component,
+          KEY_END,
+          KEY_UP,
+          KEY_UP,
+          KEY_UP,
+          KEY_UP,
+          KEY_ENTER,
+          KEY_DOWN,
+          KEY_ENTER,
+        );
+        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
+        view = await waitForRenderedText(component, "Could not save global defaults");
+        sendKeys(component, KEY_ESCAPE);
+      },
+    });
+    await openDelegateEditor(saveContext, { appendEntry: () => undefined } as never);
+
+    // The correction is on disk, and the failure names it instead of denying every change.
+    assert.deepEqual(await readLaunchCorrectionMode(getLaunchCorrectionPath(main)), {
+      mode: "block",
+    });
+    assert.match(
+      view,
+      /Could not save global defaults\. The launch correction mode \(block\) was saved\./,
+    );
+    assert.doesNotMatch(view, /Nothing was changed on disk/);
+  });
+});
+
+test("a saved admission is named when the correction step fails", async () => {
+  await withAgentDirectory(async (directory) => {
+    const admissionPath = join(directory, "admissions.json");
+    const blocked = join(directory, "blocked");
+    await writeFile(blocked, "not a directory");
+    const correctionPath = join(blocked, "delegation-policy.launch-correction.json");
+    const harness = createPanelHarness({
+      global: {
+        ...defaults,
+        advisors: [{ provider: "example-provider", model: "example-model" }],
+        advisorMode: "on",
+        advisorLaunch: "role",
+      },
+      candidates: [
+        { provider: "example-provider", id: "example-model", name: "Example", reasoning: true },
+      ] as never,
+      admissions: {},
+      extensionCandidates: [{ package: "example-provider-extension", version: "1.2.3" }],
+      extensionProviders: ["example-provider"],
+      onSaveAdmissions: async (admissions) => {
+        await writeProviderAdmissions(admissions, admissionPath);
+        return true;
+      },
+      onSaveLaunchCorrection: (mode) => writeLaunchCorrectionMode(mode, correctionPath),
+    });
+    // Advisor 1 row, its model selector, then the provider-extension step: admit the package.
+    sendKeys(harness.panel, KEY_HOME);
+    for (let index = 0; index < 14; index += 1) sendKeys(harness.panel, KEY_DOWN);
+    sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+    // Then the global correction row, staged to block, and Apply.
+    sendKeys(
+      harness.panel,
+      KEY_END,
+      KEY_UP,
+      KEY_UP,
+      KEY_UP,
+      KEY_UP,
+      KEY_ENTER,
+      KEY_DOWN,
+      KEY_ENTER,
+    );
+    sendKeys(harness.panel, "a");
+    await waitForRenderedText(harness.panel, "Could not save the launch correction mode");
+    // A wide render keeps the whole message: the 80-column wait truncates it.
+    const view = harness.panel.render(160).join("\n");
+
+    // The admission reached disk; the correction did not; the message says exactly that.
+    assert.deepEqual((await readProviderAdmissions(admissionPath)).admissions, {
+      "example-provider": { package: "example-provider-extension", version: "1.2.3" },
+    });
+    await assert.rejects(readFile(correctionPath, "utf8"), /ENOENT/);
+    assert.match(
+      view,
+      /Could not save the launch correction mode\. The provider extension admission was saved\./,
+    );
+    assert.doesNotMatch(view, /Nothing else was changed/);
+    assert.deepEqual(harness.done, [], "the editor stays open instead of reporting success");
+    // The failed step keeps its draft, so it can be retried once the file is fixed.
+    assert.match(view, /^> Launch correction\s+block · global · measurement\s*$/m);
+    assert.equal(harness.panel.isDirty(), true);
+  });
+});
+
+test("the delegate editor stores the global launch correction mode on Apply and reopens with it", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeConfig(getGlobalConfigPath(directory), defaults);
+    const path = getLaunchCorrectionPath(getGlobalConfigPath(directory));
+    const applied: Array<Record<string, unknown>> = [];
+    const applyContext = context({
+      branch: applied,
+      runCustom: (component) => {
+        // The global row sits after the policy fields, before the actions.
+        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
+        const settings = component.render(100).join("\n");
+        assert.match(settings, /^> Launch correction\s+correct · global\s*$/m);
+        assert.match(settings, /Global for every session; Apply or Save stores it/);
+        sendKeys(component, KEY_ENTER);
+        const picker = component.render(100).join("\n");
+        assert.match(picker, /Delegation policy \/ Launch correction \(global\)/);
+        assert.match(picker, /block — refuse those launches and measure the original behavior/);
+        sendKeys(component, KEY_DOWN, KEY_ENTER);
+        assert.match(
+          component.render(100).join("\n"),
+          /^> Launch correction\s+block · global · measurement\s*$/m,
+        );
+        sendKeys(component, "a");
+      },
+    });
+    await openDelegateEditor(applyContext, {
+      appendEntry: (customType: string, data?: unknown) =>
+        applied.push({ type: "custom", customType, data }),
+    } as never);
+    // The global companion holds the choice; the session draft carries no correction field.
+    assert.deepEqual(await readLaunchCorrectionMode(path), { mode: "block" });
+    assert.deepEqual(restoreSessionState(applied), { schemaVersion: CURRENT_SCHEMA_VERSION });
+
+    // Reopening the editor shows the stored mode, and an unchanged Apply writes nothing new.
+    let reopened = "";
+    const reopenContext = context({
+      runCustom: (component) => {
+        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
+        reopened = component.render(100).join("\n");
+        sendKeys(component, KEY_ESCAPE);
+      },
+    });
+    await openDelegateEditor(reopenContext, { appendEntry: () => undefined } as never);
+    assert.match(reopened, /^> Launch correction\s+block · global · measurement\s*$/m);
+  });
+});
+
+test("cancelling the editor leaves the launch correction file untouched", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeConfig(getGlobalConfigPath(directory), defaults);
+    const path = getLaunchCorrectionPath(getGlobalConfigPath(directory));
+    const discardContext = context({
+      runCustom: (component) => {
+        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_ENTER);
+        sendKeys(component, KEY_DOWN, KEY_ENTER);
+        // A staged global change still asks before discarding, and discarding writes nothing.
+        sendKeys(component, KEY_ESCAPE);
+        assert.match(component.render(100).join("\n"), /Discard unapplied changes\?/);
+        sendKeys(component, KEY_DOWN, KEY_ENTER);
+      },
+    });
+    await openDelegateEditor(discardContext, { appendEntry: () => undefined } as never);
+    await assert.rejects(readFile(path, "utf8"), /ENOENT/);
+  });
+});
+
+test("the launch correction writer leaves an unknown state alone and reports a failed replacement", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getLaunchCorrectionPath(getGlobalConfigPath(directory));
+    // Absent: the default is stored, and storing it again changes nothing.
+    assert.equal(await writeLaunchCorrectionMode("block", path), "saved");
+    assert.deepEqual(await readLaunchCorrectionMode(path), { mode: "block" });
+    assert.equal(await writeLaunchCorrectionMode("block", path), "unchanged");
+    assert.equal(await writeLaunchCorrectionMode("correct", path), "saved");
+    assert.deepEqual(await readLaunchCorrectionMode(path), { mode: "correct" });
+
+    // A malformed file is reported, never overwritten.
+    const malformed = '{ "schemaVersion": 1, "mode": "block"';
+    await writeFile(path, malformed);
+    assert.equal(await writeLaunchCorrectionMode("correct", path), "unknown-state");
+    assert.equal(await readFile(path, "utf8"), malformed);
+    // An unknown schema is the same: the reader cannot interpret it, so it stays as it is.
+    await writeFile(path, JSON.stringify({ schemaVersion: 9, mode: "block" }));
+    assert.equal(await writeLaunchCorrectionMode("block", path), "unknown-state");
+    assert.equal(await readFile(path, "utf8"), JSON.stringify({ schemaVersion: 9, mode: "block" }));
+
+    // A replacement that cannot commit reports failure and leaves the readable state in place.
+    await writeFile(path, JSON.stringify({ schemaVersion: 1, mode: "correct" }));
+    const blocked = join(directory, "blocked");
+    await writeFile(blocked, "not a directory");
+    assert.equal(
+      await writeLaunchCorrectionMode(
+        "block",
+        join(blocked, "delegation-policy.launch-correction.json"),
+      ),
+      "failed",
+    );
+    assert.deepEqual(await readLaunchCorrectionMode(path), { mode: "correct" });
+  });
+});
+
+test("a failed launch correction write stops Apply without claiming success", async () => {
+  let applied = 0;
+  const harness = createPanelHarness({
+    onApply: async () => {
+      applied += 1;
+      return true;
+    },
+    onSaveLaunchCorrection: async () => "failed",
+  });
+  sendKeys(harness.panel, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+  sendKeys(harness.panel, "a");
+  await new Promise((resolve) => setImmediate(resolve));
+  const view = harness.panel.render(120).join("\n");
+  assert.match(view, /Could not save the launch correction mode\. Nothing else was changed\./);
+  assert.equal(applied, 0, "the session step never ran");
+  assert.deepEqual(harness.done, [], "the editor stays open instead of reporting success");
+  // The staged value is still the draft, so the row shows what would be written.
+  assert.match(view, /^> Launch correction\s+block · global · measurement\s*$/m);
 });
 
 test("the custom editor applies, discards, inherits, and saves defaults", async () => {
@@ -2824,6 +3067,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/context-shunt.ts",
     "src/delegate-panel.ts",
     "src/index.ts",
+    "src/launch-correction-mode.ts",
     "src/launch-guard.ts",
     "src/prompt.ts",
     "src/provider-admissions.ts",
@@ -3539,6 +3783,9 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // requirement that asks for background launches and grouped simultaneous children. Front 42
   // regenerated them for the Limits paragraph: the extension now refuses invalid subagent calls, so
   // the sentence that denied any runtime enforcement was replaced; obligations are unchanged.
+  // Front 43 regenerated them for the same paragraph: the extension now corrects an unambiguous
+  // call and says what it applied, and refuses only what it cannot settle. The obligations,
+  // conditions and exceptions of the block are unchanged.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3547,8 +3794,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "17b6c52e77fcc0e30c6bc9c67524743bf52b154e788635e3e184024a5df68c0b",
-    aggressive: "f1c36180914dd8da1215423dc53596a399625aef58750f6e82f00e234407268e",
+    normal: "cf4fc5bfed69ecf4ab87a0327f5816da1b3897713edb6b9e20866c940c5feeaa",
+    aggressive: "e92ceb584e9042b9a62480f04ce275b34d13346a6e58f249b7af3bde2a277581",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);

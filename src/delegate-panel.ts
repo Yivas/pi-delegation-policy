@@ -19,6 +19,12 @@ import {
   sameAdmissions,
 } from "./provider-admissions.ts";
 import type { ProviderPackage } from "./provider-package.ts";
+import {
+  DEFAULT_LAUNCH_CORRECTION_MODE,
+  LAUNCH_CORRECTION_MODES,
+  type LaunchCorrectionMode,
+  type LaunchCorrectionSaveResult,
+} from "./launch-correction-mode.ts";
 import { isAdvisorEnabled } from "./runtime.ts";
 import { buildPolicyPreview } from "./prompt.ts";
 import {
@@ -68,6 +74,7 @@ const FIELD_IDS = [
   "advisor",
   "advisor2",
   "advisor3",
+  "launchCorrection",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
 const THINKING_FIELDS = [
@@ -137,6 +144,7 @@ function isLimitField(field: AdvancedField | EditableAdvancedField): field is Li
 type PanelMode =
   | { kind: "settings" }
   | { kind: "enum"; field: EnumField; selected: number }
+  | { kind: "correction"; selected: number }
   | { kind: "provider"; index: number; selected: number }
   | { kind: "extension"; index: number; provider: string; selected: number }
   | { kind: "model"; field: ModelField; selected: number; query: string }
@@ -193,6 +201,10 @@ export interface DelegatePanelOptions {
   onDone: (result: DelegatePanelResult) => void;
   /** Global provider-extension admissions; Apply and Save both store a changed set. */
   admissions?: ProviderAdmissions;
+  /** Global launch correction mode; absent means `correct`. */
+  launchCorrection?: LaunchCorrectionMode;
+  /** Stores the global mode; Apply and Save both write a changed value before their own step. */
+  onSaveLaunchCorrection?: (mode: LaunchCorrectionMode) => Promise<LaunchCorrectionSaveResult>;
   /** Installed user packages that pass the identity check, offered as provider extensions. */
   extensionCandidates?: readonly ProviderPackage[];
   /** Providers that an extension registered in this session; only these offer the step. */
@@ -231,6 +243,7 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   advisor3: "Advisor 3",
   advisorLaunch: "Advisor launch",
   advisorMode: "Advisor mode",
+  launchCorrection: "Launch correction",
 };
 
 /** One alignment column for every field value, wide enough for the longest label. */
@@ -267,7 +280,33 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
     "Optional model consulted alongside the others; each advisor adds a consultation at every checkpoint.",
   advisorLaunch:
     "Role asks the main agent to launch; tool uses explicit consult_advisor. Neither launches from hooks.",
+  launchCorrection:
+    "Global for every session; Apply or Save stores it. Block refuses the launches the check would correct, to measure the original behavior.",
 };
+
+const CORRECTION_DESCRIPTION =
+  "Global for every session, not a session setting: Apply or Save stores it in delegation-policy.launch-correction.json. Correct is the default; block is a measurement mode that refuses the launches the check would correct, keeping the pre-correction behavior.";
+const CORRECTION_CHOICES: Record<LaunchCorrectionMode, string> = {
+  correct: "correct — fix the launch and tell the agent what was applied",
+  block: "block — refuse those launches and measure the original behavior",
+};
+
+/**
+ * The global steps this editor stored, named for a later message. A step is listed only after its
+ * write was confirmed, so the clause describes what is on disk and never promises a rollback.
+ */
+function savedClause(saved: readonly string[]): string {
+  if (!saved.length) return "";
+  const last = saved[saved.length - 1] ?? "";
+  const list = saved.length === 1 ? last : `${saved.slice(0, -1).join(", ")} and ${last}`;
+  return ` ${list.charAt(0).toUpperCase()}${list.slice(1)} ${saved.length === 1 ? "was" : "were"} saved.`;
+}
+
+function correctionFailureText(result: LaunchCorrectionSaveResult): string {
+  return result === "unknown-state"
+    ? "Launch correction file is unreadable or invalid; fix or remove delegation-policy.launch-correction.json, then retry."
+    : "Could not save the launch correction mode.";
+}
 
 const ACTION_LABELS: Record<PanelAction, string> = {
   apply: "Apply changes",
@@ -412,10 +451,15 @@ export class DelegatePanel implements Component, Focusable {
   private readonly onSaveDefaults: DelegatePanelOptions["onSaveDefaults"];
   private readonly onDone: DelegatePanelOptions["onDone"];
   private readonly onSaveAdmissions: DelegatePanelOptions["onSaveAdmissions"];
+  private readonly onSaveLaunchCorrection: DelegatePanelOptions["onSaveLaunchCorrection"];
   private readonly extensionCandidates: readonly ProviderPackage[];
   private readonly extensionProviders: readonly string[];
   private admissions: ProviderAdmissions;
   private draftAdmissions: ProviderAdmissions;
+  private launchCorrection: LaunchCorrectionMode;
+  private draftLaunchCorrection: LaunchCorrectionMode;
+  /** Global steps already on disk from this editor, so a later failure never denies them. */
+  private readonly savedGlobals = new Map<"admissions" | "launchCorrection", string>();
   private readonly original: SessionDelegateState;
   private readonly searchInput = new Input();
   private readonly advancedInput = new Input();
@@ -442,10 +486,13 @@ export class DelegatePanel implements Component, Focusable {
     this.onSaveDefaults = options.onSaveDefaults;
     this.onDone = options.onDone;
     this.onSaveAdmissions = options.onSaveAdmissions;
+    this.onSaveLaunchCorrection = options.onSaveLaunchCorrection;
     this.extensionCandidates = options.extensionCandidates ?? [];
     this.extensionProviders = options.extensionProviders ?? [];
     this.admissions = structuredClone(options.admissions ?? {});
     this.draftAdmissions = structuredClone(options.admissions ?? {});
+    this.launchCorrection = options.launchCorrection ?? DEFAULT_LAUNCH_CORRECTION_MODE;
+    this.draftLaunchCorrection = this.launchCorrection;
   }
 
   get focused(): boolean {
@@ -466,11 +513,19 @@ export class DelegatePanel implements Component, Focusable {
   }
 
   isDirty(): boolean {
-    return !sameSessionState(this.original, this.draft) || this.admissionsDirty();
+    return !sameSessionState(this.original, this.draft) || this.globalsDirty();
   }
 
   private admissionsDirty(): boolean {
     return !sameAdmissions(this.admissions, this.draftAdmissions);
+  }
+
+  private launchCorrectionDirty(): boolean {
+    return this.launchCorrection !== this.draftLaunchCorrection;
+  }
+
+  private globalsDirty(): boolean {
+    return this.admissionsDirty() || this.launchCorrectionDirty();
   }
 
   /**
@@ -509,6 +564,7 @@ export class DelegatePanel implements Component, Focusable {
 
     if (this.mode.kind === "settings") this.handleSettingsInput(data);
     else if (this.mode.kind === "enum") this.handleEnumInput(data);
+    else if (this.mode.kind === "correction") this.handleCorrectionInput(data);
     else if (this.mode.kind === "provider") this.handleProviderInput(data);
     else if (this.mode.kind === "extension") this.handleExtensionInput(data);
     else if (this.mode.kind === "model") this.handleModelInput(data);
@@ -542,6 +598,7 @@ export class DelegatePanel implements Component, Focusable {
     const mode = this.mode;
     if (mode.kind === "settings") return this.renderSettings(width, budget);
     if (mode.kind === "enum") return this.renderEnum(width, budget, mode);
+    if (mode.kind === "correction") return this.renderCorrection(width, budget, mode);
     if (mode.kind === "provider") return this.renderProvider(width, budget, mode);
     if (mode.kind === "extension") return this.renderExtension(width, budget, mode);
     if (mode.kind === "model") return this.renderModel(width, budget, mode);
@@ -623,16 +680,18 @@ export class DelegatePanel implements Component, Focusable {
     const modeLabel =
       this.mode.kind === "settings" || this.mode.kind === "discard-confirm"
         ? "Delegation policy"
-        : this.mode.kind === "advanced" ||
-            this.mode.kind === "advanced-reader-enabled" ||
-            this.mode.kind === "advanced-reader-role" ||
-            this.mode.kind === "advanced-input"
-          ? "Delegation policy / Context advanced"
-          : this.mode.kind === "provider"
-            ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
-            : this.mode.kind === "extension"
-              ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
-              : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
+        : this.mode.kind === "correction"
+          ? "Delegation policy / Launch correction (global)"
+          : this.mode.kind === "advanced" ||
+              this.mode.kind === "advanced-reader-enabled" ||
+              this.mode.kind === "advanced-reader-role" ||
+              this.mode.kind === "advanced-input"
+            ? "Delegation policy / Context advanced"
+            : this.mode.kind === "provider"
+              ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
+              : this.mode.kind === "extension"
+                ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
+                : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
     const status = this.working ?? (this.isDirty() ? "Modified" : "");
     const gap = Math.max(1, width - visibleWidth(modeLabel) - visibleWidth(status));
     const statusText = this.theme.fg("warning", status);
@@ -738,6 +797,10 @@ export class DelegatePanel implements Component, Focusable {
         : effective.contextShunt.mode;
     if (field === "contextAdvanced")
       return `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`;
+    if (field === "launchCorrection")
+      return this.draftLaunchCorrection === "block"
+        ? "block · global · measurement"
+        : "correct · global";
     if (field === "uiDesign")
       return effective.uiDesign ? modelText(effective.uiDesign) : "disabled";
     return rawModelText(effective[field], "not configured");
@@ -1025,6 +1088,12 @@ export class DelegatePanel implements Component, Focusable {
         `session ${this.draft.preference ?? "inherit"}`,
       ];
     }
+    if (field === "launchCorrection")
+      return [
+        `built-in ${DEFAULT_LAUNCH_CORRECTION_MODE}`,
+        `global ${this.launchCorrection}`,
+        "not a session setting",
+      ];
     if (field === "uiDesign" || isAdvisorField(field)) {
       return [
         "built-in disabled",
@@ -1141,6 +1210,20 @@ export class DelegatePanel implements Component, Focusable {
     }
   }
 
+  private handleCorrectionInput(data: string): void {
+    if (this.mode.kind !== "correction") return;
+    const count = LAUNCH_CORRECTION_MODES.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      this.draftLaunchCorrection =
+        LAUNCH_CORRECTION_MODES[this.mode.selected] ?? this.draftLaunchCorrection;
+      this.mode = { kind: "settings" };
+    }
+  }
+
   private handleProviderInput(data: string): void {
     if (this.mode.kind !== "provider") return;
     const count = PROVIDER_CHOICES.length;
@@ -1161,6 +1244,25 @@ export class DelegatePanel implements Component, Focusable {
       this.replaceAdvisors(entries);
       this.mode = { kind: "settings" };
     }
+  }
+
+  private renderCorrection(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "correction" }>,
+  ): string[] {
+    const blocks = LAUNCH_CORRECTION_MODES.map((value, index) => [
+      selectedLine(this.theme, CORRECTION_CHOICES[value], width, index === mode.selected),
+    ]);
+    // Reserve the choices first, so a wrapped explanation never hides the selection.
+    const description = wrapTextWithAnsi(CORRECTION_DESCRIPTION, width).slice(
+      0,
+      Math.max(0, budget - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
   }
 
   private renderEnum(
@@ -1551,6 +1653,13 @@ export class DelegatePanel implements Component, Focusable {
     }
     if (isThinkingField(item)) {
       this.mode = { kind: "thinking", field: item, selected: this.thinkingSelection(item) };
+      return;
+    }
+    if (item === "launchCorrection") {
+      this.mode = {
+        kind: "correction",
+        selected: LAUNCH_CORRECTION_MODES.indexOf(this.draftLaunchCorrection),
+      };
       return;
     }
     if (item === "apply") void this.applyDraft();
@@ -2108,20 +2217,20 @@ export class DelegatePanel implements Component, Focusable {
     this.working = "Applying changes…";
     this.tui.requestRender();
     try {
-      // Without an admission change the session step starts in this same input, as before.
-      if (this.admissionsDirty() && !(await this.saveAdmissions())) return;
+      // Without a global change the session step starts in this same input, as before.
+      if (this.globalsDirty() && !(await this.saveGlobalSteps())) return;
       if (await this.onApply(cloneSession(this.draft))) {
         this.onDone("applied");
         return;
       }
       this.message = {
         kind: "error",
-        text: "Could not apply session settings. Try again.",
+        text: `Could not apply session settings. Try again.${savedClause(this.savedGlobalsList())}`,
       };
     } catch {
       this.message = {
         kind: "error",
-        text: "Could not apply session settings. Try again.",
+        text: `Could not apply session settings. Try again.${savedClause(this.savedGlobalsList())}`,
       };
     } finally {
       this.working = undefined;
@@ -2133,14 +2242,15 @@ export class DelegatePanel implements Component, Focusable {
     this.working = "Saving defaults…";
     this.tui.requestRender();
     try {
-      if (this.admissionsDirty() && !(await this.saveAdmissions())) return;
+      if (this.globalsDirty() && !(await this.saveGlobalSteps())) return;
+      const kept = savedClause(this.savedGlobalsList());
       const outcome = await this.onSaveDefaults(cloneSession(this.draft));
       if (outcome.kind === "saved") {
         this.global = structuredClone(outcome.defaults);
         this.diagnostics.length = 0;
         this.message = {
           kind: "info",
-          text: "Saved effective delegation settings as global defaults.",
+          text: `Saved effective delegation settings as global defaults.${kept}`,
         };
       } else if (outcome.kind === "partial") {
         if (outcome.defaults) this.global = structuredClone(outcome.defaults);
@@ -2148,18 +2258,21 @@ export class DelegatePanel implements Component, Focusable {
           this.diagnostics.splice(0, this.diagnostics.length, ...outcome.diagnostics);
         this.message = {
           kind: "error",
-          text: "Partially saved: the delegation file and the Advisor companion may disagree.",
+          text: `Partially saved: the delegation file and the Advisor companion may disagree.${kept}`,
         };
       } else {
+        // The defaults step did not commit. A global step that did is named instead of denied.
         this.message = {
           kind: "error",
-          text: "Could not save global defaults. Nothing was changed on disk.",
+          text: kept
+            ? `Could not save global defaults.${kept}`
+            : "Could not save global defaults. Nothing was changed on disk.",
         };
       }
     } catch {
       this.message = {
         kind: "error",
-        text: "Could not save global defaults. Check /delegate status before retrying.",
+        text: `Could not save global defaults. Check /delegate status before retrying.${savedClause(this.savedGlobalsList())}`,
       };
     } finally {
       this.working = undefined;
@@ -2178,13 +2291,59 @@ export class DelegatePanel implements Component, Focusable {
     } catch {
       saved = false;
     }
-    if (saved) this.admissions = structuredClone(this.draftAdmissions);
-    else
+    if (saved) {
+      this.admissions = structuredClone(this.draftAdmissions);
+      this.savedGlobals.set("admissions", "the provider extension admission");
+    } else
       this.message = {
         kind: "error",
         text: "Could not save provider extensions. Nothing else was changed.",
       };
     return saved;
+  }
+
+  /**
+   * The correction mode is global, so Apply and Save both write a changed value before their own
+   * step. A failure stops that step: an unreadable file is reported instead of overwritten, and no
+   * later write can report success for it.
+   */
+  private async saveLaunchCorrection(): Promise<LaunchCorrectionSaveResult> {
+    let result: LaunchCorrectionSaveResult;
+    try {
+      result = (await this.onSaveLaunchCorrection?.(this.draftLaunchCorrection)) ?? "failed";
+    } catch {
+      result = "failed";
+    }
+    if (result === "saved" || result === "unchanged") {
+      this.launchCorrection = this.draftLaunchCorrection;
+      this.savedGlobals.set(
+        "launchCorrection",
+        `the launch correction mode (${this.draftLaunchCorrection})`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Store the global steps this attempt needs, in order, and stop at the first failure. A step that
+   * already committed stays on disk and is named by the failure message; nothing is rolled back.
+   */
+  private async saveGlobalSteps(): Promise<boolean> {
+    if (this.admissionsDirty() && !(await this.saveAdmissions())) return false;
+    if (!this.launchCorrectionDirty()) return true;
+    const result = await this.saveLaunchCorrection();
+    if (result === "saved" || result === "unchanged") return true;
+    this.message = {
+      kind: "error",
+      text: `${correctionFailureText(result)}${
+        savedClause(this.savedGlobalsList()) || " Nothing else was changed."
+      }`,
+    };
+    return false;
+  }
+
+  private savedGlobalsList(): string[] {
+    return [...this.savedGlobals.values()];
   }
 
   private syncInputFocus(): void {

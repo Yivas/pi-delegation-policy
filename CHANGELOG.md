@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Added
+
+- The launch check corrects an unambiguous `subagent` call instead of refusing it. A role name in
+  place of a model (`small`, `medium`, `large`, `visual-design`, `ui-design`, `uidesign`, `advisor`,
+  `advisor-1` to `advisor-3`, case-insensitive) becomes that role's exact provider/model with a
+  level; a role's exact model with no `:LEVEL` gains the role's fixed level, the lowest supported
+  level inside its range, or `medium` clamped to what the model supports when it has no policy; and a
+  child whose model is exactly one configured Advisor's runs with that Advisor's profile. The
+  correction is written into the call the host already validated, so it changes what executes, and
+  the extension appends a note to that call's result saying what it applied. Corrections apply per
+  child and once to a shared top-level `model`; a call that would resolve differently, or whose model
+  fits more than one role or Advisor, is refused instead of guessed.
+- `launch` records in the local log carry the closed kinds of correction applied
+  (`level-added`, `advisor-profile`, `role-alias`), never a model or a task.
+- A global **Launch correction** row in `/delegate` with `correct` (default) and `block`, the test
+  mode that refuses every case the check would correct, keeping the pre-correction behaviour for
+  measurement. It is global for every session and says so; Apply and Save both store a changed value
+  before their own step, Cancel discards it, and a failed write stops the step instead of reporting
+  success. The row writes `delegation-policy.launch-correction.json`, a schema-1 companion with
+  `mode`, through the same temporary-file replacement as the global defaults: an unreadable or
+  malformed file is reported and left alone, and an invalid one is ignored with a diagnostic without
+  invalidating the delegation axis.
+
+### Changed
+
+- The policy's Limits paragraph says the extension corrects an unambiguous call and reports what it
+  applied, and refuses only what it cannot settle.
+
 ## 0.27.0 - 2026-11-16
 
 ### Added

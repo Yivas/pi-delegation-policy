@@ -231,13 +231,12 @@ function advisorChildren(
   const advisors = validAdvisors(state);
   // Same reading as the launch check, so parallel workflows, chains and a shared top-level model
   // count: the policy itself asks for one parallel call per consultation.
-  return (statedChildren(input)?.entries ?? []).flatMap((entry) => {
-    if (typeof entry !== "object" || entry === null) return [];
-    const child = entry as Record<string, unknown>;
+  return (statedChildren(input)?.children ?? []).flatMap(({ entry, model }) => {
+    if (!entry) return [];
     return advisors.some(
-      ({ setting }) => child.agent === advisorAgentName(setting, state.admissions),
+      ({ setting }) => entry.agent === advisorAgentName(setting, state.admissions),
     )
-      ? [child]
+      ? [{ ...entry, ...(model === undefined ? {} : { model }) }]
       : [];
   });
 }
@@ -496,6 +495,19 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     // One task runs from a user prompt to the next settle. It counts calls and positions only:
     // no tool input, task body or path reaches the log.
     let taskMetrics: TaskMetrics | undefined;
+    // Correction notes wait for the tool result of the call that was corrected. The host prepares
+    // every call of a batch before running any of them, so a fixed cap would drop the note of a call
+    // that is still pending. Nothing is evicted: a note is removed when its result arrives, and the
+    // run and session boundaries clear whatever an aborted call left behind.
+    const correctionNotes = new Map<string, string>();
+    const rememberCorrection = (toolCallId: string, note: string): void => {
+      correctionNotes.set(toolCallId, note);
+    };
+    const takeCorrection = (toolCallId: string): string | undefined => {
+      const note = correctionNotes.get(toolCallId);
+      correctionNotes.delete(toolCallId);
+      return note;
+    };
     const countTaskToolCall = (
       event: ToolCallEvent,
       check: SubagentLaunchCheck | undefined,
@@ -1143,6 +1155,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // The event carries the messages of this low-level run; a run that reports none has no
       // outcome to trust, and an unknown outcome never consumes a notice.
       runOutcome = endOutcome(event.messages ?? []);
+      // Every tool result of the run has already been reported, so a note still waiting here
+      // belongs to a call that never produced one.
+      correctionNotes.clear();
       shunt.clearConsumed();
     });
     pi.on("tool_call", async (event) => {
@@ -1158,8 +1173,13 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             outcome: check.refusal ? "refused" : "allowed",
             reason: check.refusal?.code ?? null,
             children: check.children,
+            corrections: [...new Set(check.corrections.map(({ code }) => code))],
           });
         if (check.refusal) return { block: true, reason: check.refusal.message };
+        // The host validates arguments before this hook and runs the object it validated, so a
+        // correction already changed what executes. The transcript keeps what the model sent, so
+        // the tool result carries the note that says what actually ran.
+        if (check.note) rememberCorrection(event.toolCallId, check.note);
       }
       // A control action names a target instead of launching, so it records no `consultation`
       // either, even when that target is an Advisor.
@@ -1207,17 +1227,26 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       return shunt.onToolCall(event, settings, isBuiltinTool(pi, event.toolName));
     });
     pi.on("tool_result", async (event, ctx) => {
+      const note = takeCorrection(event.toolCallId);
       const settings = latestRuntime?.effective.contextShunt;
-      if (!settings || settings.mode === "off") {
-        shunt.clearPending();
-        return undefined;
-      }
-      return shunt.onToolResult(event, settings, ctx.signal, isBuiltinTool(pi, event.toolName));
+      let result: { content?: Array<{ type: "text"; text: string }> } | undefined;
+      if (!settings || settings.mode === "off") shunt.clearPending();
+      else
+        result = await shunt.onToolResult(
+          event,
+          settings,
+          ctx.signal,
+          isBuiltinTool(pi, event.toolName),
+        );
+      if (!note) return result;
+      const content = result?.content ?? event.content ?? [];
+      return { ...result, content: [...content, { type: "text", text: note }] };
     });
     pi.on("session_shutdown", async (_event, ctx) => {
       readerEpoch += 1;
       latestRuntime = undefined;
       taskMetrics = undefined;
+      correctionNotes.clear();
       configBaseline = undefined;
       presentedNotice = undefined;
       runOutcome = undefined;

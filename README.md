@@ -65,6 +65,13 @@ launch), a fixed level, or an inclusive range. A configured level is validated l
 role's resolved model; an unsupported level is a `D:ERR` cause. The level chosen for one run is never
 stored. With `pi-subagents` the launcher form is `model: "provider/model:LEVEL"`.
 
+While delegation is active, a launch check runs before any child starts. It corrects the three cases
+that are unambiguous — a role name instead of a model, a role's exact model with no level, and a
+child whose model is exactly one configured Advisor's — writes the exact values into the call, and
+appends a note to that call's result saying what it applied. Everything else it cannot settle is
+refused, with the accepted launches listed. See the
+[limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/#launch-check).
+
 ## Advisor
 
 Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**
@@ -157,6 +164,10 @@ ContextShunt configuration, and the thinking policies you configure. It stores n
 prompts, and never the thinking level of an individual run.
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7 delegation only.
+- Launch correction mode: the global **Launch correction** row in `/delegate` stores
+  `delegation-policy.launch-correction.json`, schema 1 with `mode`. Missing or invalid state means
+  `correct`, the normal behaviour; `block` is a test mode that refuses every case the check would
+  correct. Older versions ignore the file.
 - Legacy companion: `delegation-policy.advisor.json`, envelope 1 with schema 8 state for Advisor 1.
   Versions `0.17–0.20` see its mode and model in role mode; `0.16` sees delegation without Advisor.
   None of those versions sees Advisor 2, Advisor 3 or tool launch.
@@ -187,7 +198,8 @@ modes, context and count; consultation model IDs, status, context and duration; 
 per main-agent task from a user prompt to the next settle (duration, tool calls, edits, the position
 of the first edit and of the first consult, whether the consult came before the first edit, subagent
 launches and refusals); one `launch` record per subagent call that launches children (allowed or
-refused, a closed refusal code, child count and one role code per child); an allowed record with no
+refused, a closed refusal code, child count, one role code per child, and the closed kinds of
+correction applied); an allowed record with no
 children appears only in that off window and still counts as a launch, while a refusal (for example
 a workflow script or a parallel call without tasks) can also carry no children. Consultation, `task`
 and `launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a

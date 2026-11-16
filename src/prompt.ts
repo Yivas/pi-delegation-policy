@@ -395,10 +395,13 @@ Roles:
 ${roleLines}${uiDesign}${advisorRoleLine}
 
 Limits:
-These instructions state the main agent's obligations in this session. The extension refuses a
-subagent call before it launches when a child has no model, a model that is not its role's, a missing
-or disallowed thinking level, an Advisor profile that does not match, or when it is a workflow
-script, whose models it cannot see; the refusal lists the accepted launches. It cannot judge
+These instructions state the main agent's obligations in this session. The extension corrects an
+unambiguous subagent call before it launches and tells you what it applied: a role name in place of
+a model becomes that role's exact model with a level, a role model with no level gains the level its
+policy or the model allows, and a child whose model is exactly one configured Advisor's runs with
+that Advisor's profile. It refuses a subagent call before it launches when a child has no model, a
+model that is not its role's, a thinking level or an Advisor profile it cannot settle, or when it is
+a workflow script, whose models it cannot see; the refusal lists the accepted launches. It cannot judge
 whether work should be delegated, and it performs no delegated work of its own: it does not route,
 supervise, or accept subagent results. ${effective.advisorLaunch === "tool" && advisorEnabled ? "Its explicit consult_advisor and context_shunt_delegate tools use the authorized host executor. The reader asks" : "Its only launch belongs to one explicit tool, context_shunt_delegate: that tool asks"}
 the host-authorized external executor for one bounded answer about an already-preserved text

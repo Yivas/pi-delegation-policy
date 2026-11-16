@@ -16,6 +16,7 @@ import {
   PROVIDER_EXTENSION_ADVISOR_EXTENSION,
 } from "../src/advisor-provider-extension.ts";
 import { AdvisorLog, ADVISOR_LOG_MAX_BYTES } from "../src/advisor-log.ts";
+import { getLaunchCorrectionPath } from "../src/launch-correction-mode.ts";
 import type { AgentLaunchModules } from "../src/agent-launch.ts";
 import {
   ADVISOR_EXTENSION_ENTRY_TYPE,
@@ -212,6 +213,7 @@ async function harness(
     fixtureVersion?: "0.76.1" | "0.83.1";
     packageVersion?: unknown;
     activeTools?: string[];
+    correctionMode?: "block";
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "advisor-tool-"));
@@ -219,6 +221,11 @@ async function harness(
   process.env.PI_CODING_AGENT_DIR = directory;
   const path = getGlobalConfigPath(directory);
   await writeConfig(path, value);
+  if (options.correctionMode)
+    await writeFile(
+      getLaunchCorrectionPath(path),
+      `${JSON.stringify({ schemaVersion: 1, mode: options.correctionMode })}\n`,
+    );
   const bus = new Bus();
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, { handler: (args: string, ctx: never) => Promise<void> }>();
@@ -1490,12 +1497,16 @@ test("launch events record an outcome, a closed code and role codes only", async
       await launch({ agent: ADVISOR_AGENT_NAME, model: "example/second:low", task: sentinel }),
       undefined,
     );
-    const refused = (await launch({ agent: "worker", model: "example/first", task: sentinel })) as {
+    const refused = (await launch({
+      agent: "worker",
+      model: "other/elsewhere:low",
+      task: sentinel,
+    })) as {
       block: boolean;
       reason: string;
     };
     assert.equal(refused.block, true);
-    assert.match(refused.reason, /no thinking level/);
+    assert.match(refused.reason, /not the model of any enabled role/);
     await run.log.flush();
     const text = await readFile(run.logPath, "utf8");
     assert.doesNotMatch(text, new RegExp(sentinel));
@@ -1507,6 +1518,7 @@ test("launch events record an outcome, a closed code and role codes only", async
     assert.equal(launches.length, 3);
     assert.deepEqual(Object.keys(launches[0]).sort(), [
       "children",
+      "corrections",
       "event",
       "outcome",
       "policyHash",
@@ -1516,13 +1528,172 @@ test("launch events record an outcome, a closed code and role codes only", async
       "version",
     ]);
     assert.deepEqual(
-      launches.map((event) => [event.outcome, event.reason, event.children, event.roles]),
+      launches.map((event) => [
+        event.outcome,
+        event.reason,
+        event.children,
+        event.roles,
+        event.corrections,
+      ]),
       [
-        ["allowed", null, 1, ["small"]],
-        ["allowed", null, 1, ["advisor"]],
-        ["refused", "missing-thinking", 1, ["small"]],
+        ["allowed", null, 1, ["small"], []],
+        ["allowed", null, 1, ["advisor"], []],
+        ["refused", "wrong-model", 1, ["unknown"], []],
       ],
     );
+  } finally {
+    await run.close();
+  }
+});
+
+test("the launch check corrects an unambiguous call before the executor receives it", async () => {
+  const run = await harness({
+    ...base,
+    intensity: "normal",
+    small: first,
+    medium: null,
+    large: null,
+    advisors: [second],
+  });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    // The host validates the arguments before `tool_call` and runs the object it validated, so the
+    // object this hook leaves behind is what the executor receives.
+    const single = { agent: "worker", model: "small", task: sentinel };
+    assert.equal(
+      await run.hook("tool_call", { toolName: "subagent", toolCallId: "call-1", input: single }),
+      undefined,
+    );
+    assert.equal(single.model, "example/first:medium");
+
+    const parallel = {
+      workflow: "parallel",
+      model: "small",
+      args: {
+        tasks: [
+          { agent: "a", task: sentinel },
+          { agent: "b", task: sentinel },
+        ],
+      },
+    };
+    assert.equal(
+      await run.hook("tool_call", { toolName: "subagent", toolCallId: "call-2", input: parallel }),
+      undefined,
+    );
+    assert.equal(parallel.model, "example/first:medium");
+
+    const chain = {
+      chain: [
+        { agent: "a", task: sentinel, model: "example/first" },
+        { parallel: [{ agent: "b", task: sentinel, model: "example/second:low" }] },
+      ],
+    };
+    assert.equal(
+      await run.hook("tool_call", { toolName: "subagent", toolCallId: "call-3", input: chain }),
+      undefined,
+    );
+    assert.deepEqual(chain.chain, [
+      { agent: "a", task: sentinel, model: "example/first:medium" },
+      { parallel: [{ agent: ADVISOR_AGENT_NAME, task: sentinel, model: "example/second:low" }] },
+    ]);
+
+    // The note travels with the tool result of the corrected call, so the agent can see what ran.
+    const result = (await run.hook("tool_result", {
+      toolName: "subagent",
+      toolCallId: "call-1",
+      input: single,
+      content: [{ type: "text", text: "child output" }],
+      details: undefined,
+      isError: false,
+    })) as { content: Array<{ type: string; text: string }> };
+    assert.equal(result.content[0]?.text, "child output");
+    assert.match(result.content.at(-1)?.text ?? "", /corrected this subagent call before it ran/);
+    assert.match(result.content.at(-1)?.text ?? "", /example\/first:medium/);
+
+    await run.log.flush();
+    const launches = (await logEvents(run.logPath)).filter((event) => event.event === "launch");
+    assert.deepEqual(
+      launches.map((event) => event.corrections),
+      [["role-alias"], ["role-alias"], ["level-added", "advisor-profile"]],
+    );
+    // The log stays content-free: closed codes and counts, never a model or a task.
+    assert.doesNotMatch(JSON.stringify(launches), /example\/first|example\/second/);
+    assert.doesNotMatch(await readFile(run.logPath, "utf8"), new RegExp(sentinel));
+  } finally {
+    await run.close();
+  }
+});
+
+test("block mode refuses an unambiguous call and leaves it exactly as stated", async () => {
+  const run = await harness(
+    { ...base, intensity: "normal", small: first, medium: null, large: null, advisors: [second] },
+    models,
+    10_000,
+    { correctionMode: "block" },
+  );
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    const input = { agent: "worker", model: "small", task: sentinel };
+    const blocked = (await run.hook("tool_call", {
+      toolName: "subagent",
+      toolCallId: "call-1",
+      input,
+    })) as { block: boolean; reason: string };
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /not the model of any enabled role/);
+    assert.deepEqual(input, { agent: "worker", model: "small", task: sentinel });
+    await run.log.flush();
+    const launches = (await logEvents(run.logPath)).filter((event) => event.event === "launch");
+    assert.deepEqual(
+      launches.map((event) => [event.outcome, event.reason, event.corrections]),
+      [["refused", "wrong-model", []]],
+    );
+  } finally {
+    await run.close();
+  }
+});
+
+test("every corrected call keeps its note while its result is pending", async () => {
+  const run = await harness({
+    ...base,
+    intensity: "normal",
+    small: first,
+    medium: null,
+    large: null,
+    advisors: [second],
+  });
+  try {
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    // The host prepares every call of a batch before running any of them, so all of these notes are
+    // pending at once. A fixed cap would drop the first ones.
+    const calls = Array.from({ length: 33 }, (_, index) => ({
+      toolCallId: `call-${index}`,
+      input: { agent: "worker", model: "small", task: sentinel },
+    }));
+    for (const { toolCallId, input } of calls)
+      assert.equal(
+        await run.hook("tool_call", { toolName: "subagent", toolCallId, input }),
+        undefined,
+      );
+    // Results arrive in a different order than the calls were prepared.
+    for (const { toolCallId, input } of [...calls].reverse()) {
+      const result = (await run.hook("tool_result", {
+        toolName: "subagent",
+        toolCallId,
+        input,
+        content: [{ type: "text", text: "child output" }],
+        details: undefined,
+        isError: false,
+      })) as { content: Array<{ type: string; text: string }> };
+      assert.equal(result.content[0]?.text, "child output", toolCallId);
+      assert.match(result.content.at(-1)?.text ?? "", /corrected this subagent call/, toolCallId);
+    }
   } finally {
     await run.close();
   }
@@ -1537,10 +1708,10 @@ test("a refused Advisor launch counts as a refusal, never as a consult", async (
     await run.hook("input", { source: "interactive" });
     const refused = (await run.hook("tool_call", {
       toolName: "subagent",
-      input: { agent: ADVISOR_AGENT_NAME, model: "example/first", task: sentinel },
+      input: { agent: ADVISOR_AGENT_NAME, model: "example/elsewhere:low", task: sentinel },
     })) as { block: boolean; reason: string };
     assert.equal(refused.block, true);
-    assert.match(refused.reason, /no thinking level/);
+    assert.match(refused.reason, /not a configured Advisor/);
     await run.hook("agent_settled");
     await run.log.flush();
     const events = await logEvents(run.logPath);

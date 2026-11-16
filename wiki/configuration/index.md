@@ -353,9 +353,41 @@ choosing one that does not register the provider runs its code in the child befo
 refuses it. Releases before this option ignore the file and launch the standard profile, which may
 answer through the built-in provider or fail as before.
 
+## Launch correction mode {#launch-correction-mode}
+
+While delegation is active, the launch check corrects three unambiguous cases instead of refusing
+them, and tells the agent what it applied. A role name in place of a model becomes that role's exact
+provider/model with a level; a role's exact model with no `:LEVEL` gains one; and a child whose model
+is exactly one configured Advisor's runs with that Advisor's profile. Accepted role names are
+`small`, `medium`, `large`, `visual-design`, `ui-design`, `uidesign`, `advisor`, `advisor-1`,
+`advisor-2` and `advisor-3`, case-insensitive. The added level is the role's fixed level, the lowest
+supported level inside its range, or `medium` clamped to what the model supports when the role has no
+policy. Anything the guard cannot settle is still refused.
+
+A test mode refuses those cases instead, which keeps the pre-correction behaviour for measurement.
+Set it in `/delegate`, on the **Launch correction** row: `correct` is the default, and `block` is the
+measurement mode. The row is global for every session, not a session setting, and the panel says so
+before you change it. **Apply changes** and **Save effective configuration as defaults** both store a
+changed value before their own step, so a failure there stops the step and reports it; **Cancel**
+discards the change and leaves the file as it was.
+
+The panel writes `~/.pi/agent/delegation-policy.launch-correction.json`, whose format is:
+
+```json
+{ "schemaVersion": 1, "mode": "block" }
+```
+
+`correct` is the value to restore. The file is separate from the schema-10 policy document, which
+rejects unknown keys, so the mode needs no schema bump. A missing file means `correct`; an unreadable
+or invalid one is ignored with a diagnostic and never makes the delegation axis invalid, and the panel
+refuses to overwrite it until you fix or remove it. The replacement is a temporary-file write, so a
+failure leaves the previous file in place.
+
 ## Persistence and compatibility
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7 delegation only.
+- Launch correction mode: `delegation-policy.launch-correction.json`, schema 1 with `mode`. Missing
+  or invalid state means `correct`. Older versions ignore it.
 - Legacy companion: `delegation-policy.advisor.json`, envelope 1 with schema 8 state for Advisor 1.
   Versions `0.17–0.20` see its mode and model in role mode; `0.16` sees delegation without Advisor.
   None of those versions sees Advisor 2, Advisor 3 or tool launch.
@@ -388,7 +420,8 @@ modes, context and count; consultation model IDs, status, context and duration; 
 per main-agent task from a user prompt to the next settle (duration, tool calls, edits, the position
 of the first edit and of the first consult, whether the consult came before the first edit, subagent
 launches and refusals); one `launch` record per subagent call that launches children (allowed or
-refused, a closed refusal code, child count and one role code per child); an allowed record with no
+refused, a closed refusal code, child count, one role code per child, and the closed kinds of
+correction applied); an allowed record with no
 children appears only in that off window and still counts as a launch, while a refusal (for example
 a workflow script or a parallel call without tasks) can also carry no children. Consultation, `task`
 and `launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a

@@ -10,6 +10,7 @@ import {
 import { ANTHROPIC_PROVIDER_PACKAGE } from "./advisor-anthropic-provider.ts";
 import { DelegatePanel, type DelegatePanelResult } from "./delegate-panel.ts";
 import { getProviderAdmissionsPath, writeProviderAdmissions } from "./provider-admissions.ts";
+import { getLaunchCorrectionPath, writeLaunchCorrectionMode } from "./launch-correction-mode.ts";
 import { listProviderExtensionCandidates } from "./provider-package.ts";
 import {
   hasRuntimeError,
@@ -69,6 +70,7 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
         hasRuntimeError: hasRuntimeError(state),
         hasAdvisorError: hasAdvisorError(state),
         admissions: state.admissions ?? {},
+        launchCorrection: state.launchCorrection,
         extensionCandidates,
         extensionProviders,
         onSaveAdmissions: async (admissions) => {
@@ -78,6 +80,14 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
           );
           state.admissions = admissions;
           return true;
+        },
+        onSaveLaunchCorrection: async (mode) => {
+          const result = await writeLaunchCorrectionMode(
+            mode,
+            getLaunchCorrectionPath(getGlobalConfigPath()),
+          );
+          if (result === "saved" || result === "unchanged") state.launchCorrection = mode;
+          return result;
         },
         onApply: async (draft) => {
           const result = appendGuardedSessionState(pi, structuredClone(draft));
@@ -92,6 +102,7 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
           state.advisorWarnings = refreshed.advisorWarnings;
           state.advisorEntries = refreshed.advisorEntries;
           state.admissions = refreshed.admissions;
+          state.launchCorrection = refreshed.launchCorrection;
           return result === "success";
         },
         onSaveDefaults: async (draft) => {

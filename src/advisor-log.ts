@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getGlobalConfigPath } from "./config.ts";
-import type { LaunchChildRole, LaunchRefusalCode } from "./launch-guard.ts";
+import type { LaunchChildRole, LaunchCorrectionCode, LaunchRefusalCode } from "./launch-guard.ts";
 import type { AdvisorContext } from "./prompt.ts";
 import type { AdvisorLaunch, AdvisorMode, Intensity } from "./types.ts";
 
@@ -48,6 +48,8 @@ export type LaunchRecord = {
   /** The closed refusal code, or null when the call was allowed. */
   reason: LaunchRefusalCode | null;
   children: readonly LaunchChildRole[];
+  /** Closed kinds of correction the guard applied before the call ran; never a model or a task. */
+  corrections: readonly LaunchCorrectionCode[];
 };
 
 /** An allowlisted, content-free local record. No executor payloads or errors enter this writer. */
@@ -143,6 +145,7 @@ export class AdvisorLog {
       reason: record.reason,
       children: record.children.length,
       roles: record.children,
+      corrections: record.corrections,
     });
   }
 
