@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.27.0 - 2026-11-16
+
 ### Added
 
 - Two content-free events in the local log. A `task` record summarises one main-agent task, from the
@@ -10,7 +12,8 @@
   refusals. A `launch` record covers one `subagent` call that launches children: allowed or refused,
   a closed refusal code, child count and one role code per child. Control actions such as
   `{action:"status"}` record nothing, a call that launches only Advisors counts as a consult and not
-  as a launch, and both records repeat the policy hash they ran under.
+  as a launch, and both records repeat the policy hash they ran under. `advisorConsults` counts
+  attempts: a `consult_advisor` call counts whether or not it reached a model.
 
 ### Fixed
 
