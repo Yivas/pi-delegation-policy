@@ -12,6 +12,16 @@
   `{action:"status"}` record nothing, a call that launches only Advisors counts as a consult and not
   as a launch, and both records repeat the policy hash they ran under.
 
+### Fixed
+
+- The Anthropic auth profile admits the exact managed-user `@gotgenes/pi-anthropic-auth` 3.6.0
+  alongside 3.4.3 and 3.4.4. Its surface, single entry and provider registration are the ones the
+  adapter already checks, and it registers after an awaited import, which the host waits for. Other
+  versions stay rejected, and an unavailable install still leaves the dispatch guard closed.
+- A launch refusal names a configured Advisor that failed validation instead of describing it as
+  unconfigured. A `Configured but unavailable:` section lists each such slot with the reason the
+  runtime already computed. The refusal decision is unchanged.
+
 ## 0.26.0 - 2026-11-10
 
 ### Added

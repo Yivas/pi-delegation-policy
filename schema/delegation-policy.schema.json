@@ -285,7 +285,7 @@
         },
         "providerExtension": {
           "const": "anthropic-auth",
-          "description": "Explicit opt-in to the separate Anthropic Advisor profile; requires managed-user pi-anthropic-auth 3.4.3. Does not change the model."
+          "description": "Explicit opt-in to the separate Anthropic Advisor profile; requires managed-user pi-anthropic-auth 3.4.3, 3.4.4 or 3.6.0. Does not change the model."
         }
       },
       "additionalProperties": false

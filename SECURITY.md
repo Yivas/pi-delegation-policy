@@ -50,7 +50,7 @@ The task text and the reply may persist in the executor's argv, temporary files,
 
 A per-Advisor `providerExtension: "anthropic-auth"` opt-in selects the separate
 `pi-delegation-policy.advisor-anthropic-auth` profile. It admits only a managed-user installation of
-`@gotgenes/pi-anthropic-auth` 3.4.3 with the exact manifest/entry/canonical path, not ambient
+`@gotgenes/pi-anthropic-auth` 3.4.3, 3.4.4 or 3.6.0 with the exact manifest/entry/canonical path, not ambient
 extensions. The provider's normal configuration, startup hook, aliases and diagnostic command are
 trusted code with normal authentication and filesystem access; zero model tools is not a sandbox.
 The account diagnostic is never invoked during initialization. Failed initialization retains a

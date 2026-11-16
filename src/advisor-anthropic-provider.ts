@@ -6,12 +6,15 @@ import { locateInstalledPackage } from "./provider-package.ts";
 
 export const ANTHROPIC_PROVIDER_PACKAGE = "@gotgenes/pi-anthropic-auth";
 const PACKAGE_NAME = ANTHROPIC_PROVIDER_PACKAGE;
-/** Exact releases reviewed for this adapter; 3.4.4 changed only documentation and comments. */
-const PACKAGE_VERSIONS = ["3.4.3", "3.4.4"] as const;
+/**
+ * Exact releases reviewed for this adapter. 3.4.4 changed only documentation and comments; 3.6.0
+ * keeps the same surface and registers its provider after an awaited import.
+ */
+const PACKAGE_VERSIONS = ["3.4.3", "3.4.4", "3.6.0"] as const;
 export const ANTHROPIC_ADVISOR_AGENT = "pi-delegation-policy.advisor-anthropic-auth";
 export const ANTHROPIC_ADVISOR_EXTENSION = fileURLToPath(import.meta.url);
 const UNAVAILABLE =
-  "Advisor provider unavailable: requires the exact managed-user pi-anthropic-auth 3.4.3 or 3.4.4 installation and compatible public host APIs.";
+  "Advisor provider unavailable: requires the exact managed-user pi-anthropic-auth 3.4.3, 3.4.4 or 3.6.0 installation and compatible public host APIs.";
 
 type ProviderLocation = { ok: true; entry: string } | { ok: false; message: string };
 

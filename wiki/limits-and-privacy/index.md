@@ -152,7 +152,7 @@ Local timeouts and cancellation do not cap external generation, retries or cost.
 ### Optional provider extension
 
 The separate `pi-delegation-policy.advisor-anthropic-auth` profile can load the exact managed-user
-`@gotgenes/pi-anthropic-auth` 3.4.3 or 3.4.4 installation after a per-Advisor opt-in. It preserves that
+`@gotgenes/pi-anthropic-auth` 3.4.3, 3.4.4 or 3.6.0 installation after a per-Advisor opt-in. It preserves that
 extension's normal configuration, startup hook, provider aliases and account diagnostic command;
 trusted host code can access its normal authentication and files even though the model has no tools.
 The diagnostic can query account information only when explicitly invoked and is never run by

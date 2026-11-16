@@ -253,9 +253,11 @@ test("the profile step after an Anthropic model keeps the selected choice visibl
     await writeFile(process.env.PI_ADVISOR_UI_REPORT, JSON.stringify(frames, null, 2));
 });
 
-const sentinelSource = `export default function(pi) {
+const sentinelSource = `export default async function(pi) {
   const mode = process.env.PI_ADVISOR_SYNTHETIC_MODE;
   if (mode === "factory") throw Error("factory sentinel");
+  // The reviewed releases register their provider after awaiting an import.
+  if (mode === "async") await new Promise((resolve) => setTimeout(resolve, 0));
   const streamSimple = (model) => {
     const message = { role:"assistant", api:model.api, provider:model.provider, model:model.id,
       content:[{type:"text",text:"FINAL_PROVIDER_SENTINEL"}], stopReason:"stop", timestamp:0,
@@ -297,6 +299,7 @@ test("the final adapter uses its real loader and dispatch guard without builtin 
   try {
     for (const mode of [
       "success",
+      "async",
       "factory",
       "start",
       "tools",
@@ -360,8 +363,8 @@ test("the final adapter uses its real loader and dispatch guard without builtin 
           { apiKey: "synthetic-memory-only", env: {}, maxTokens: 1 },
         )
         .result();
-      if (mode === "success") {
-        assert.equal(answer.stopReason, "stop");
+      if (mode === "success" || mode === "async") {
+        assert.equal(answer.stopReason, "stop", mode);
         assert.deepEqual(answer.content, [{ type: "text", text: "FINAL_PROVIDER_SENTINEL" }]);
         assert.deepEqual(commands, ["anthropic-auth:status"]);
       } else {
@@ -400,11 +403,13 @@ test("final provider location rejects path escape, project shadowing and unavail
     );
     await writeFile(join(root, "src/index.ts"), "throw Error('must not import');");
     assert.equal(locateAdvisorAnthropicProvider(directory).ok, true);
-    // Only reviewed releases: 3.4.4 is admitted, an unreviewed later one is not.
+    // Only reviewed releases: 3.4.4 and 3.6.0 are admitted, an unreviewed one is not.
     for (const [version, ok] of [
       ["3.4.4", true],
       ["3.4.5", false],
       ["3.4.3", true],
+      ["3.6.0", true],
+      ["3.6.1", false],
     ] as const) {
       await writeFile(
         join(root, "package.json"),
@@ -416,6 +421,16 @@ test("final provider location rejects path escape, project shadowing and unavail
       );
       assert.equal(locateAdvisorAnthropicProvider(directory).ok, ok, version);
     }
+    // The cases below must fail for their own reason, never because the version is rejected.
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "@gotgenes/pi-anthropic-auth",
+        version: "3.6.0",
+        pi: { extensions: ["./src/index.ts"] },
+      }),
+    );
+    assert.equal(locateAdvisorAnthropicProvider(directory).ok, true);
     Reflect.set(sdk.DefaultPackageManager.prototype, "getInstalledPath", undefined);
     assert.equal(locateAdvisorAnthropicProvider(directory).ok, false);
     Reflect.set(sdk.DefaultPackageManager.prototype, "getInstalledPath", method);

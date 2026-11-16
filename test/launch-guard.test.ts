@@ -134,6 +134,67 @@ test("valid launches pass and every policy violation is refused before launching
   }
 });
 
+test("a configured Advisor that failed validation is named with its reason, not left as unconfigured", () => {
+  const second = { provider: "advice", model: "second-advisor" };
+  const third = { provider: "other-advice", model: "third-advisor" };
+  const available = (ref: typeof small) => ({
+    kind: "available" as const,
+    model: model(ref) as never,
+  });
+  const three = state({ advisors: [advisor, second, third] });
+  three.advisorEntries = [
+    { index: 0, setting: advisor, status: available(advisor), errors: [] },
+    {
+      index: 1,
+      setting: second,
+      status: available(second),
+      errors: ["Advisor provider unavailable: requires the exact managed-user install."],
+    },
+    { index: 2, setting: third, status: available(third), errors: [] },
+  ];
+  const reason =
+    checkSubagentLaunch(
+      { agent: "pi-delegation-policy.advisor", task: "q", model: "advice/second-advisor:low" },
+      three,
+    ) ?? "";
+  // The slot stays refused, and the refusal names it with the cause the runtime already recorded.
+  assert.match(reason, /not a configured Advisor/);
+  assert.match(reason, /Configured but unavailable:\n- Advisor 2: Advisor provider unavailable/);
+  assert.match(reason, /- Advisor 1: agent/);
+  assert.match(reason, /- Advisor 3: agent/);
+  assert.doesNotMatch(reason, /No launch is allowed right now/);
+  // A valid slot still refuses another Advisor's profile.
+  assert.match(
+    checkSubagentLaunch(
+      {
+        agent: "pi-delegation-policy.advisor-anthropic-auth",
+        task: "q",
+        model: "advice/advisor-model:low",
+      },
+      three,
+    ) ?? "",
+    /not a configured Advisor/,
+  );
+
+  // With no valid Advisor and delegation off, the refusal still reports the configured slot.
+  const alone = state({ advisors: [second], intensity: "off" });
+  alone.advisorEntries = [
+    {
+      index: 0,
+      setting: second,
+      status: available(second),
+      errors: ["Advisor model is not registered in Pi."],
+    },
+  ];
+  assert.match(
+    checkSubagentLaunch(
+      { agent: "pi-delegation-policy.advisor", task: "q", model: "advice/second-advisor:low" },
+      alone,
+    ) ?? "",
+    /No launch is allowed right now\.\nConfigured but unavailable:\n- Advisor 1: Advisor model is not registered in Pi\./,
+  );
+});
+
 test("a thinking level passes while any role sharing the model accepts it", () => {
   const shared = state({
     large: small,

@@ -101,6 +101,16 @@ function roleSetting(state: RuntimeState, role: Role): ModelRef {
   return state.effective[role] as ModelRef;
 }
 
+/**
+ * Configured Advisors the runtime already rejected, with the reason it recorded. A slot that failed
+ * validation is not an unconfigured one, and the refusal must not report it as such.
+ */
+function unavailableAdvisorLines(state: RuntimeState): string[] {
+  return (state.advisorEntries ?? []).flatMap(({ index, errors }) =>
+    errors.length ? [`- Advisor ${index + 1}: ${errors.join(" ")}`] : [],
+  );
+}
+
 /** The exact launches this policy accepts, so a refusal tells the model how to retry. */
 function allowedLines(state: RuntimeState, delegation: boolean): string {
   const lines = [
@@ -115,9 +125,11 @@ function allowedLines(state: RuntimeState, delegation: boolean): string {
         `- Advisor ${index + 1}: agent "${advisorAgentName(setting, state.admissions)}", model "${reference(setting)}:LEVEL"`,
     ),
   ];
-  return lines.length
-    ? `Allowed launches:\n${lines.join("\n")}`
-    : "No launch is allowed right now.";
+  const unavailable = unavailableAdvisorLines(state);
+  return [
+    lines.length ? `Allowed launches:\n${lines.join("\n")}` : "No launch is allowed right now.",
+    ...(unavailable.length ? [`Configured but unavailable:\n${unavailable.join("\n")}`] : []),
+  ].join("\n");
 }
 
 function checkThinking(
