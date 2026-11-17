@@ -11,6 +11,7 @@ import { ANTHROPIC_PROVIDER_PACKAGE } from "./advisor-anthropic-provider.ts";
 import { DelegatePanel, type DelegatePanelResult } from "./delegate-panel.ts";
 import { getProviderAdmissionsPath, writeProviderAdmissions } from "./provider-admissions.ts";
 import { getLaunchCorrectionPath, writeLaunchCorrectionMode } from "./launch-correction-mode.ts";
+import { getAdvisorRemindersPath, writeAdvisorReminderMode } from "./advisor-reminders.ts";
 import { listProviderExtensionCandidates } from "./provider-package.ts";
 import {
   hasRuntimeError,
@@ -85,6 +86,8 @@ export async function openDelegateEditor(
         hasAdvisorError: hasAdvisorError(state),
         admissions: state.admissions ?? {},
         launchCorrection: state.launchCorrection,
+        advisorReminder: state.advisorReminder,
+        advisorReminderInvalid: state.advisorReminderInvalid,
         extensionCandidates,
         extensionProviders,
         ...(continuity
@@ -110,6 +113,14 @@ export async function openDelegateEditor(
           if (result === "saved" || result === "unchanged") state.launchCorrection = mode;
           return result;
         },
+        onSaveAdvisorReminder: async (mode) => {
+          const result = await writeAdvisorReminderMode(
+            mode,
+            getAdvisorRemindersPath(getGlobalConfigPath()),
+          );
+          if (result === "saved" || result === "unchanged") state.advisorReminder = mode;
+          return result;
+        },
         onApply: async (draft) => {
           const result = appendGuardedSessionState(pi, structuredClone(draft));
           const refreshed = await loadRuntime(ctx);
@@ -124,6 +135,8 @@ export async function openDelegateEditor(
           state.advisorEntries = refreshed.advisorEntries;
           state.admissions = refreshed.admissions;
           state.launchCorrection = refreshed.launchCorrection;
+          state.advisorReminder = refreshed.advisorReminder;
+          state.advisorReminderInvalid = refreshed.advisorReminderInvalid;
           return result === "success";
         },
         onSaveDefaults: async (draft) => {

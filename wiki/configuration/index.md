@@ -432,11 +432,57 @@ or invalid one is ignored with a diagnostic and never makes the delegation axis 
 refuses to overwrite it until you fix or remove it. The replacement is a temporary-file write, so a
 failure leaves the previous file in place.
 
+## Advisor reminder {#advisor-reminder}
+
+The global **Advisor reminder** row adds one short extension-owned line to the request context, at
+most once per operative task of each instance, so a useful consultation does not depend on the user
+remembering to ask for it. It is on by default; `off` adds nothing. The row is global for every
+session, not a session setting, and **Apply changes** and **Save effective configuration as defaults**
+both store a changed value before their own step, while **Cancel** leaves the file as it was.
+
+Two observable events arm the reminder. One successful builtin orientation result (`read`, `find`,
+`grep` or `ls`) presents it in the next request, and the same builtin tool failing in two different
+rounds presents it as well. A batch of results is one round, and a retry of the same request keeps the
+presentation it already carried; the next round never re-arms it. An attempted consultation ends the
+reminder for that task even when it fails, and a control action that only names an Advisor is not a
+consultation. Turning the reminder off, a branch move, a new task or the task settling discards it,
+and re-enabling it never restores a presentation the same task already used.
+
+The reminder is presented only while a valid Advisor is active, the task is live, and the configured
+launch mode has its launcher among the active tools: `subagent` for `role`, `consult_advisor` for
+`tool`. A session that cannot consult is never told to, and no preflight, status call or process is
+started to find out. Only the documented `pi-subagents` process markers (`PI_SUBAGENT_CHILD=1`,
+`PI_SUBAGENT_RUNNER_PID`) exclude a child; a `/fork` or `/clone` of a human session is still a main
+session and keeps the reminder, and a missing marker proves nothing, so foreground children that
+load this policy and can consult are covered too.
+
+The line is appended to the request copy after the policy block and the configuration notice, and
+never to the conversation. It starts no turn, no child and no consultation, adds no authority and
+revokes no instruction, and it cannot promise to arrive before the first edit or to observe sources
+other than those builtin tools. It is sent to the provider like the rest of the request, so it is not
+a promise about cost or retention, and a reminder is not evidence that a consultation happened.
+
+The panel writes `~/.pi/agent/delegation-policy.advisor-reminders.json`:
+
+```json
+{ "schemaVersion": 1, "mode": "remind" }
+```
+
+`off` is the value that adds nothing. The file is separate from the schema-10 policy document, which
+rejects unknown keys, so the mode needs no schema bump. A missing file means `remind`; an unreadable
+or invalid one suspends only the reminder with a diagnostic, never changes the delegation or Advisor
+axis, and is reported instead of overwritten until you fix or remove it; the row then reads
+`Unavailable/Suspended · global`, because a suspension is not a value you chose. The replacement is a
+temporary-file write, so a failure leaves the previous file in place.
+
 ## Persistence and compatibility
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7 delegation only.
 - Launch correction mode: `delegation-policy.launch-correction.json`, schema 1 with `mode`. Missing
   or invalid state means `correct`. Older versions ignore it.
+- Advisor reminder: `delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`off` or
+  `remind`). Missing state means `remind`; invalid state suspends only the reminder. Older versions
+  ignore it.
 - Legacy companion: `delegation-policy.advisor.json`, envelope 1 with schema 8 state for Advisor 1.
   Versions `0.17–0.20` see its mode and model in role mode; `0.16` sees delegation without Advisor.
   None of those versions sees Advisor 2, Advisor 3 or tool launch.

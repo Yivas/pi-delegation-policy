@@ -2858,30 +2858,63 @@ test("concurrent recoverers cannot delete a lock another one just acquired", asy
     `${JSON.stringify({ owner: "dead-owner", pid: 999_999, startedAt: 1 })}\n`,
   );
   const onlyDeadIsFinished = (owner: { owner: string }) => owner.owner === "dead-owner";
-  const first = new AdvisorThreadJournal(path, { ownerFinished: onlyDeadIsFinished });
+  // The winner pauses between claiming the reclamation gate and publishing its owner, which is the
+  // window a delayed recoverer must respect. `publishOwner` is the constructor seam the journal
+  // already exposes for that publication; production is unchanged.
+  let releasePublish!: () => void;
+  let gateClaimed!: () => void;
+  const claimed = new Promise<void>((resolve) => {
+    gateClaimed = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    releasePublish = resolve;
+  });
+  const first = new AdvisorThreadJournal(path, {
+    ownerFinished: onlyDeadIsFinished,
+    publishOwner: async (ownerPath, text) => {
+      if (ownerPath.includes(".reclaim.lock")) {
+        gateClaimed();
+        await paused;
+      }
+      await writeFile(ownerPath, text, "utf8");
+    },
+  });
   const second = new AdvisorThreadJournal(path, { ownerFinished: onlyDeadIsFinished });
+  let winner: Promise<string> | undefined;
   try {
     // A stale read taken before the gate proves nothing: the removal is decided by the fresh read
     // inside it, and the loser of the gate never touches anything.
     const staleRead = await first.lockState(parentKey);
     assert.equal(staleRead.kind, "held");
-    const outcomes = await Promise.all([
-      first.releaseStaleLock(parentKey),
-      second.releaseStaleLock(parentKey),
-    ]);
-    assert.equal(outcomes.filter((outcome) => outcome === "released").length, 1);
-    assert.ok(
-      outcomes.every(
-        (outcome) => outcome === "released" || outcome === "busy" || outcome === "gate-stale",
-      ),
-      `unexpected reclamation outcomes: ${outcomes.join(",")}`,
-    );
-    // The gate is free again and no victim tomb is left behind.
-    assert.equal(await first.gateState(), "free");
+
+    // The winner holds the gate with its owner unpublished. A second recoverer must fail closed
+    // instead of deleting or replacing that gate, and the stale victim must still be there.
+    winner = first.releaseStaleLock(parentKey);
+    await claimed;
+    assert.equal(await second.releaseStaleLock(parentKey), "gate-stale");
+    assert.equal((await second.lockState(parentKey)).kind, "held");
     assert.deepEqual(
       (await readdir(directory)).filter((entry) => entry.includes(".stale-")),
       [],
     );
+
+    // Once the owner is published the winner reclaims the victim: the gate and the lock are free
+    // and no tomb is left behind.
+    releasePublish();
+    assert.equal(await winner, "released");
+    assert.equal(await first.gateState(), "free");
+    assert.equal((await first.lockState(parentKey)).kind, "free");
+    assert.deepEqual(
+      (await readdir(directory)).filter((entry) => entry.includes(".stale-")),
+      [],
+    );
+    assert.deepEqual(
+      (await readdir(`${path}.lock`)).filter((entry) => entry.includes(".stale-")),
+      [],
+    );
+    // Releasing an already free lock is the documented idempotent answer, not a second removal.
+    assert.equal(await second.releaseStaleLock(parentKey), "released");
+
     // A lock a live writer holds is never removed, even by a concurrent recoverer.
     const held = await first.exclusive(parentKey, async (session) => {
       await session.mutate((latest) =>
@@ -2895,6 +2928,9 @@ test("concurrent recoverers cannot delete a lock another one just acquired", asy
     );
     assert.deepEqual(after, { ok: true, value: [0] });
   } finally {
+    // Never leave the paused publication or a pending reclamation behind, even on a failed check.
+    releasePublish();
+    await winner?.catch(() => undefined);
     await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });

@@ -48,6 +48,13 @@ import {
 } from "./launch-guard.ts";
 import { AdvisorLog, type TaskSummary } from "./advisor-log.ts";
 import {
+  AdvisorReminderState,
+  DEFAULT_ADVISOR_REMINDER_MODE,
+  isSubagentChildProcess,
+  reminderConsultationPath,
+  type AdvisorReminderMessage,
+} from "./advisor-reminders.ts";
+import {
   createConfigNotice,
   noticeLines,
   projectNoticeConfig,
@@ -545,6 +552,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     // One operative task runs from a fresh user prompt to `agent_settled`. A steer or follow-up
     // keeps it, an extension prompt opens none, and the token never leaves the journal.
     let taskToken: string | undefined;
+    // The reminder is ephemeral and belongs to the same task as the token; it never outlives it.
+    const advisorReminder = new AdvisorReminderState();
     // Bumped whenever Advisor mode, launch or settings change, so a thread created under the
     // previous configuration is never resumed under the new one.
     let advisorEpoch = 0;
@@ -814,9 +823,22 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       correctionNotes.delete(toolCallId);
       return note;
     };
+    // A call that launches only Advisors is a consult, a mixed call is both, and a refused call
+    // never consulted. A control action launches nothing, so it never consults either, even when it
+    // names an Advisor as its target. The task counters, the log and the reminder share this rule.
+    const isConsultAttempt = (
+      event: ToolCallEvent,
+      check: SubagentLaunchCheck | undefined,
+    ): boolean =>
+      event.toolName === "consult_advisor" ||
+      (check?.launch === true &&
+        check.refusal === undefined &&
+        latestRuntime !== undefined &&
+        advisorChildren(latestRuntime, event.input).length > 0);
     const countTaskToolCall = (
       event: ToolCallEvent,
       check: SubagentLaunchCheck | undefined,
+      consulted: boolean,
     ): void => {
       const task = taskMetrics;
       if (!task) return;
@@ -826,15 +848,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         task.edits += 1;
         task.firstEditIndex ??= index;
       }
-      // A call that launches only Advisors is a consult, a mixed call is both, and a refused call
-      // never consulted. A control action launches nothing, so it never consults either, even when
-      // it names an Advisor as its target.
-      const consulted =
-        event.toolName === "consult_advisor" ||
-        (check?.launch === true &&
-          check.refusal === undefined &&
-          latestRuntime !== undefined &&
-          advisorChildren(latestRuntime, event.input).length > 0);
       if (consulted) {
         task.advisorConsults += 1;
         task.firstConsultIndex ??= index;
@@ -914,6 +927,39 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           ];
         }),
       );
+    /** Active tools as the host reports them; a host without the API offers no consultation path. */
+    const activeTools = (): string[] => {
+      try {
+        return pi.getActiveTools?.() ?? [];
+      } catch {
+        return [];
+      }
+    };
+    /**
+     * The reminder for this request, when the extension may add it: the reminder is on, a valid
+     * Advisor is active, the task is live and the configured launch mode has its launcher among the
+     * active tools. A path that cannot be established produces no instruction the session could not
+     * follow, and a pending trigger is dropped rather than carried to a later round.
+     */
+    const advisorReminderMessage = (state: RuntimeState): AdvisorReminderMessage | undefined => {
+      if ((state.advisorReminder ?? DEFAULT_ADVISOR_REMINDER_MODE) !== "remind") {
+        advisorReminder.suspend();
+        return undefined;
+      }
+      // Only the documented `pi-subagents` process markers exclude a child. A foreground child runs
+      // in this process and sets none, and `/fork` or `/clone` of a human session sets neither, so
+      // both keep the reminder; the launcher check below still refuses an impossible instruction.
+      if (isSubagentChildProcess()) return undefined;
+      if (!advisorReminder.taskOpen) return undefined;
+      if (
+        !validAdvisors(state).length ||
+        !reminderConsultationPath(state.effective.advisorLaunch, activeTools())
+      ) {
+        advisorReminder.suspend();
+        return undefined;
+      }
+      return advisorReminder.presentation(Date.now());
+    };
     const rememberRuntime = (state: RuntimeState): RuntimeState => {
       if (
         readerAuthorization(latestRuntime)?.fingerprint !== readerAuthorization(state)?.fingerprint
@@ -937,6 +983,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         advisorEpoch += 1;
         pendingInvalidation = "configuration-changed";
         advisorExecutor.cancel();
+        // The reminder belongs to the same configuration: a presentation already sent stays consumed
+        // for this task and a pending trigger is dropped.
+        advisorReminder.suspend();
       }
       latestRuntime = state;
       return state;
@@ -1441,6 +1490,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     });
     pi.on("session_start", async (_event, ctx) => {
       taskToken = undefined;
+      advisorReminder.closeTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
       advisorContext = undefined;
@@ -1458,6 +1508,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorEpoch += 1;
       pendingInvalidation = "session-changed";
       taskToken = undefined;
+      advisorReminder.closeTask();
       taskMetrics = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
     });
@@ -1501,10 +1552,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         advisorEpoch += 1;
         advisorExecutor.cancel();
         taskToken = randomUUID();
+        advisorReminder.openTask();
       }
     });
     pi.on("context_with_system", async (event, ctx) => {
       const state = await refreshRuntime(ctx);
+      // One request is one round. A retry of the same request carries no new tool result and keeps
+      // the round, so its reminder is reused instead of rearmed.
+      advisorReminder.beginRequest();
       const policy = renderPolicy(ctx, state);
       const systemMessage = event.messages[0];
       if (
@@ -1539,6 +1594,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         (sections ??= {}).addendum = addendum;
       }
 
+      // Computed after the early return, so a request this hook cannot rewrite never consumes the
+      // one presentation of the task.
+      const reminder = advisorReminderMessage(state);
+
       return {
         messages: [
           {
@@ -1551,6 +1610,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           // the stored transcript prefix of the request is unchanged, and the host already sends
           // user-role text after a tool result for its own custom messages.
           ...(notice ? [notice] : []),
+          ...(reminder ? [reminder] : []),
         ],
       };
     });
@@ -1560,6 +1620,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const settledToken = taskToken;
       const parentKey = parentKeyFor(ctx);
       taskToken = undefined;
+      advisorReminder.closeTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
       if (settledToken) {
@@ -1619,7 +1680,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         event.toolName === "subagent"
           ? inspectSubagentLaunch(event.input, latestRuntime)
           : undefined;
-      countTaskToolCall(event, check);
+      const consulted = isConsultAttempt(event, check);
+      // An attempt ends the reminder for this task; whether it answers is the tool result's business.
+      if (consulted) advisorReminder.noteConsultAttempt();
+      countTaskToolCall(event, check, consulted);
       if (check) {
         // A control or management action launches nothing, so it records no `launch` event.
         if (check.launch)
@@ -1681,6 +1745,18 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       return shunt.onToolCall(event, settings, isBuiltinTool(pi, event.toolName));
     });
     pi.on("tool_result", async (event, ctx) => {
+      // The reminder reads tool provenance only while it can be relevant. With the reminder off or
+      // no enabled Advisor, a result is left untouched and no tool inventory is read.
+      if (
+        latestRuntime &&
+        (latestRuntime.advisorReminder ?? DEFAULT_ADVISOR_REMINDER_MODE) === "remind" &&
+        isAdvisorEnabled(latestRuntime.effective)
+      )
+        advisorReminder.observeToolResult({
+          toolName: event.toolName,
+          isError: event.isError,
+          builtin: isBuiltinTool(pi, event.toolName),
+        });
       const note = takeCorrection(event.toolCallId);
       const settings = latestRuntime?.effective.contextShunt;
       let result: { content?: Array<{ type: "text"; text: string }> } | undefined;
@@ -1700,6 +1776,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       readerEpoch += 1;
       latestRuntime = undefined;
       taskToken = undefined;
+      advisorReminder.closeTask();
       taskMetrics = undefined;
       correctionNotes.clear();
       configBaseline = undefined;

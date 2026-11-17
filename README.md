@@ -139,6 +139,30 @@ Both modes ask for consultation after orientation before substantive work, when 
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
 reactive steps and mechanics in a settled approach need no new call.
 
+### Advisor reminder
+
+The global **Advisor reminder** row in `/delegate` adds one short reminder to the request context, at
+most once per operative task of each instance, so a useful consultation does not depend on the user
+remembering to ask for it. It is on by default and stored in `delegation-policy.advisor-reminders.json`;
+`off` adds nothing. The reminder is presented only while a valid Advisor is active, the task is live
+and the configured launch mode has its launcher among the active tools (`subagent` for `role`,
+`consult_advisor` for `tool`), so a session that cannot consult is never told to.
+
+Two observable events arm it: one successful builtin orientation result (`read`, `find`, `grep` or
+`ls`), presented in the next request, and the same builtin tool failing in two different rounds. A
+batch of results is one round, and a retry of the same request keeps the presentation it already
+carried. An attempted consultation ends the reminder for that task even when it fails, and a control
+action that only names an Advisor is not a consultation. Turning the reminder off, a branch move, a
+new task or the task settling discards it; re-enabling it never restores a presentation the same task
+already used. Only the documented `pi-subagents` process markers (`PI_SUBAGENT_CHILD=1`,
+`PI_SUBAGENT_RUNNER_PID`) exclude a child; a `/fork` or `/clone` of a human session is still a main
+session and keeps the reminder.
+
+The reminder is ephemeral: it is appended to the request copy after the policy block and the
+configuration notice, never to the conversation, and it starts no turn, no child and no consultation.
+It adds no authority, revokes no instruction, and cannot make a consultation happen; it also cannot
+promise to arrive before the first edit, and it only reacts to the builtin tools listed above.
+
 Context is `fork` while the session fits in half of every valid advisor's window, `fresh` above that or
 with an unknown window, and returns to fork below 35%. Unknown token usage keeps the last mode. Fork
 sends the conversation to each provider, with only the question as the task. Fresh requires a short
@@ -211,6 +235,12 @@ prompts, and never the thinking level of an individual run.
   `delegation-policy.launch-correction.json`, schema 1 with `mode`. Missing or invalid state means
   `correct`, the normal behaviour; `block` is a test mode that refuses every case the check would
   correct. Older versions ignore the file.
+- Advisor reminder: the global **Advisor reminder** row stores
+  `delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`off` or `remind`). A missing
+  file means `remind`; an unreadable or invalid one suspends only the reminder with a diagnostic and
+  never changes the delegation or Advisor axis, and the row then reads
+  `Unavailable/Suspended · global` instead of showing the suspension as a choice. Older versions
+  ignore the file.
 - Legacy companion: `delegation-policy.advisor.json`, envelope 1 with schema 8 state for Advisor 1.
   Versions `0.17–0.20` see its mode and model in role mode; `0.16` sees delegation without Advisor.
   None of those versions sees Advisor 2, Advisor 3 or tool launch.

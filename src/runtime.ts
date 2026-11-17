@@ -22,6 +22,11 @@ import {
   type LaunchCorrectionMode,
 } from "./launch-correction-mode.ts";
 import {
+  getAdvisorRemindersPath,
+  readAdvisorReminderMode,
+  type AdvisorReminderMode,
+} from "./advisor-reminders.ts";
+import {
   type AdvisorSetting,
   MODEL_ROLES,
   ROLE_LABELS,
@@ -49,6 +54,10 @@ export type RuntimeState = {
   admissions?: ProviderAdmissions;
   /** How the launch check treats a call it can correct; absent means `correct`. */
   launchCorrection?: LaunchCorrectionMode;
+  /** Whether the extension may add its short Advisor reminder; absent means `remind`. */
+  advisorReminder?: AdvisorReminderMode;
+  /** The reminder companion was unreadable or invalid, so the mode above is suspended. */
+  advisorReminderInvalid?: boolean;
   /** Advisor notes that never remove an Advisor or change the footer. */
   advisorWarnings?: string[];
   advisorEntries?: Array<{
@@ -208,6 +217,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
   const loaded = await readConfig(path);
   const admissions = await readProviderAdmissions(getProviderAdmissionsPath(path));
   const correction = await readLaunchCorrectionMode(getLaunchCorrectionPath(path));
+  const reminder = await readAdvisorReminderMode(getAdvisorRemindersPath(path));
   const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
     effective: resolveDelegateState(loaded.defaults, restored.session),
@@ -218,9 +228,12 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
       ...restored.diagnostics,
       ...(admissions.diagnostic ? [admissions.diagnostic] : []),
       ...(correction.diagnostic ? [correction.diagnostic] : []),
+      ...(reminder.diagnostic ? [reminder.diagnostic] : []),
     ],
     admissions: admissions.admissions,
     launchCorrection: correction.mode,
+    advisorReminder: reminder.mode,
+    advisorReminderInvalid: reminder.invalid === true,
     modelStatuses: new Map(),
     runtimeErrors: [],
   };
@@ -232,6 +245,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
 const SIDE_SETTING_SCOPES: ReadonlySet<string> = new Set([
   "advisor-extension",
   "launch-correction",
+  "advisor-reminder",
 ]);
 
 export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): void {

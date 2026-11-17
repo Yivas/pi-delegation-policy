@@ -93,6 +93,32 @@ that host's `input` then `before_agent_start` order. No real-provider notice tes
 measurement or provider-cache measurement is claimed. [Configuration](/configuration/#configuration-change-notice)
 lists the tracked settings.
 
+## Advisor reminder
+
+An automatic reminder, on by default, adds one short extension-owned line to the request context at
+most once per operative task of each instance. It is armed by one successful builtin orientation
+result (`read`, `find`, `grep`, `ls`) or by the same builtin tool failing in two different rounds, and
+it is presented only while a valid Advisor is active, the task is live and the configured launch mode
+has its launcher among the active tools. An attempted consultation ends it for that task even when it
+fails; a control action that only names an Advisor is not a consultation.
+
+The line lives in the request copy after the policy block and the configuration notice, never in the
+conversation, and it starts no turn, child or consultation. It adds no authority and revokes no
+instruction. It is sent to the provider, so it is not a promise about cost or retention, and it is
+not a guarantee that a consultation happens: a presentation is not evidence of obedience, and it can
+arrive after the first edit. It reacts only to the builtin tools above, never to shell text, stdout,
+the user's words or a model's intent, and it is not a classifier of task complexity. Only the
+documented `pi-subagents` process markers (`PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_RUNNER_PID`) exclude a
+child; a `/fork` or `/clone` of a human session keeps the reminder, and a missing marker proves
+nothing, so the approved scope also covers foreground children that load this policy and can consult.
+
+The mode is stored in `delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`off` or
+`remind`). A missing file means `remind`; an unreadable or invalid one suspends only the reminder with
+a diagnostic and never changes the delegation or Advisor axis, and the panel row then reads
+`Unavailable/Suspended · global` instead of presenting the suspension as a choice. The extension writes no reminder text
+to session history or its local log. [Configuration](/configuration/#advisor-reminder) describes the
+row and the file.
+
 ## Fail-closed behavior
 
 In `normal`, `aggressive`, or `orchestrator`, Small, Medium, and Large must each be an explicit model

@@ -3100,6 +3100,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/advisor-executor.ts",
     "src/advisor-log.ts",
     "src/advisor-provider-extension.ts",
+    "src/advisor-reminders.ts",
     "src/advisor-resume.ts",
     "src/advisor-threads.ts",
     "src/config-notice.ts",

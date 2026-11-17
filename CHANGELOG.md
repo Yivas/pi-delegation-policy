@@ -4,6 +4,22 @@
 
 ### Added
 
+- An automatic Advisor reminder, on by default, adds one short extension-owned line to the request
+  context at most once per operative task of each instance, so a useful consultation does not depend
+  on the user asking for it. It is armed by one successful builtin orientation result (`read`,
+  `find`, `grep`, `ls`), presented in the next request, or by the same builtin tool failing in two
+  different rounds; a batch is one round, and a retry of the same request keeps the presentation it
+  already carried. It is presented only while a valid Advisor is active, the task is live and the
+  configured launch mode has its launcher among the active tools, and an attempted consultation ends
+  it for that task even when it fails. Only the documented `pi-subagents` process markers
+  (`PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_RUNNER_PID`) exclude a child, so a `/fork` or `/clone` of a
+  human session keeps the reminder. It is appended to the request copy only, after the policy
+  block and the configuration notice: it starts no turn, child or consultation, writes no session
+  entry, and adds no authority. The global **Advisor reminder** row in `/delegate` stores
+  `delegation-policy.advisor-reminders.json`, a schema-1 companion with `mode` (`off` or `remind`),
+  through the same temporary-file replacement as the other global files; a missing file means
+  `remind`, an unreadable or invalid one suspends only the reminder with a diagnostic, and the row
+  then reads `Unavailable/Suspended · global` instead of presenting the suspension as a choice.
 - `consult_advisor` keeps each Advisor's conversation for the rest of the operative task. The first
   call in a task launches the packaged profiles exactly as before and only that call carries the
   verified launch contract; later calls in the same task continue each thread through the public
