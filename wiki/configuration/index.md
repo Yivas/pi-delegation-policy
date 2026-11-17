@@ -182,6 +182,18 @@ not justify Medium or Large, and agent type does not determine the role.
 Medium, and `standard` adds no bias. If Small or Medium is disabled, all three preferences are inert:
 they never redirect work to Large or another role.
 
+## Child briefs
+
+While delegation is active, the block asks the main agent to write each child's brief before launching
+it: the bounded outcome and its owner, the context and invariants already decided, the scope and
+permissions with the exclusions, how the result is verified and accepted, what the child returns and
+where it goes, and when it stops to ask. An unresolved decision stays a question the child may answer,
+not a settled invariant, and a host agent name such as `worker` or `reviewer` does not stand in for the
+model role or grant a permission. A missing heading alone never blocks a launch: the main agent asks
+before launching only when a new material decision or authorization cannot be inferred from the
+session. One emphasis line and one example follow, for each enabled role only, so `off` and
+Advisor-only sessions carry no brief guidance.
+
 ## Visual Design
 
 Visual Design is an optional specialist, not a fourth execution tier. Use it only when the primary

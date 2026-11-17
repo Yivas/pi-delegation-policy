@@ -29,6 +29,13 @@
 
 - The policy's Limits paragraph says the extension corrects an unambiguous call and reports what it
   applied, and refuses only what it cannot settle.
+- The policy block adds a **Child briefs** section while delegation is active: the bounded outcome and
+  its owner, the context already decided, scope and permissions with exclusions, how the result is
+  verified, what the child returns and where, and when it stops to ask. An unresolved decision stays a
+  question the child may answer instead of a settled invariant, and a host agent name such as `worker`
+  or `reviewer` does not replace the model role. One emphasis line and one example follow per enabled
+  role only, so the section adds no threshold, permission, ownership rule, or new Advisor consultation
+  guidance.
 
 ## 0.27.0 - 2026-11-16
 

@@ -72,6 +72,12 @@ appends a note to that call's result saying what it applied. Everything else it 
 refused, with the accepted launches listed. See the
 [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/#launch-check).
 
+The policy asks for a brief for every child: the bounded outcome and its owner, the context already
+decided, the scope and permissions with the exclusions, how the result is verified, what it returns
+and where, and when it stops to ask. An unresolved decision stays a question the child may answer
+instead of a settled invariant, and a host agent name such as `worker` or `reviewer` does not replace
+the model role. The block adds one emphasis line and one example per enabled role only.
+
 ## Advisor
 
 Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**

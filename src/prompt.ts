@@ -8,9 +8,11 @@ import {
   isRoleDisabled,
   type RuntimeState,
 } from "./runtime.ts";
+import { ROLE_LABELS } from "./types.ts";
 import type {
   AdvisorLaunch,
   EffectiveDelegateState,
+  ModelConfigKey,
   ModelRef,
   ModelRole,
   Preference,
@@ -63,6 +65,33 @@ const LEGACY_VISUAL_DESIGN_ROUTING_POLICY =
   "Route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits, or keep it with the main agent. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration and final acceptance.";
 const ORCHESTRATOR_VISUAL_DESIGN_ROUTING_POLICY =
   "In orchestrator, route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits. If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task. The main agent retains cross-domain integration responsibility, coordination, and final acceptance, but MUST delegate transferable integration mechanics and detailed review to a capable enabled ordinary role unless a named direct-work exception applies.";
+
+const CHILD_BRIEF_POLICY = `Write the brief for every child before launching it. State the bounded outcome and its owner; the context and invariants already decided; the scope and permissions, with the exclusions; how the result is verified and accepted; what the child returns and where it goes; and when it must stop and ask. Name what the child may not do: edit during a review or a search, implement during a plan, or change anything outside the scope. Tests establish named expected behaviors, not a coverage count. An unresolved decision belongs in the brief as a question the child may answer, never as a settled invariant. The main agent writes the brief: a host agent name such as worker or reviewer does not stand in for the model role and grants no permission. A missing heading alone never blocks a launch; ask before launching only when a new material decision or authorization cannot be inferred from the session.`;
+
+/** One short emphasis and example per role; only enabled roles are rendered. */
+const BRIEF_ROLE_EMPHASIS: Record<ModelConfigKey, string> = {
+  small: `defined execution. The brief pins down the change, its evidence and its stop condition. Example: "Add SameSite=Lax in session.ts; keep expiry unchanged; return the patch and the attribute test result; stop if expiry must change."`,
+  medium: `ambiguity and planning. The brief may hand over the open question the child must resolve. Example: "Compare the three stores and recommend one; return the trade-offs and the files each step touches; do not change the public API."`,
+  large: `capability for work that has not converged. The brief states the failure evidence, the hypotheses already tested and the stop condition. Example: "Diagnose the contradictory failures across both modules; return the cause and the smallest fix; stop before editing."`,
+  uiDesign: `presentation only: layout, styles, assets and visual accessibility, never logic, state, ARIA or keyboard behavior. Example: "Restyle header spacing only; keep markup, copy and logic; return the responsive check evidence; stop if behavior must change."`,
+  advisor: `advice only: it never implements or runs tool-dependent checks. Example: "Keep sliding expiry? Return the risks against these constraints and the indispensable missing facts; do not implement."`,
+};
+
+function childBriefPolicy(
+  enabled: readonly ModelRole[],
+  visualDesign: boolean,
+  advisor: boolean,
+): string {
+  const keys: ModelConfigKey[] = [
+    ...enabled,
+    ...(visualDesign ? (["uiDesign"] as const) : []),
+    ...(advisor ? (["advisor"] as const) : []),
+  ];
+  return [
+    CHILD_BRIEF_POLICY,
+    ...keys.map((key) => `- ${ROLE_LABELS[key]}: ${BRIEF_ROLE_EMPHASIS[key]}`),
+  ].join("\n");
+}
 
 const ADVISOR_STEP =
   "At each advisor checkpoint — after orientation and before substantive work, when stuck, before changing approach, and before declaring a multi-step task done — consult the advisor before continuing. The checkpoints and how to launch it are in the advisor section below.";
@@ -380,6 +409,9 @@ ${ROLE_SELECTION_POLICY}
 
 Ownership and retention:
 ${ownershipPolicy}
+
+Child briefs:
+${childBriefPolicy(enabled, Boolean(effective.uiDesign), advisorEnabled)}
 
 Workflow disclosure:
 ${WORKFLOW_DISCLOSURE_POLICY}

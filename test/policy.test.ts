@@ -3741,6 +3741,7 @@ test("generated guidance states obligations, conditions, and exceptions in a fix
     "\n6. ",
     "\nRole selection:\n",
     "\nOwnership and retention:\n",
+    "\nChild briefs:\n",
     "\nLaunch requirements:\n",
     "\nRoles:\n",
     "\nLimits:\n",
@@ -3750,8 +3751,10 @@ test("generated guidance states obligations, conditions, and exceptions in a fix
 
   const decisionStart = policy.indexOf("Decision order:");
   const roleStart = policy.indexOf("Role selection:");
+  const briefStart = policy.indexOf("Child briefs:");
   const launchStart = policy.indexOf("Launch requirements:");
   assert.ok(decisionStart > 0 && roleStart > decisionStart && launchStart > roleStart);
+  assert.ok(briefStart > roleStart && launchStart > briefStart);
   assert.match(policy, /Visual Design is configured, evaluate its four eligibility conditions/);
   assert.match(
     policy,
@@ -3762,6 +3765,128 @@ test("generated guidance states obligations, conditions, and exceptions in a fix
   assert.match(policy, /refuses a\s+subagent call before it launches/);
   assert.match(policy, /cannot judge\s+whether work should be delegated/);
   assert.doesNotMatch(policy, /will be enforced|guarantees delegation/);
+});
+
+test("child briefs carry the six fields, allow open questions, and follow the enabled roles", () => {
+  const sectionOf = (policy: string) => {
+    const start = policy.indexOf("Child briefs:\n");
+    return start === -1 ? "" : policy.slice(start, policy.indexOf("\nWorkflow disclosure:"));
+  };
+  const briefOf = (intensity: "normal" | "aggressive" | "orchestrator", session = {}) => {
+    const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity, ...session });
+    validateRuntime(context(), current);
+    return sectionOf(buildDelegationPolicy(current) ?? "");
+  };
+  // The rendered emphasis lines, in order, are the conditional render this section adds.
+  const briefLabels = (section: string) =>
+    section
+      .split("\n")
+      .filter((line) => line.startsWith("- "))
+      .map((line) => line.slice(2, line.indexOf(": ", 2)));
+
+  // The common brief names every field an assignment needs, and keeps an open decision open.
+  for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
+    const brief = briefOf(intensity);
+    for (const field of [
+      "bounded outcome and its owner",
+      "context and invariants already decided",
+      "scope and permissions, with the exclusions",
+      "how the result is verified and accepted",
+      "what the child returns and where it goes",
+      "when it must stop and ask",
+    ]) {
+      assert.ok(brief.includes(field), `${intensity} brief must state: ${field}`);
+    }
+    assert.match(brief, /may not do: edit during a review or a search, implement during a plan/);
+    assert.match(brief, /Tests establish named expected behaviors, not a coverage count/);
+    assert.match(brief, /question the child may answer, never as a settled invariant/);
+    assert.match(brief, /host agent name such as worker or reviewer does not stand in for/);
+    assert.match(brief, /missing heading alone never blocks a launch/);
+    assert.match(brief, /cannot be inferred from the session/);
+    // The brief adds no delegation threshold and no ownership rule of its own.
+    assert.doesNotMatch(brief, /MUST delegate|threshold|retain[s]? (global )?integration/);
+  }
+
+  // Same role configuration, same brief: intensity changes ownership, not the assignment fields.
+  assert.equal(briefOf("normal"), briefOf("aggressive"));
+  assert.equal(briefOf("normal"), briefOf("orchestrator"));
+
+  // Only enabled roles get an emphasis line, in canonical order.
+  const labels = { small: "Small", medium: "Medium", large: "Large" } as const;
+  for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
+    for (let mask = 0; mask < 8; mask += 1) {
+      const ordinary = (["small", "medium", "large"] as const).filter(
+        (_role, index) => mask & (1 << index),
+      );
+      const settings = {
+        small: mask & 1 ? small : null,
+        medium: mask & 2 ? medium : null,
+        large: mask & 4 ? large : null,
+      };
+      const current = runtime(
+        { schemaVersion: CURRENT_SCHEMA_VERSION, intensity, ...settings },
+        { ...defaults, uiDesign: undefined },
+      );
+      validateRuntime(context(), current);
+      const policy = buildDelegationPolicy(current) ?? "";
+      if (ordinary.length === 0) {
+        assert.equal(policy, "");
+        continue;
+      }
+      assert.deepEqual(
+        briefLabels(sectionOf(policy)),
+        ordinary.map((role) => labels[role]),
+        `${intensity} mask ${mask} brief roles`,
+      );
+    }
+  }
+
+  // Visual Design and Advisor join the same ordered list only when the policy includes them.
+  assert.deepEqual(briefLabels(briefOf("normal")), ["Small", "Medium", "Large", "Visual Design"]);
+  assert.deepEqual(briefLabels(briefOf("normal", { uiDesign: null })), [
+    "Small",
+    "Medium",
+    "Large",
+  ]);
+
+  const withAdvisor = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, advisor },
+  );
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(advisor)],
+    }),
+    withAdvisor,
+  );
+  const advisorBrief = buildDelegationPolicy(withAdvisor) ?? "";
+  assert.deepEqual(briefLabels(sectionOf(advisorBrief)), [
+    "Small",
+    "Medium",
+    "Large",
+    "Visual Design",
+    "Advisor",
+  ]);
+
+  // No execution-delegation block means no child brief: off and Advisor-only stay out.
+  const off = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" }, defaults);
+  validateRuntime(context(), off);
+  assert.equal(buildDelegationPolicy(off), undefined);
+
+  const advisorOnly = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" },
+    { ...defaults, advisor, advisorMode: "on" },
+  );
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(advisor)],
+    }),
+    advisorOnly,
+  );
+  const consultationOnly = buildDelegationPolicy(advisorOnly) ?? "";
+  assert.match(consultationOnly, /Only consultation guidance is active/);
+  assert.doesNotMatch(consultationOnly, /Child briefs:/);
+  assert.doesNotMatch(consultationOnly, /\n- Small: /);
 });
 
 test("normal and aggressive policy blocks match the ff15c0d baseline fixture", () => {
@@ -3785,7 +3910,9 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // the sentence that denied any runtime enforcement was replaced; obligations are unchanged.
   // Front 43 regenerated them for the same paragraph: the extension now corrects an unambiguous
   // call and says what it applied, and refuses only what it cannot settle. The obligations,
-  // conditions and exceptions of the block are unchanged.
+  // conditions and exceptions of the block are unchanged. Front 43 piece 2 regenerated them again
+  // for the child-brief section: one additive paragraph plus one emphasis line per enabled role,
+  // with no new threshold, permission, ownership rule or Advisor guidance.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3794,8 +3921,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "cf4fc5bfed69ecf4ab87a0327f5816da1b3897713edb6b9e20866c940c5feeaa",
-    aggressive: "e92ceb584e9042b9a62480f04ce275b34d13346a6e58f249b7af3bde2a277581",
+    normal: "118d162067cb7e8cd09bb21d64830e611831ea270bbf43185fdaaf71b90b8d7d",
+    aggressive: "b08a08067117a8b7ec2c8162e5a20779338f08c4b16ef1783d248fbae76ecef7",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
