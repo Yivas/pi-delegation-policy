@@ -521,7 +521,7 @@ test("all active intensities and preferences produce one deterministic policy bl
       assert.equal((policy?.match(/<delegation_policy>/g) ?? []).length, 1);
       assert.equal(policy, buildDelegationPolicy(current));
       assert.match(policy ?? "", new RegExp(`Model preference: ${preference}`));
-      assert.match(policy ?? "", /Choose thinking dynamically/);
+      assert.match(policy ?? "", /Choose a supported thinking level per run/);
     }
   }
 });
@@ -537,17 +537,15 @@ test("generated guidance preserves canonical roles and operational mode boundari
 
   const standard = policy("normal", "standard");
   for (const expected of [
-    "No single factor decides the role.",
-    "Difficult but well-defined execution can remain Small with higher thinking.",
-    "Small does not need to fail first.",
-    "Do not require ceremonial failed attempts.",
-    "multiple Small delegations",
-    "volume alone does not justify Medium or Large",
+    "demand, ambiguity, dependencies, risk, quantity, and error/review cost together",
+    "Difficult but defined execution can use higher thinking.",
+    "Small need not fail first.",
+    "No ceremonial failures.",
+    "Batch repetitive independent work into Small",
+    "volume alone never warrants escalation",
     "Agent type does not determine the model role.",
-    "Choose the role by task fit before considering model preference",
-    "error and review cost",
-    "Apply preference only when Small and Medium are comparably credible fits.",
-    "keep global strategy, coordination, integration, final review",
+    "A more capable enabled role may cover a disabled role's work",
+    "Retain global strategy, coordination, integration, final review and acceptance",
   ]) {
     assert.ok(standard.includes(expected), `Missing policy guarantee: ${expected}`);
   }
@@ -556,10 +554,11 @@ test("generated guidance preserves canonical roles and operational mode boundari
   assert.ok(standard.includes("merely possible fresh perspective is not enough"));
   assert.ok(standard.includes("Keep borderline work with the main agent"));
   assert.ok(standard.includes("Standard adds no Small or Medium bias"));
+  assert.ok(standard.includes("A tiny edit already in context may stay here."));
 
   const aggressive = policy("aggressive", "standard");
   assert.ok(aggressive.includes("benefit is plausible even if not proven"));
-  assert.ok(aggressive.includes("poorly bounded, tightly coupled"));
+  assert.ok(aggressive.includes("poorly bounded or tightly coupled work"));
   assert.ok(aggressive.includes("clearly prohibitive delegation overhead"));
 
   const efficient = policy("normal", "efficient");
@@ -612,8 +611,8 @@ test("policy previews and launch instructions preserve exact models with per-run
     buildDelegationPolicy(
       runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" }),
     ) ?? "";
-  assert.match(policy, /Choose thinking dynamically for that run/);
-  assert.match(policy, /selected model's capabilities/);
+  assert.match(policy, /Choose a supported thinking level per run/);
+  assert.match(policy, /a fixed level or inclusive range binds/);
   assert.doesNotMatch(policy, /defaultThinking|thinking: low|thinking: medium|thinking: high/);
   for (const reference of [
     "example/small",
@@ -624,14 +623,10 @@ test("policy previews and launch instructions preserve exact models with per-run
     assert.ok(policy.includes(`exact model base: ${JSON.stringify(reference)}`));
     assert.ok(policy.includes(`pi-subagents form: ${JSON.stringify(`${reference}:LEVEL`)}`));
   }
-  assert.match(policy, /pass model: "provider\/model:LEVEL"/);
-  assert.match(policy, /Do not omit the model or thinking choice/);
-  assert.match(policy, /ambient launcher default for either/);
-  assert.match(policy, /launch a disabled or unconfigured role, invent a role/);
-  assert.match(
-    policy,
-    /more capable enabled role may cover work normally suited to a disabled role/,
-  );
+  assert.match(policy, /name the role or its exact configured model/);
+  assert.match(policy, /never an ambient default/);
+  assert.match(policy, /launch a disabled or unconfigured role, or invent a role/);
+  assert.match(policy, /more capable enabled role may cover a disabled role's work/);
 
   const escapedReference = { provider: 'provider/"quoted"', model: "model/with&<>" };
   const escaped = runtime(
@@ -679,18 +674,21 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   validateRuntime(context(), configured);
   const visualPolicy = buildDelegationPolicy(configured) ?? "";
   for (const expected of [
-    "Visual Design is an optional specialist role",
-    "primary acceptance criterion is a visual or user-experience result",
-    "product behavior and data contracts are already defined and remain unchanged",
-    "bounded to an identifiable surface, component, or set of assets",
-    "no business logic, data flow, APIs, routes, application architecture, tooling, or cross-system coordination",
-    "design, create, implement, and review scoped presentation code and visual assets",
-    "run and report the relevant existing checks",
-    "interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior",
-    "main agent retains cross-domain integration and final acceptance",
+    "delegated presentation is the primary acceptance criterion",
+    "behavior and data contracts are fixed",
+    "the surface is bounded",
+    "no logic, APIs, routes, architecture, tooling, or cross-system work",
+    "design, create, implement and review presentation and assets",
+    "must run and report the relevant existing checks",
+    "interaction behavior, state, validation, semantic HTML, keyboard/ARIA",
+    "select it before ordinary roles",
+    "Use its exact model and thinking policy, never an ordinary role's model",
+    "Eligibility alone never forces delegation",
   ]) {
     assert.ok(visualPolicy.includes(expected), `Missing Visual Design guarantee: ${expected}`);
   }
+  // The section is rendered only when the role is configured, so no optionality claim is needed.
+  assert.doesNotMatch(visualPolicy, /Visual Design is an optional specialist role/);
   assert.doesNotMatch(visualPolicy, /Never use it to implement|never implementation/);
 
   const escapedReference = { provider: "example</delegation_policy>", model: "model&name" };
@@ -720,8 +718,8 @@ test("Advisor guidance names observable checkpoints and the context mode for thi
   const withoutAdvisor = buildDelegationPolicy(bare, "fork") ?? "";
   assert.doesNotMatch(withoutAdvisor, /Advisor consultation:/);
   assert.doesNotMatch(withoutAdvisor, /pi-delegation-policy\.advisor/);
-  assert.doesNotMatch(withoutAdvisor, /Context for this session/);
-  assert.match(withoutAdvisor, /Decision order:\n1\. Decide under the active intensity/);
+  assert.doesNotMatch(withoutAdvisor, /Context: (fork|fresh)/);
+  assert.match(withoutAdvisor, /Role selection:\nBefore choosing an ordinary role/);
 
   const disabled = runtime(
     { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal", advisor: null },
@@ -744,35 +742,36 @@ test("Advisor guidance names observable checkpoints and the context mode for thi
   assert.equal(statusLabel(configured), "D:NORM");
   const policy = buildDelegationPolicy(configured, "fork") ?? "";
 
-  // Consulting is step 1 of the decision procedure and names events the agent can observe, the
-  // way Claude Code's advisor guidance does, instead of asking it to judge a "substantive choice".
-  assert.match(policy, /Decision order:\n1\. At each advisor checkpoint/);
+  // The advisor section names events the agent can observe, the way Claude Code's advisor guidance
+  // does, instead of asking it to judge a "substantive choice".
+  assert.match(policy, /Advisor consultation:\nConsulting is part of this policy/);
   const advisorSection = policy.slice(
     policy.indexOf("Advisor consultation:"),
     policy.indexOf("Role selection:"),
   );
   assert.doesNotMatch(advisorSection, /MUST/);
   for (const expected of [
-    "after orientation and before substantive work",
-    "when stuck",
-    "before changing approach",
+    "Consult after orientation, before the first edit or state-changing command",
+    "any interpretation, approach or assumption",
+    "a recurring error or stalled progress",
+    "any change of approach",
     "before declaring a multi-step task done",
-    "remaining correctness risks or overlooked assumptions, not for approval",
-    "it is advice, not delegated execution",
+    "remaining correctness risks or overlooked assumptions, not approval",
+    "not delegated execution",
     'agent "pi-delegation-policy.advisor" exactly',
-    'not a host agent or alias named "advisor" or "oracle"',
-    "in the background like every subagent",
-    "need no new call",
-    "do not switch silently",
-    "decisions reserved to the user stay with the user",
+    'never a host agent or alias named "advisor" or "oracle"',
+    "in the background unless the host or the user requires foreground",
+    "No call for facts already available",
+    "never switch silently",
+    "user decisions remain theirs",
   ]) {
     assert.ok(advisorSection.includes(expected), `Missing advisor guarantee: ${expected}`);
   }
-  assert.match(advisorSection, /Context for this session: fork\. Launch it with context "fork"/);
-  assert.match(advisorSection, /retry once with context "fresh"/);
+  assert.match(advisorSection, /Context: fork, the question alone/);
+  assert.match(advisorSection, /retry once fresh with a self-contained brief/);
   const fresh = buildDelegationPolicy(configured, "fresh") ?? "";
-  assert.match(fresh, /Context for this session: fresh\. Launch it with context "fresh"/);
-  assert.doesNotMatch(fresh, /Context for this session: fork/);
+  assert.match(fresh, /Context: fresh, because the conversation is too large/);
+  assert.doesNotMatch(fresh, /Context: fork/);
 
   // The hedges and the exclusion of completion review that suppressed calls must not come back.
   for (const removed of [
@@ -786,7 +785,7 @@ test("Advisor guidance names observable checkpoints and the context mode for thi
   // A saved legacy Advisor policy is ignored: the main agent always chooses Advisor thinking.
   assert.ok(
     policy.includes(
-      'Advisor (optional): provider="example" model="advisor"; exact model base: "example/advisor"; pi-subagents form: "example/advisor:LEVEL"; thinking policy: unset (choose per run).',
+      'Advisor (optional): exact model base: "example/advisor"; pi-subagents form: "example/advisor:LEVEL"; thinking: unset (choose per run); agent profile: "pi-delegation-policy.advisor".',
     ),
   );
 });
@@ -812,8 +811,9 @@ test("Visual Design prioritizes eligible delegated work before ordinary roles wi
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity });
     validateRuntime(context(), current);
     const policy = buildDelegationPolicy(current) ?? "";
-    const visualGate = "Before selecting an ordinary role for each task or phase";
-    const ordinarySelection = "Choose the role by task fit before considering model preference";
+    const visualGate = "Before choosing an ordinary role, check Visual Design below";
+    const ordinarySelection =
+      "weigh demand, ambiguity, dependencies, risk, quantity, and error/review cost";
 
     const visualGateIndex = policy.indexOf(visualGate);
     const ordinarySelectionIndex = policy.indexOf(ordinarySelection);
@@ -827,27 +827,23 @@ test("Visual Design prioritizes eligible delegated work before ordinary roles wi
       visualGateIndex < ordinarySelectionIndex,
       `${intensity} must evaluate Visual Design before ordinary role selection`,
     );
-    assert.match(policy, /MUST select Visual Design rather than Small, Medium, or Large/);
+    assert.match(policy, /select it before ordinary roles/);
+    assert.match(policy, /Use its exact model and thinking policy/);
+    assert.match(policy, /never an ordinary role's model/);
+    assert.match(policy, /Reevaluate each phase and split mixed work/);
     assert.match(
       policy,
-      /Use the exact configured Visual Design provider\/model shown below and that role's thinking policy for that launch/,
-    );
-    assert.match(policy, /do not substitute an ordinary role's model/);
-    assert.match(policy, /Reevaluate Visual Design eligibility whenever the task or phase changes/);
-    assert.match(
-      policy,
-      /If any eligibility condition fails, use an enabled ordinary role or split the visual portion from the broader task/,
+      /Route interaction behavior, state, validation, semantic HTML, keyboard\/ARIA/,
     );
     assert.match(policy, /exact model base: "example\/ui-design"/);
     assert.match(policy, /pi-subagents form: "example\/ui-design:LEVEL"/);
 
     if (intensity === "orchestrator") {
       assert.match(policy, /Delegate all transferable execution before performing it/);
+      assert.match(policy, /to a capable enabled ordinary role/);
     } else {
-      assert.match(
-        policy,
-        /Eligible visual work does not itself require delegation in normal or aggressive/,
-      );
+      assert.match(policy, /Eligibility alone never forces delegation/);
+      assert.match(policy, /or keep them with the main agent/);
     }
   }
 });
@@ -859,30 +855,29 @@ test("orchestrator routes Visual Design boundaries without a main-agent integrat
     return buildDelegationPolicy(current) ?? "";
   };
 
+  const routing =
+    "Route interaction behavior, state, validation, semantic HTML, keyboard/ARIA, authentication, permissions, persistence, test infrastructure and behavior tests";
   for (const intensity of ["normal", "aggressive"] as const) {
     const policy = policyFor(intensity);
+    assert.match(policy, new RegExp(`${routing} to an enabled ordinary role that fits`));
+    assert.match(policy, /or keep them with the main agent/);
+    assert.match(policy, /Eligibility alone never forces delegation/);
     assert.match(
       policy,
-      /Route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits, or keep it with the main agent/,
+      /Retain global strategy, coordination, integration, final review and acceptance/,
     );
-    assert.match(policy, /The main agent retains cross-domain integration and final acceptance/);
-    assert.doesNotMatch(policy, /In orchestrator, route interaction behavior/);
+    assert.doesNotMatch(policy, /to a capable enabled ordinary role/);
   }
 
   const orchestrator = policyFor("orchestrator");
+  assert.match(orchestrator, new RegExp(`${routing} to a capable enabled ordinary role`));
   assert.match(
     orchestrator,
-    /In orchestrator, route interaction behavior, state, validation, semantic HTML changes, keyboard mechanics, ARIA behavior, authentication, permissions, persistence, test infrastructure, and behavior-test ownership to an enabled ordinary role that fits/,
+    /you retain cross-domain integration responsibility and final acceptance, but delegate transferable integration mechanics and detailed review/,
   );
-  assert.match(
-    orchestrator,
-    /The main agent retains cross-domain integration responsibility, coordination, and final acceptance, but MUST delegate transferable integration mechanics and detailed review to a capable enabled ordinary role unless a named direct-work exception applies/,
-  );
-  assert.doesNotMatch(orchestrator, /or keep it with the main agent/);
-  assert.doesNotMatch(
-    orchestrator,
-    /main agent retains cross-domain integration and final acceptance/,
-  );
+  assert.match(orchestrator, /Apply the all-transferable rule/);
+  assert.doesNotMatch(orchestrator, /or keep them with the main agent/);
+  assert.doesNotMatch(orchestrator, /Eligibility alone never forces delegation/);
 
   const off = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
   validateRuntime(context(), off);
@@ -1801,14 +1796,14 @@ test("active delegation keeps workflow code out of the chat for every active int
     );
     validateRuntime(context(), current);
     const policy = buildDelegationPolicy(current) ?? "";
-    assert.match(policy, /Workflow disclosure:/, intensity);
-    assert.match(policy, /internal working material, not deliverables for the user/, intensity);
-    assert.match(policy, /Do not paste or send their source code into the chat\./, intensity);
-    assert.match(policy, /Keep any control or visibility the host requires\./, intensity);
+    assert.match(policy, /Results:\nNever duplicate pending work/, intensity);
     assert.match(
       policy,
-      /When the user explicitly asks to inspect code, show what was requested\./,
+      /Keep briefs and workflow source internal unless the user asks to inspect them/,
+      intensity,
     );
+    assert.match(policy, /report results, blockers and decisions/, intensity);
+    assert.match(policy, /keep any control the host requires/, intensity);
   }
 
   const off = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
@@ -1827,8 +1822,8 @@ test("active delegation keeps workflow code out of the chat for every active int
   );
   const consultation = buildDelegationPolicy(advisorOnly) ?? "";
   assert.match(consultation, /Advisor consultation:/);
-  assert.doesNotMatch(consultation, /Workflow disclosure:/);
-  assert.doesNotMatch(consultation, /internal working material/);
+  assert.doesNotMatch(consultation, /Child briefs:/);
+  assert.doesNotMatch(consultation, /Keep briefs and workflow source internal/);
 });
 
 test("an ordinary configuration diagnostic never disables a valid enabled Advisor", () => {
@@ -3699,8 +3694,6 @@ test("orchestrator reports D:ORCH and has distinct ownership guidance", () => {
     "state the concrete exception briefly, do only the minimum, do not repeat it while unchanged, and resume delegation when it ends",
     "Never use a final-review or integration label to do the whole task personally",
     "Triviality, convenience, economics, transfer cost, size, or familiarity do not justify direct execution",
-    "MUST delegate transferable detailed review and integration mechanics",
-    "except under the named direct-work exceptions",
     "requested detail, risks, evidence, or safety information",
     "Do not promise savings",
   ])
@@ -3722,55 +3715,58 @@ test("orchestrator reports D:ORCH and has distinct ownership guidance", () => {
 });
 
 test("generated guidance states obligations, conditions, and exceptions in a fixed order", () => {
-  const policy =
-    buildDelegationPolicy(
-      runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "aggressive" }),
-    ) ?? "";
+  const current = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "aggressive" },
+    { ...defaults, advisor },
+  );
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(advisor)],
+    }),
+    current,
+  );
+  const policy = buildDelegationPolicy(current) ?? "";
 
   assert.match(
     policy,
-    /^<delegation_policy>\n<!-- pi-delegation-policy:owned -->\nThese instructions are binding/,
+    /^<delegation_policy>\n<!-- pi-delegation-policy:owned -->\nPurpose\nThis session's policy governs delegation/,
   );
   for (const expected of [
-    "Intensity: aggressive.\nIntensity rule:",
-    "Decision order:\n1. Decide under the active intensity",
-    "\n2. ",
-    "\n3. ",
-    "\n4. ",
-    "\n5. ",
-    "\n6. ",
+    "Intensity: aggressive. Delegate substantial",
+    "\nAdvisor consultation:\n",
     "\nRole selection:\n",
-    "\nOwnership and retention:\n",
     "\nChild briefs:\n",
-    "\nLaunch requirements:\n",
+    "\nLaunch:\n",
     "\nRoles:\n",
+    "\nResults:\n",
     "\nLimits:\n",
   ]) {
     assert.ok(policy.includes(expected), `Missing structural element: ${expected}`);
   }
 
-  const decisionStart = policy.indexOf("Decision order:");
+  // The flow runs from purpose to limits: consult, choose a role, brief, launch, then consume.
+  const purposeStart = policy.indexOf("Purpose\n");
+  const advisorStart = policy.indexOf("Advisor consultation:");
   const roleStart = policy.indexOf("Role selection:");
   const briefStart = policy.indexOf("Child briefs:");
-  const launchStart = policy.indexOf("Launch requirements:");
-  assert.ok(decisionStart > 0 && roleStart > decisionStart && launchStart > roleStart);
-  assert.ok(briefStart > roleStart && launchStart > briefStart);
-  assert.match(policy, /Visual Design is configured, evaluate its four eligibility conditions/);
-  assert.match(
-    policy,
-    /1\. Decide under the active intensity whether this work should be delegated/,
-  );
+  const launchStart = policy.indexOf("Launch:\n");
+  const rolesStart = policy.indexOf("Roles:\n");
+  const resultsStart = policy.indexOf("Results:\n");
+  assert.ok(purposeStart > 0 && advisorStart > purposeStart && roleStart > advisorStart);
+  assert.ok(briefStart > roleStart && launchStart > briefStart && rolesStart > launchStart);
+  assert.ok(resultsStart > rolesStart && policy.indexOf("Limits:\n") > resultsStart);
+  assert.match(policy, /check Visual Design below/);
 
   // The block must stay honest: it refuses only what a call states and cannot judge delegation.
-  assert.match(policy, /refuses a\s+subagent call before it launches/);
-  assert.match(policy, /cannot judge\s+whether work should be delegated/);
+  assert.match(policy, /refuses a call whose model, level, or Advisor profile it cannot settle/);
+  assert.match(policy, /not delegation decisions/);
   assert.doesNotMatch(policy, /will be enforced|guarantees delegation/);
 });
 
 test("child briefs carry the six fields, allow open questions, and follow the enabled roles", () => {
   const sectionOf = (policy: string) => {
     const start = policy.indexOf("Child briefs:\n");
-    return start === -1 ? "" : policy.slice(start, policy.indexOf("\nWorkflow disclosure:"));
+    return start === -1 ? "" : policy.slice(start, policy.indexOf("\nLaunch:"));
   };
   const briefOf = (intensity: "normal" | "aggressive" | "orchestrator", session = {}) => {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity, ...session });
@@ -3788,19 +3784,19 @@ test("child briefs carry the six fields, allow open questions, and follow the en
   for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
     const brief = briefOf(intensity);
     for (const field of [
-      "bounded outcome and its owner",
-      "context and invariants already decided",
-      "scope and permissions, with the exclusions",
-      "how the result is verified and accepted",
-      "what the child returns and where it goes",
-      "when it must stop and ask",
+      "bounded outcome and owner",
+      "decided context and invariants",
+      "scope, permissions and exclusions",
+      "verification and acceptance",
+      "return format and destination",
+      "stop and ask conditions",
     ]) {
       assert.ok(brief.includes(field), `${intensity} brief must state: ${field}`);
     }
-    assert.match(brief, /may not do: edit during a review or a search, implement during a plan/);
+    assert.match(brief, /Forbid edits during a review or search, implementation during a plan/);
     assert.match(brief, /Tests establish named expected behaviors, not a coverage count/);
-    assert.match(brief, /question the child may answer, never as a settled invariant/);
-    assert.match(brief, /host agent name such as worker or reviewer does not stand in for/);
+    assert.match(brief, /question the child may answer, never a settled invariant/);
+    assert.match(brief, /an agent name does not stand in for the model role/);
     assert.match(brief, /missing heading alone never blocks a launch/);
     assert.match(brief, /cannot be inferred from the session/);
     // The brief adds no delegation threshold and no ownership rule of its own.
@@ -3912,7 +3908,12 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // call and says what it applied, and refuses only what it cannot settle. The obligations,
   // conditions and exceptions of the block are unchanged. Front 43 piece 2 regenerated them again
   // for the child-brief section: one additive paragraph plus one emphasis line per enabled role,
-  // with no new threshold, permission, ownership rule or Advisor guidance.
+  // with no new threshold, permission, ownership rule or Advisor guidance. Front 43 piece 3
+  // regenerated them for the compact rewrite: the same obligations, conditions, exceptions,
+  // thresholds and role semantics, reordered by decision flow (purpose, direct work, Advisor
+  // checkpoints, role selection, Visual Design, briefs, launch, role lines, results, limits) with
+  // the numbered decision order replaced by that flow. These hashes prove the text changed, not
+  // that the guarantees survived; the semantic assertions above and the variant matrix do that.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3921,8 +3922,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "118d162067cb7e8cd09bb21d64830e611831ea270bbf43185fdaaf71b90b8d7d",
-    aggressive: "b08a08067117a8b7ec2c8162e5a20779338f08c4b16ef1783d248fbae76ecef7",
+    normal: "2e5dec5e1e459486790a8e12e2544005ec771751d16d0641967400b3125e3f45",
+    aggressive: "bcce9c1b101ddfa8bf4e4f9f91fd4a8ca6a75aac2f67133c77ff1d4977da91f6",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
@@ -4140,7 +4141,7 @@ test("role thinking policies fail closed only for levels the resolved model does
   assert.equal(statusLabel(visualOn), "D:NORM");
   assert.ok(
     (buildDelegationPolicy(visualOn) ?? "").includes(
-      'pi-subagents form: "example/ui-design:high"; thinking policy: fixed high (must not change).',
+      'pi-subagents form: "example/ui-design:high"; thinking: fixed high (must not change).',
     ),
   );
 
@@ -4171,24 +4172,22 @@ test("fixed and range policies change the injected form and the reported tokens"
   const policy = buildDelegationPolicy(current) ?? "";
   assert.ok(
     policy.includes(
-      'pi-subagents form: "example/small:high"; thinking policy: fixed high (must not change).',
+      'pi-subagents form: "example/small:high"; thinking: fixed high (must not change).',
     ),
   );
   assert.ok(
     policy.includes(
-      'pi-subagents form: "example/medium:LEVEL"; thinking policy: range low..high inclusive (choose within it).',
+      'pi-subagents form: "example/medium:LEVEL"; thinking: range low..high inclusive (choose within it).',
     ),
   );
   assert.ok(
-    policy.includes(
-      'pi-subagents form: "example/large:LEVEL"; thinking policy: unset (choose per run).',
-    ),
+    policy.includes('pi-subagents form: "example/large:LEVEL"; thinking: unset (choose per run).'),
   );
   assert.doesNotMatch(policy, /example\/small:LEVEL/);
   assert.doesNotMatch(policy, /example\/medium:high/);
-  assert.match(policy, /Choose thinking dynamically for that run/);
-  assert.match(policy, /A fixed or range policy is binding/);
-  assert.match(policy, /is not inherited by another role or by the main agent/);
+  assert.match(policy, /Choose a supported thinking level per run/);
+  assert.match(policy, /a fixed level or inclusive range binds/);
+  assert.match(policy, /inherited by another role or the main agent/);
   assert.doesNotMatch(policy, /persist the thinking level/);
 
   const preview = buildPolicyPreview(current.effective);

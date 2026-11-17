@@ -882,13 +882,13 @@ test("an Advisor context mode change is not a configuration change", async () =>
     await harness.config({ ...defaults, advisors: [advisor], advisorMode: "on" });
     await harness.start();
     const fork = await harness.turn();
-    assert.match(harness.policyBlock(fork), /Context for this session: fork/);
+    assert.match(harness.policyBlock(fork), /Context: fork/);
     await harness.finish();
 
     // The Advisor context mode is derived from usage, so it moves without a notice.
     harness.setSessionTokens(900_000);
     const fresh = await harness.turn();
-    assert.match(harness.policyBlock(fresh), /Context for this session: fresh/);
+    assert.match(harness.policyBlock(fresh), /Context: fresh/);
     assert.equal(harness.noticeText(fresh), undefined);
     await harness.shutdown();
   });

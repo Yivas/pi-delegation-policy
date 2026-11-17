@@ -240,7 +240,10 @@ test("Advisor-only validates its exact model and thinking without ordinary roles
   assert.match(policy, /pi-delegation-policy\.advisor/);
   assert.match(policy, /example\/advisor:LEVEL/, "a saved Advisor thinking policy is ignored");
   assert.match(policy, /Advisor consultation:/);
-  assert.match(policy, /At each advisor checkpoint/);
+  assert.match(
+    policy,
+    /Consult after orientation, before the first edit or state-changing command/,
+  );
   assert.match(policy, /normal executor\/provider retention/);
   assert.doesNotMatch(
     policy,
@@ -384,7 +387,7 @@ test("Advisor commands and request hooks independently update and remove the own
     assert.equal(messages[0]!.content, "Host instructions");
     // Both request hooks name the same context mode; it follows the session's usage against the
     // advisor window, holds while usage is unknown, and starts over on a new session tree.
-    const contextMode = (text: string) => /Context for this session: (fork|fresh)/.exec(text)?.[1];
+    const contextMode = (text: string) => /Context: (fork|fresh)/.exec(text)?.[1];
     assert.equal(contextMode(first.instructions), "fork");
     assert.equal(contextMode(projected.messages[0]!.sections!.addendum!), "fork");
     sessionTokens = 300_000;
