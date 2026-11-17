@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import {
   appendGuardedSessionState,
@@ -16,12 +17,28 @@ import {
   type GuardedAppendResult,
 } from "./config.ts";
 import {
+  ADVISOR_PACKAGE_VERSION,
   AdvisorExecutor,
-  advisorFailureText,
+  advisorContinuityText,
   advisorThinking,
   advisorAgentName,
   advisorProfile,
+  type AdvisorGroupOutcome,
+  type AdvisorSlotPlan,
 } from "./advisor-executor.ts";
+import {
+  AdvisorThreadJournal,
+  advisorParentKey,
+  closeAdvisorTask,
+  getAdvisorThreadsPath,
+  invalidateAdvisorPartition,
+  readAdvisorThreads,
+  settleAdvisorThread,
+  unresolvedAdvisorThread,
+  unclosedAdvisorTask,
+} from "./advisor-threads.ts";
+import { AdvisorResumeClient } from "./advisor-resume.ts";
+import type { AgentLaunchEventBus } from "./agent-launch.ts";
 import { admissionFor } from "./provider-admissions.ts";
 import {
   inspectSubagentLaunch,
@@ -55,6 +72,7 @@ import {
 } from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
+  advisorSlots,
   advisorStatusLabel,
   validAdvisors,
   hasAdvisorError,
@@ -80,7 +98,7 @@ import {
   THINKING_ROLE_KEYS,
   type ThinkingPolicy,
 } from "./types.ts";
-import { openDelegateEditor } from "./ui.ts";
+import { openDelegateEditor, type ContinuityActions } from "./ui.ts";
 
 const STATUS_KEY = "pi-delegation-policy";
 export type CommandAction =
@@ -90,16 +108,26 @@ export type CommandAction =
   | { kind: "advisor-launch"; launch: AdvisorLaunch }
   | { kind: "advisor-config"; index: number; values: string[] }
   | { kind: "advisor-thinking" }
+  | { kind: "advisor-threads"; action: AdvisorThreadsAction }
   | { kind: "status" }
   | { kind: "reset" }
   | { kind: "context-mode"; mode: ContextShuntMode }
   | { kind: "context-status" }
   | { kind: "context-allow"; token: string; maxLines: number; maxBytes: number }
   | { kind: "invalid" };
+export const ADVISOR_THREADS_ACTIONS = ["status", "recover", "reset"] as const;
+export type AdvisorThreadsAction = (typeof ADVISOR_THREADS_ACTIONS)[number];
+
 export function parseCommand(args: string): CommandAction {
   const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!parts.length) return { kind: "open" };
   if (parts[0] === "advisor") {
+    if (
+      parts.length === 3 &&
+      parts[1] === "threads" &&
+      ADVISOR_THREADS_ACTIONS.includes(parts[2] as AdvisorThreadsAction)
+    )
+      return { kind: "advisor-threads", action: parts[2] as AdvisorThreadsAction };
     if (
       parts.length === 3 &&
       parts[1] === "launch" &&
@@ -152,6 +180,7 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
     "reset",
     ...ADVISOR_MODES.map((mode) => `advisor ${mode}`),
     ...ADVISOR_LAUNCH_MODES.map((mode) => `advisor launch ${mode}`),
+    ...ADVISOR_THREADS_ACTIONS.map((action) => `advisor threads ${action}`),
     ...Array.from({ length: MAX_ADVISORS }, (_, index) => `advisor ${index + 1} model`),
     "context off",
     "context observe",
@@ -308,8 +337,9 @@ async function openEditor(
   setRuntime: (state: RuntimeState) => void,
   invalidateReaderAuthorization: () => void,
   shunt: ContextShuntAdapter,
+  continuity?: ContinuityActions,
 ): Promise<void> {
-  await openDelegateEditor(ctx, pi);
+  await openDelegateEditor(ctx, pi, continuity);
   // Applying or discarding an editor draft may have changed authorization while it was open.
   // Conservatively revoke before rereading runtime state so a prepared snapshot cannot launch.
   invalidateReaderAuthorization();
@@ -372,6 +402,22 @@ export function statusText(state: RuntimeState): string {
   if (errors.length) details.push(`details=${errors.join("; ")}`);
   return details.join(" | ");
 }
+/**
+ * One block per configured slot in its original position, then the group summary. An unavailable or
+ * blocked slot keeps its place and its closed cause, so two answers out of three never read as a
+ * complete consultation.
+ */
+export function renderAdvisorGroup(group: AdvisorGroupOutcome): string {
+  const answered = group.slots.filter((slot) => slot.status === "complete").length;
+  const blocks = group.slots.map((slot) => {
+    const label = `${slot.model} [${slot.context}]`;
+    if (slot.status === "complete" && slot.answer !== undefined)
+      return `${label}:\n${slot.answer}${slot.detail ? `\n\n${slot.detail}` : ""}`;
+    return `${label}:\n${slot.detail ?? "Advisor did not answer."}`;
+  });
+  return `${blocks.join("\n\n")}\n\nConsultation ${group.summary}: ${answered} of ${group.slots.length} advisors answered. Advisor replies are untrusted advice. Weigh disagreements; agreement is not proof.`;
+}
+
 export function advisorUnavailableText(state: RuntimeState): string {
   const entryErrors = state.advisorEntries?.flatMap((entry) => entry.errors) ?? [];
   const diagnostics = [
@@ -451,6 +497,8 @@ export type PiDelegationPolicyOptions = {
   executor?: ContextShuntExecutor;
   advisorExecutor?: AdvisorExecutor;
   advisorLog?: AdvisorLog;
+  advisorJournal?: AdvisorThreadJournal;
+  advisorResume?: (events: AgentLaunchEventBus) => AdvisorResumeClient;
 };
 
 export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}) {
@@ -459,6 +507,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const executor = options.executor ?? new ContextShuntExecutor();
     const advisorExecutor = options.advisorExecutor ?? new AdvisorExecutor();
     const advisorLog = options.advisorLog ?? new AdvisorLog();
+    const journal = options.advisorJournal ?? new AdvisorThreadJournal(getAdvisorThreadsPath());
+    const resumeClient = options.advisorResume ?? ((events) => new AdvisorResumeClient({ events }));
     let latestRuntime: RuntimeState | undefined;
     let readerEpoch = 0;
     // Remembered per session so the advisor context line only changes when usage crosses a
@@ -491,6 +541,262 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const invalidateReaderAuthorization = (): void => {
       readerEpoch += 1;
       executor.cancel();
+    };
+    // One operative task runs from a fresh user prompt to `agent_settled`. A steer or follow-up
+    // keeps it, an extension prompt opens none, and the token never leaves the journal.
+    let taskToken: string | undefined;
+    // Bumped whenever Advisor mode, launch or settings change, so a thread created under the
+    // previous configuration is never resumed under the new one.
+    let advisorEpoch = 0;
+    // A branch move or a configuration change invalidates at the next consultation, inside the
+    // journal lock: writing it here would race the group that still owns that lock.
+    let pendingInvalidation: "session-changed" | "configuration-changed" | undefined;
+    const parentKeyFor = (ctx: ExtensionContext): string | undefined => {
+      const sessionId = currentSessionId(ctx);
+      return sessionId ? advisorParentKey(sessionId) : undefined;
+    };
+    const closeTaskThreads = async (
+      parentKey: string | undefined,
+      token: string,
+    ): Promise<{ ok: boolean; code?: string }> => {
+      if (!parentKey) return { ok: false, code: "session-missing" };
+      try {
+        const result = await journal.exclusive(parentKey, async (session) => {
+          await session.mutate((latest) =>
+            closeAdvisorTask(latest, token, "task-settled", Date.now()),
+          );
+        });
+        return result.ok ? { ok: true } : { ok: false, code: result.code };
+      } catch {
+        return { ok: false, code: "journal-write-failed" };
+      }
+    };
+    const invalidateThreads = async (ctx: ExtensionContext): Promise<void> => {
+      const parentKey = parentKeyFor(ctx);
+      if (!parentKey) return;
+      await journal
+        .exclusive(parentKey, async (session) => {
+          await session.mutate((latest) =>
+            invalidateAdvisorPartition(latest, "session-changed", Date.now()),
+          );
+        })
+        .catch(() => undefined);
+    };
+    /**
+     * Continuity is observable and repairable only from `/delegate`: the journal is private, and an
+     * operator editing it by hand would be guessing at states this extension owns.
+     */
+    const continuityStatusText = async (parentKey: string): Promise<string> => {
+      const loaded = await readAdvisorThreads(journal.filePath);
+      const lock = await journal.lockState(parentKey);
+      const partition = loaded.file.parents[parentKey];
+      const unresolved = partition ? unresolvedAdvisorThread(partition) : undefined;
+      const closing = partition ? unclosedAdvisorTask(partition, taskToken) : undefined;
+      const lockText =
+        lock.kind === "free"
+          ? "free"
+          : lock.kind === "unreadable"
+            ? "unreadable"
+            : lock.owner
+              ? `held pid=${lock.owner.pid}`
+              : "held owner-unknown";
+      const gate = await journal.gateState();
+      const threads = (partition?.threads ?? []).map(
+        (record) =>
+          `slot${record.slot + 1}=${record.state}${record.reason ? `/${record.reason}` : ""} turn=${record.ordinal} runs=${record.runIds.length}`,
+      );
+      return [
+        `Advisor continuity: journal=${loaded.unreadable ? "unreadable" : "ok"} lock=${lockText} gate=${gate} guard=${unresolved ? `blocked slot${unresolved.slot + 1}/${unresolved.state}` : closing ? "closing-failed" : "clear"}`,
+        ...(gate === "stale" || gate === "ownerless" || gate === "unreadable"
+          ? [
+              `Reclamation gate ${journal.filePath}.reclaim.lock is ${gate} and is never reclaimed automatically. Recovery needs every Pi process using this configuration stopped first.`,
+            ]
+          : []),
+        ...(threads.length ? [threads.join(" | ")] : []),
+        ...(unresolved || closing
+          ? [
+              "Run /delegate advisor threads recover to reconcile a possibly live turn with the host.",
+            ]
+          : []),
+      ].join("\n");
+    };
+    const isTerminalNodeState = (value: unknown): boolean =>
+      value === "complete" ||
+      value === "failed" ||
+      value === "partial" ||
+      value === "paused" ||
+      value === "stopped" ||
+      value === "rejected";
+    const recoverContinuity = async (
+      ctx: ExtensionContext,
+      parentKey: string,
+    ): Promise<{ message: string; type: "info" | "error" }> => {
+      const lock = await journal.lockState(parentKey);
+      if (lock.kind === "held") {
+        if (!lock.owner)
+          return {
+            message:
+              "Advisor continuity: the journal lock has no readable owner, so it cannot be proven finished. Nothing was changed.",
+            type: "error",
+          };
+        if (!AdvisorThreadJournal.ownerFinished(lock.owner))
+          return {
+            message:
+              "Advisor continuity: another process still owns the Advisor journal. Nothing was changed.",
+            type: "error",
+          };
+        const released = await journal.releaseStaleLock(parentKey);
+        if (released === "gate-stale")
+          return {
+            message: `Advisor continuity: the reclamation gate ${journal.filePath}.reclaim.lock is stale, ownerless or unreadable and is never reclaimed automatically. Nothing was changed. Stop every Pi process using this configuration, confirm none is running, then remove that directory.`,
+            type: "error",
+          };
+        if (released !== "released")
+          return {
+            message:
+              "Advisor continuity: the stale journal lock could not be released. Nothing was changed.",
+            type: "error",
+          };
+      }
+      const sessionId = currentSessionId(ctx);
+      if (!sessionId)
+        return {
+          message: "Advisor continuity: the host supplied no session identity.",
+          type: "error",
+        };
+      const client = resumeClient(pi.events);
+      const lines: string[] = [];
+      let unproven = false;
+      let unavailable: string | undefined;
+      const settled: Array<{ taskToken: string; slot: number }> = [];
+      const result = await journal.exclusive(parentKey, async (session) => {
+        const partition = session.partition();
+        const closing = partition.threads.filter(
+          (record) => record.state === "answered" && record.taskToken !== taskToken,
+        );
+        const unresolved = partition.threads.filter(
+          (record) =>
+            record.state === "pending" || record.state === "accepted" || record.state === "blocked",
+        );
+        if (!unresolved.length && !closing.length) return "clear" as const;
+        // Answered turns already have terminal proof. Only uncertain operations need fresh host
+        // status, and only their current receipt can prove them.
+        if (unresolved.length) {
+          const probe = await client.probe(sessionId);
+          if (!probe.ok) {
+            unavailable = advisorContinuityText(probe.code);
+            return "unavailable" as const;
+          }
+        }
+        for (const record of closing) lines.push(`slot ${record.slot + 1}: settled task, closed`);
+        for (const record of unresolved) {
+          // Only the run id of this operation can prove it. An ancestor in the chain proves an
+          // earlier turn, so a lost receipt stays unproven instead of reconciling the wrong run.
+          const runId = record.operationRunId;
+          if (!runId) {
+            unproven = true;
+            lines.push(
+              `slot ${record.slot + 1}: no receipt for the current turn, so termination cannot be proven`,
+            );
+            continue;
+          }
+          const status = await client.status(runId);
+          if (!status.ok) {
+            unproven = true;
+            lines.push(`slot ${record.slot + 1}: status unavailable`);
+            continue;
+          }
+          if (!isTerminalNodeState(status.node.state)) {
+            unproven = true;
+            lines.push(`slot ${record.slot + 1}: still ${String(status.node.state)}`);
+            continue;
+          }
+          settled.push({ taskToken: record.taskToken, slot: record.slot });
+          lines.push(`slot ${record.slot + 1}: ${String(status.node.state)} proven, closed`);
+        }
+        // Derived from the freshest partition, after the reads, so no snapshot can roll back a
+        // record another slot wrote in the meantime.
+        if (settled.length || closing.length)
+          await session.mutate((latest) => {
+            let next = latest;
+            for (const token of new Set(closing.map((record) => record.taskToken)))
+              next = closeAdvisorTask(next, token, "task-settled", Date.now());
+            for (const target of settled)
+              next = settleAdvisorThread(
+                next,
+                target.taskToken,
+                target.slot,
+                "recovered",
+                Date.now(),
+              );
+            return next;
+          });
+        return "done" as const;
+      });
+      if (!result.ok)
+        return {
+          message: `Advisor continuity: ${advisorContinuityText(result.code)}`,
+          type: "error",
+        };
+      if (unavailable) return { message: `Advisor continuity: ${unavailable}`, type: "error" };
+      if (result.value === "clear")
+        return { message: "Advisor continuity: nothing to reconcile.", type: "info" };
+      return {
+        message: `Advisor continuity: ${lines.join("; ")}.${
+          unproven
+            ? " The parent stays blocked while any turn is unproven."
+            : " The parent is clear."
+        }`,
+        type: unproven ? "error" : "info",
+      };
+    };
+    /** The same two actions the command exposes, bound to the panel's own context. */
+    const continuityFor = (ctx: ExtensionContext): ContinuityActions => ({
+      status: async () => {
+        const parentKey = parentKeyFor(ctx);
+        return parentKey
+          ? continuityStatusText(parentKey)
+          : "Advisor continuity needs a host session identity.";
+      },
+      recover: async () => {
+        const parentKey = parentKeyFor(ctx);
+        return parentKey
+          ? recoverContinuity(ctx, parentKey)
+          : { message: "Advisor continuity needs a host session identity.", type: "error" };
+      },
+      reset: async () => {
+        const parentKey = parentKeyFor(ctx);
+        return parentKey
+          ? resetContinuity(parentKey)
+          : { message: "Advisor continuity needs a host session identity.", type: "error" };
+      },
+    });
+    const resetContinuity = async (
+      parentKey: string,
+    ): Promise<{ message: string; type: "info" | "error" }> => {
+      const result = await journal.exclusive(parentKey, async (session) => {
+        const partition = session.partition();
+        // A reset abandons threads; it never proves that a possibly live turn has stopped.
+        if (unresolvedAdvisorThread(partition)) return "blocked" as const;
+        await session.mutate((latest) => invalidateAdvisorPartition(latest, "reset", Date.now()));
+        return "done" as const;
+      });
+      if (!result.ok)
+        return {
+          message: `Advisor continuity: ${advisorContinuityText(result.code)}`,
+          type: "error",
+        };
+      return result.value === "blocked"
+        ? {
+            message:
+              "Advisor continuity: a turn may still be live, so reset changed nothing. Recover it with the host first.",
+            type: "error",
+          }
+        : {
+            message:
+              "Advisor continuity: threads reset. The next consultation starts a new thread.",
+            type: "info",
+          };
     };
     // One task runs from a user prompt to the next settle. It counts calls and positions only:
     // no tool input, task body or path reaches the log.
@@ -588,6 +894,26 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       }
       return presentedNotice?.runToken === runToken ? presentedNotice.message : undefined;
     };
+    // The identity a continuation is bound to: every configured slot with its resolved profile,
+    // model, thinking, provider admission and build. Comparing whole settings alone misses an
+    // admission swap that leaves the same provider/model valid.
+    const advisorIdentity = (state: RuntimeState): string =>
+      JSON.stringify(
+        advisorSlots(state).map((slot) => {
+          const admission = admissionFor(state.admissions ?? {}, slot.setting.provider);
+          return [
+            slot.index,
+            slot.setting.provider,
+            slot.setting.model,
+            slot.setting.providerExtension ?? "",
+            slot.model ? advisorThinking(slot.model) : "",
+            advisorAgentName(slot.setting, state.admissions),
+            admission ? `${admission.package}@${admission.version}` : "",
+            ADVISOR_PACKAGE_VERSION,
+            slot.unavailable ?? "",
+          ];
+        }),
+      );
     const rememberRuntime = (state: RuntimeState): RuntimeState => {
       if (
         readerAuthorization(latestRuntime)?.fingerprint !== readerAuthorization(state)?.fingerprint
@@ -598,15 +924,20 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         JSON.stringify([
           latestRuntime.effective.advisorMode,
           latestRuntime.effective.advisorLaunch,
-          validAdvisors(latestRuntime).map((entry) => entry.setting),
+          advisorIdentity(latestRuntime),
         ]) !==
           JSON.stringify([
             state.effective.advisorMode,
             state.effective.advisorLaunch,
-            validAdvisors(state).map((entry) => entry.setting),
+            advisorIdentity(state),
           ])
-      )
+      ) {
+        // Fencing is synchronous: the epoch bumps now, so a turn that is still in flight can never
+        // deliver an answer under the configuration that replaced it.
+        advisorEpoch += 1;
+        pendingInvalidation = "configuration-changed";
         advisorExecutor.cancel();
+      }
       latestRuntime = state;
       return state;
     };
@@ -645,26 +976,38 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       name: "consult_advisor",
       label: "Consult Advisor",
       description:
-        "Use only when advisor-launch=tool; in role mode launch Advisor with the host subagent tool instead. Consult the configured advisors after orientation before substantive work, when stuck, before changing approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Skip short reactive steps and mechanics within a settled approach. Supply a self-contained brief for fresh context or a rejected fork. Advice only; may send the conversation to each provider and incur cost.",
+        "Use only when advisor-launch=tool; in role mode launch Advisor with the host subagent tool instead. Consult the configured advisors after orientation before substantive work, when stuck, before changing approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Skip short reactive steps and mechanics within a settled approach. Supply a self-contained brief for a first consultation in fresh context or a rejected fork; a later call in the same task continues each thread with the question and evidence. Advice only; may send the conversation to each provider and incur cost.",
       parameters: Type.Object(
         {
           question: Type.String({ minLength: 1 }),
           brief: Type.Optional(Type.String({ minLength: 1 })),
+          evidence: Type.Optional(Type.String({ minLength: 1 })),
         },
         { additionalProperties: false },
       ),
       async execute(_id, input, signal, _update, ctx) {
-        const text = (value: string) => ({
+        const text = (value: string, details: Record<string, unknown> = {}) => ({
           content: [{ type: "text" as const, text: value }],
-          details: {},
+          details,
         });
+        // Capture before even the initial runtime read. A wait may revoke this call, never renew it
+        // with a newer epoch or silently move it to a different operative task or session.
+        const authorizationEpoch = advisorEpoch;
+        const token = taskToken;
+        const sessionId = currentSessionId(ctx);
+        const isAuthorized = (): boolean =>
+          authorizationEpoch === advisorEpoch &&
+          token === taskToken &&
+          sessionId === currentSessionId(ctx);
         const state = await refreshRuntime(ctx);
-        const advisors = validAdvisors(state);
+        if (!isAuthorized() || signal?.aborted) return text(advisorContinuityText("cancelled"));
+        const advisors = advisorSlots(state);
         if (!isAdvisorEnabled(state.effective))
           return text(
             "Advisor is off in /delegate for this session. Do not consult it and do not ask the user to enable it unless they raise it.",
           );
-        if (!advisors.length) return text(advisorUnavailableText(state));
+        if (!advisors.length || !advisors.some((slot) => slot.model))
+          return text(advisorUnavailableText(state));
         if (state.effective.advisorLaunch === "role") {
           const subagentTool = pi.getActiveTools().find((name) => name === "subagent");
           if (!subagentTool)
@@ -675,63 +1018,113 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". Launch every listed Advisor with the host subagent tool "${subagentTool}", using each exact agent profile and model below, in the background, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run.\n${advisorRoleLines(state)}`,
           );
         }
-        if (advisorExecutor.busy)
-          return text(
-            "Advisor busy: one consultation group is already in flight for this session. Wait for its result before starting another consultation; do not duplicate the pending group.",
-          );
+        if (advisorExecutor.busy) return text(advisorContinuityText("busy"));
         if (!input.question.trim())
           return text(
             "Advisor error: question must not be blank. Call again with a specific question.",
           );
         const context = resolveAdvisorContext(ctx, state);
-        if (context === "fresh" && !input.brief?.trim())
-          return text(
-            "Advisor error: fresh context requires brief. Supply a short self-contained objective, constraints, relevant facts, options, and uncertainty.",
-          );
-        const sessionId = currentSessionId(ctx);
         if (!sessionId)
           return text(
             "Advisor unavailable: host session identity is missing. Continue without Advisor consultation; do not retry until the host supplies a session identity.",
           );
-        const results = await advisorExecutor.execute(
-          advisors.map((entry) => ({
-            question: input.question,
-            ...(input.brief?.trim() ? { brief: input.brief } : {}),
-            context,
-            ...(advisorProfile(entry.setting, state.admissions)
-              ? { providerExtension: advisorProfile(entry.setting, state.admissions) }
-              : {}),
-            model: {
-              provider: entry.model.provider,
-              id: entry.model.id,
-              thinking: advisorThinking(entry.model),
+        // Continuity belongs to an operative task that a public interactive or RPC prompt opened.
+        // Without one this call starts nothing: an extension prompt or a notice never opens a task.
+        if (!token)
+          return text(
+            "Advisor unavailable: this run has no operative task, so no consultation was started and no thread was opened. Call consult_advisor from a turn the user started; do not retry from an extension-driven run.",
+          );
+        const parentKey = advisorParentKey(sessionId);
+        const plans: AdvisorSlotPlan[] = advisors.map((slot) => {
+          const model = `${slot.setting.provider}/${slot.setting.model}`;
+          if (!slot.model)
+            return {
+              kind: "unavailable",
+              slot: slot.index,
+              model,
+              cause: slot.unavailable ?? "Advisor model is unavailable.",
+            };
+          const thinking = advisorThinking(slot.model);
+          const profile = advisorProfile(slot.setting, state.admissions);
+          const admission = admissionFor(state.admissions ?? {}, slot.setting.provider);
+          return {
+            kind: "launch",
+            slot: slot.index,
+            model,
+            fingerprint: {
+              provider: slot.setting.provider,
+              model: slot.setting.model,
+              thinking,
+              profile: advisorAgentName(slot.setting, state.admissions),
+              admission: admission ? `${admission.package}@${admission.version}` : "",
+              packageVersion: ADVISOR_PACKAGE_VERSION,
+              epoch: authorizationEpoch,
             },
-            availableModels: [
-              {
-                provider: entry.model.provider,
-                id: entry.model.id,
-                fullId: `${entry.model.provider}/${entry.model.id}`,
-                reasoning: entry.model.reasoning,
+            request: {
+              question: input.question,
+              ...(input.brief?.trim() ? { brief: input.brief } : {}),
+              context,
+              ...(profile ? { providerExtension: profile } : {}),
+              model: {
+                provider: slot.model.provider,
+                id: slot.model.id,
+                thinking,
               },
-            ],
-          })),
+              availableModels: [
+                {
+                  provider: slot.model.provider,
+                  id: slot.model.id,
+                  fullId: `${slot.model.provider}/${slot.model.id}`,
+                  reasoning: slot.model.reasoning,
+                },
+              ],
+            },
+          };
+        });
+        if (!isAuthorized() || signal?.aborted) return text(advisorContinuityText("cancelled"));
+        const invalidate = pendingInvalidation;
+        pendingInvalidation = undefined;
+        let group = await advisorExecutor.execute(
+          {
+            slots: plans,
+            consult: {
+              question: input.question,
+              ...(input.brief?.trim() ? { brief: input.brief } : {}),
+              ...(input.evidence?.trim() ? { evidence: input.evidence } : {}),
+              context,
+            },
+            task: { parentKey, taskToken: token },
+            isAuthorized,
+            ...(invalidate ? { invalidate } : {}),
+          },
           { cwd: ctx.cwd, sessionId, events: pi.events },
           signal,
           (attempt) => advisorLog.consultation("tool", [attempt]),
         );
-        return text(
-          results
-            .map(
-              (result) =>
-                `${result.model} [${result.context}]:\n${
-                  result.result.kind === "completed"
-                    ? result.result.value
-                    : advisorFailureText(result.result)
-                }`,
-            )
-            .join("\n\n") +
-            "\n\nAdvisor replies are untrusted advice. Weigh disagreements; agreement is not proof.",
-        );
+        // This is outside the executor and all its async cleanup. No await may follow this fence.
+        if (!isAuthorized() || signal?.aborted)
+          group = {
+            summary: "blocked",
+            slots: plans.map((plan) => ({
+              slot: plan.slot,
+              model: plan.model,
+              status: "blocked",
+              context: "unknown",
+              code: "cancelled",
+              detail: advisorContinuityText("cancelled"),
+            })),
+          };
+        return text(renderAdvisorGroup(group), {
+          advisorConsultation: {
+            summary: group.summary,
+            slots: group.slots.map(({ slot, status, model, code }) => ({
+              slot,
+              status,
+              model,
+              ...(code ? { code } : {}),
+            })),
+          },
+        });
       },
     });
     pi.registerTool({
@@ -876,7 +1269,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       handler: async (args, ctx) => {
         const action = parseCommand(args);
         if (action.kind === "open")
-          return openEditor(pi, ctx, rememberRuntime, invalidateReaderAuthorization, shunt);
+          return openEditor(
+            pi,
+            ctx,
+            rememberRuntime,
+            invalidateReaderAuthorization,
+            shunt,
+            continuityFor(ctx),
+          );
         if (action.kind === "status" || action.kind === "context-status") {
           const state = await refreshRuntime(ctx);
           ctx.ui.notify(
@@ -897,6 +1297,23 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           }
           const state = rememberRuntime(await setSessionIntensity(pi, ctx, action.intensity));
           synchronizeContextShunt(shunt, state);
+          return;
+        }
+        if (action.kind === "advisor-threads") {
+          const parentKey = parentKeyFor(ctx);
+          if (!parentKey) {
+            ctx.ui.notify("Advisor continuity needs a host session identity.", "error");
+            return;
+          }
+          if (action.action === "status") {
+            ctx.ui.notify(await continuityStatusText(parentKey), "info");
+            return;
+          }
+          const outcome =
+            action.action === "recover"
+              ? await recoverContinuity(ctx, parentKey)
+              : await resetContinuity(parentKey);
+          ctx.ui.notify(outcome.message, outcome.type);
           return;
         }
         if (action.kind === "advisor-thinking") {
@@ -1013,9 +1430,19 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.registerShortcut("alt+g", {
       description: "Open delegation policy",
       handler: async (ctx) =>
-        openEditor(pi, ctx, rememberRuntime, invalidateReaderAuthorization, shunt),
+        openEditor(
+          pi,
+          ctx,
+          rememberRuntime,
+          invalidateReaderAuthorization,
+          shunt,
+          continuityFor(ctx),
+        ),
     });
     pi.on("session_start", async (_event, ctx) => {
+      taskToken = undefined;
+      advisorEpoch += 1;
+      advisorExecutor.cancel();
       advisorContext = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
     });
@@ -1025,7 +1452,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorExecutor.rotate();
       shunt.clearPending();
       advisorContext = undefined;
-      // A task that was in flight belongs to the branch the session left.
+      // A task that was in flight belongs to the branch the session left. The epoch and the token
+      // are dropped synchronously, before any await, so a late answer cannot be delivered; the
+      // tombstone itself is written at the next consultation, inside the journal lock.
+      advisorEpoch += 1;
+      pendingInvalidation = "session-changed";
+      taskToken = undefined;
       taskMetrics = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
     });
@@ -1063,6 +1495,13 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         return;
       }
       userTurn += 1;
+      // Only a public interactive or RPC prompt opens an operative task. A steer or follow-up
+      // never reaches this event, so it keeps the token it continues.
+      if (source === "interactive" || source === "rpc") {
+        advisorEpoch += 1;
+        advisorExecutor.cancel();
+        taskToken = randomUUID();
+      }
     });
     pi.on("context_with_system", async (event, ctx) => {
       const state = await refreshRuntime(ctx);
@@ -1115,7 +1554,22 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         ],
       };
     });
-    pi.on("agent_settled", async () => {
+    pi.on("agent_settled", async (_event, ctx) => {
+      // Retire synchronously: a settled token can never be resumed, even if its tombstones fail.
+      // The non-closed journal records remain the durable obligation; another token cannot pay it.
+      const settledToken = taskToken;
+      const parentKey = parentKeyFor(ctx);
+      taskToken = undefined;
+      advisorEpoch += 1;
+      advisorExecutor.cancel();
+      if (settledToken) {
+        const closed = await closeTaskThreads(parentKey, settledToken);
+        if (!closed.ok)
+          ctx.ui.notify(
+            `Advisor continuity: this task's closing state could not be persisted (${closed.code ?? "journal-write-failed"}). Advisor stays blocked until /delegate advisor threads recover succeeds.`,
+            "error",
+          );
+      }
       const task = taskMetrics;
       taskMetrics = undefined;
       if (task)
@@ -1245,6 +1699,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("session_shutdown", async (_event, ctx) => {
       readerEpoch += 1;
       latestRuntime = undefined;
+      taskToken = undefined;
       taskMetrics = undefined;
       correctionNotes.clear();
       configBaseline = undefined;
@@ -1252,6 +1707,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       runOutcome = undefined;
       executor.close();
       advisorExecutor.close();
+      await invalidateThreads(ctx);
       await advisorLog.close();
       await shunt.close();
       ctx.ui.setStatus(STATUS_KEY, undefined);

@@ -4,6 +4,29 @@
 
 ### Added
 
+- `consult_advisor` keeps each Advisor's conversation for the rest of the operative task. The first
+  call in a task launches the packaged profiles exactly as before and only that call carries the
+  verified launch contract; later calls in the same task continue each thread through the public
+  `pi-subagents` RPC `resume`, sending the new question and an optional `evidence` field and
+  accepting the answer only from the per-turn output file this extension owns, after the exact new
+  run id reports a completed single step with the same agent, model and thinking. A resumed turn
+  relies on the contract the host inherits plus those observed values, not on a re-verified digest,
+  and any mismatch, timeout or missing answer blocks the thread instead of retrying it or starting a
+  silent fresh replacement. Continuity is bounded by the operative task: a fresh user prompt, a
+  branch move, a configuration change or the task settling ends it, and a prompt an extension sends
+  opens no task at all, so a consultation from one starts nothing.
+- A private schema-1 journal (`delegation-policy.advisor-threads.json`) records one turn per parent
+  session, task token and original Advisor slot: opaque run ids, the model/profile/admission
+  fingerprint, the turn ordinal and a closed reason. It never holds a question, brief, answer, path
+  or host error. Each turn is written as pending before anything is sent, accepted before its
+  receipt is awaited, and answered before the answer is returned; a per-parent directory lock and a
+  short commit lock keep concurrent slots, parents and Pi processes from overwriting each other.
+- Every configured Advisor keeps its position and gets an explicit result, so two answers out of
+  three report `partial` and never a complete consultation. An unavailable slot keeps its index and
+  its own cause instead of disappearing from the group.
+- `/delegate advisor threads status|recover|reset` and a `C` row in the `/delegate` panel report the
+  continuity state, reconcile a possibly live turn with public terminal proof from the host, and
+  abandon threads only when nothing may still be running. Reset never proves that a turn stopped.
 - The launch check corrects an unambiguous `subagent` call instead of refusing it. A role name in
   place of a model (`small`, `medium`, `large`, `visual-design`, `ui-design`, `uidesign`, `advisor`,
   `advisor-1` to `advisor-3`, case-insensitive) becomes that role's exact provider/model with a

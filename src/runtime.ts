@@ -360,6 +360,51 @@ export function validAdvisors(
     : [];
 }
 
+/**
+ * Every configured Advisor in its original position. A slot that cannot run keeps its index and an
+ * own-text cause, so a group never silently shrinks to the valid advisors.
+ */
+export type AdvisorSlot = Readonly<{
+  index: number;
+  setting: AdvisorSetting;
+  model?: Model<Api>;
+  unavailable?: string;
+}>;
+
+export function advisorSlots(state: RuntimeState): AdvisorSlot[] {
+  if (!isAdvisorEnabled(state.effective)) return [];
+  // A stale or invalid Advisor companion disables the whole axis, exactly as `validAdvisors` does.
+  const stale = state.diagnostics.find((diagnostic) => diagnostic.scope === "advisor");
+  if (stale)
+    return state.effective.advisors.map((setting, index) => ({
+      index,
+      setting,
+      unavailable: stale.message,
+    }));
+  return state.effective.advisors.map((setting, index) => {
+    const entry = state.advisorEntries?.find((candidate) => candidate.index === index);
+    if (entry)
+      return entry.status.kind === "available" && !entry.errors.length
+        ? { index, setting, model: entry.status.model }
+        : {
+            index,
+            setting,
+            unavailable:
+              entry.errors[0] ??
+              `${index === 0 ? "Advisor" : `Advisor ${index + 1}`} model is unavailable.`,
+          };
+    // A directly constructed state (tests, single-advisor callers) uses the original map.
+    const status = state.modelStatuses.get("advisor");
+    return index === 0 && status?.kind === "available" && !state.advisorErrors?.length
+      ? { index, setting, model: status.model }
+      : {
+          index,
+          setting,
+          unavailable: state.advisorErrors?.[0] ?? "Advisor model is unavailable.",
+        };
+  });
+}
+
 export function hasRuntimeError(state: RuntimeState): boolean {
   return state.runtimeErrors.length > 0;
 }

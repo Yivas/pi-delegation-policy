@@ -22,12 +22,15 @@ export type ConsultationStatus =
   | "busy"
   | "cancelled"
   | "timed-out"
+  | "blocked"
   | "observed";
 export type ConsultationAttempt = {
   model: string;
   status: ConsultationStatus;
   context: AdvisorContext | "unknown";
   durationMs: number;
+  /** Original Advisor position; absent for a role-mode observation. */
+  slot?: number;
 };
 /** Counters for one main-agent task, from its user prompt to the next settle. */
 export type TaskSummary = {
@@ -111,6 +114,7 @@ export class AdvisorLog {
         status: attempt.status,
         context: attempt.context,
         durationMs: Math.max(0, Math.round(attempt.durationMs)),
+        ...(attempt.slot === undefined ? {} : { slot: attempt.slot }),
       })),
     });
   }

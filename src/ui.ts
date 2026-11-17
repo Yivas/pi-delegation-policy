@@ -20,7 +20,21 @@ import {
   modelCandidates,
 } from "./runtime.ts";
 
-export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
+/**
+ * Advisor continuity as the panel sees it: a status line and two explicit actions. The journal
+ * itself stays private, so an operator never edits it by hand.
+ */
+export type ContinuityActions = {
+  status: () => Promise<string>;
+  recover: () => Promise<{ message: string; type: "info" | "error" }>;
+  reset: () => Promise<{ message: string; type: "info" | "error" }>;
+};
+
+export async function openDelegateEditor(
+  ctx: ExtensionContext,
+  pi: ExtensionAPI,
+  continuity?: ContinuityActions,
+): Promise<void> {
   if (!ctx.hasUI) return;
   if (ctx.mode !== "tui") {
     ctx.ui.notify(
@@ -73,6 +87,13 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
         launchCorrection: state.launchCorrection,
         extensionCandidates,
         extensionProviders,
+        ...(continuity
+          ? {
+              continuityStatus: continuity.status,
+              onRecoverContinuity: continuity.recover,
+              onResetContinuity: continuity.reset,
+            }
+          : {}),
         onSaveAdmissions: async (admissions) => {
           await writeProviderAdmissions(
             admissions,

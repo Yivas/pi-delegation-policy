@@ -1504,6 +1504,9 @@ function createPanelHarness(
     extensionCandidates?: DelegatePanelOptions["extensionCandidates"];
     extensionProviders?: DelegatePanelOptions["extensionProviders"];
     onSaveAdmissions?: DelegatePanelOptions["onSaveAdmissions"];
+    continuityStatus?: DelegatePanelOptions["continuityStatus"];
+    onRecoverContinuity?: DelegatePanelOptions["onRecoverContinuity"];
+    onResetContinuity?: DelegatePanelOptions["onResetContinuity"];
   } = {},
 ) {
   const terminal = { rows: options.rows ?? 30 };
@@ -1534,6 +1537,9 @@ function createPanelHarness(
     extensionCandidates: options.extensionCandidates,
     extensionProviders: options.extensionProviders,
     onSaveAdmissions: options.onSaveAdmissions,
+    continuityStatus: options.continuityStatus,
+    onRecoverContinuity: options.onRecoverContinuity,
+    onResetContinuity: options.onResetContinuity,
     onDone: (result) => done.push(result),
   });
   panel.focused = true;
@@ -2219,6 +2225,46 @@ test("the settings list keeps one row per field and one hint block that follows 
     1,
     "the hint replaces the previous row's provenance",
   );
+});
+
+test("the panel exposes Advisor continuity with status, recover, reset and back", async () => {
+  const calls: string[] = [];
+  const { panel } = createPanelHarness({
+    continuityStatus: async () => "journal=ok lock=free guard=clear",
+    onRecoverContinuity: async () => {
+      calls.push("recover");
+      return { message: "Advisor continuity: slot 1: complete proven, closed.", type: "info" };
+    },
+    onResetContinuity: async () => {
+      calls.push("reset");
+      return { message: "Advisor continuity: threads reset.", type: "info" };
+    },
+  });
+  // `C` opens the continuity mode without adding a row to the pinned settings list.
+  sendKeys(panel, "c");
+  const opened = panel.render(80).join("\n");
+  assert.match(opened, /Show Advisor continuity status/);
+  assert.match(opened, /Reconcile a possibly live turn with the host/);
+  assert.match(opened, /Reset Advisor threads/);
+  assert.match(opened, /Back/);
+  assert.match(opened, /Advisor continuity/);
+
+  // The status line is read on open and shown in the mode.
+  await new Promise((resolveTick) => setTimeout(resolveTick, 0));
+  assert.match(panel.render(80).join("\n"), /journal=ok lock=free guard=clear/);
+
+  // Recover reports its outcome, then Reset does the same.
+  sendKeys(panel, KEY_DOWN, KEY_ENTER);
+  await new Promise((resolveTick) => setTimeout(resolveTick, 0));
+  assert.deepEqual(calls, ["recover"]);
+  assert.match(panel.render(80).join("\n"), /complete proven, closed/);
+  sendKeys(panel, KEY_DOWN, KEY_ENTER);
+  await new Promise((resolveTick) => setTimeout(resolveTick, 0));
+  assert.deepEqual(calls, ["recover", "reset"]);
+
+  // Back returns to the settings list, which keeps its pinned rows.
+  sendKeys(panel, KEY_DOWN, KEY_ENTER);
+  assert.match(panel.render(80).join("\n"), /Apply changes/);
 });
 
 test("the delegate panel searches models, keeps pinned actions, and stages safe edits", () => {
@@ -3054,6 +3100,8 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/advisor-executor.ts",
     "src/advisor-log.ts",
     "src/advisor-provider-extension.ts",
+    "src/advisor-resume.ts",
+    "src/advisor-threads.ts",
     "src/config-notice.ts",
     "src/config.ts",
     "src/context-shunt-adapter.ts",
@@ -3914,6 +3962,11 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // checkpoints, role selection, Visual Design, briefs, launch, role lines, results, limits) with
   // the numbered decision order replaced by that flow. These hashes prove the text changed, not
   // that the guarantees survived; the semantic assertions above and the variant matrix do that.
+  // Front 43 piece 4 regenerated them for the conversational Advisor: the tool-mode paragraph now
+  // describes continuing a thread with the new question and evidence and names the operative-task
+  // boundary, the role-mode paragraph adds the host `resume` form with `output`/`file-only`, and the
+  // retention sentence states that only the first turn carries the verified launch contract. No
+  // threshold, permission, ownership rule or role semantic changed.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3922,8 +3975,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "2e5dec5e1e459486790a8e12e2544005ec771751d16d0641967400b3125e3f45",
-    aggressive: "bcce9c1b101ddfa8bf4e4f9f91fd4a8ca6a75aac2f67133c77ff1d4977da91f6",
+    normal: "24e75b0613fd25668b5c5ba7dbd2ce46596e694a2005f9ac8511285caa22784b",
+    aggressive: "36e69e1a879ba83fdc478cdd69244d14319c090ba4d816ca9f63218fc79e5814",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);

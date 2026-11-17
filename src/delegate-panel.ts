@@ -160,6 +160,7 @@ type PanelMode =
       selected: number;
       minimum?: ThinkingLevelName;
     }
+  | { kind: "continuity"; selected: number }
   | { kind: "discard-confirm"; selected: number };
 
 type ThinkingAction = "inherit" | "unset" | "fixed" | "range";
@@ -210,9 +211,24 @@ export interface DelegatePanelOptions {
   /** Providers that an extension registered in this session; only these offer the step. */
   extensionProviders?: readonly string[];
   onSaveAdmissions?: (admissions: ProviderAdmissions) => Promise<boolean>;
+  /** One bounded line describing this session's Advisor threads, read without a lock. */
+  continuityStatus?: () => Promise<string>;
+  /** Reconcile unresolved turns with public terminal proof; returns a message for the panel. */
+  onRecoverContinuity?: () => Promise<{ message: string; type: "info" | "error" }>;
+  /** Abandon threads, refused while any turn may still be live. */
+  onResetContinuity?: () => Promise<{ message: string; type: "info" | "error" }>;
 }
 
 const PANEL_ACTIONS: readonly PanelAction[] = ["apply", "save-defaults", "reset", "cancel"];
+const CONTINUITY_ACTIONS = ["status", "recover", "reset"] as const;
+type ContinuityAction = (typeof CONTINUITY_ACTIONS)[number];
+const CONTINUITY_LABELS: Record<ContinuityAction, string> = {
+  status: "Show Advisor continuity status",
+  recover: "Reconcile a possibly live turn with the host",
+  reset: "Reset Advisor threads (only when nothing may be live)",
+};
+const CONTINUITY_DESCRIPTION =
+  "Advisor continuity is private to this extension: the journal, the lock and the per-turn answer files are never edited by hand. Recover asks the host for terminal proof of each unresolved turn; reset only abandons threads when nothing may still be running.";
 const PROVIDER_CHOICES = [
   "Standard profile (no provider extension)",
   "Anthropic auth 3.4.3/3.4.4/3.6.0 (explicit opt-in)",
@@ -469,6 +485,11 @@ export class DelegatePanel implements Component, Focusable {
   private settingsIndex = 0;
   private working: string | undefined;
   private message: { kind: "info" | "error"; text: string } | undefined;
+  private readonly continuityStatus?: () => Promise<string>;
+  private readonly onRecoverContinuity?: () => Promise<{ message: string; type: "info" | "error" }>;
+  private readonly onResetContinuity?: () => Promise<{ message: string; type: "info" | "error" }>;
+  private continuityText: string | undefined;
+  private continuityBusy = false;
   private renderWidth = 80;
   private _focused = false;
 
@@ -481,6 +502,9 @@ export class DelegatePanel implements Component, Focusable {
     this.candidates = sortedModels(options.candidates);
     this.diagnostics = [...options.diagnostics];
     this.hasRuntimeError = options.hasRuntimeError;
+    this.continuityStatus = options.continuityStatus;
+    this.onRecoverContinuity = options.onRecoverContinuity;
+    this.onResetContinuity = options.onResetContinuity;
     this.hasAdvisorError = options.hasAdvisorError ?? false;
     this.onApply = options.onApply;
     this.onSaveDefaults = options.onSaveDefaults;
@@ -575,6 +599,7 @@ export class DelegatePanel implements Component, Focusable {
     else if (this.mode.kind === "advanced-input") this.handleAdvancedValueInput(data);
     else if (this.mode.kind === "thinking") this.handleThinkingInput(data);
     else if (this.mode.kind === "thinking-level") this.handleThinkingLevelInput(data);
+    else if (this.mode.kind === "continuity") this.handleContinuityInput(data);
     else this.handleDiscardInput(data);
 
     this.syncInputFocus();
@@ -610,6 +635,7 @@ export class DelegatePanel implements Component, Focusable {
     if (mode.kind === "advanced-input") return this.renderAdvancedInput(width, budget, mode);
     if (mode.kind === "thinking") return this.renderThinking(width, budget, mode);
     if (mode.kind === "thinking-level") return this.renderThinkingLevel(width, budget, mode);
+    if (mode.kind === "continuity") return this.renderContinuity(width, budget, mode);
     return this.renderDiscard(width, budget);
   }
 
@@ -680,18 +706,20 @@ export class DelegatePanel implements Component, Focusable {
     const modeLabel =
       this.mode.kind === "settings" || this.mode.kind === "discard-confirm"
         ? "Delegation policy"
-        : this.mode.kind === "correction"
-          ? "Delegation policy / Launch correction (global)"
-          : this.mode.kind === "advanced" ||
-              this.mode.kind === "advanced-reader-enabled" ||
-              this.mode.kind === "advanced-reader-role" ||
-              this.mode.kind === "advanced-input"
-            ? "Delegation policy / Context advanced"
-            : this.mode.kind === "provider"
-              ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
-              : this.mode.kind === "extension"
-                ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
-                : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
+        : this.mode.kind === "continuity"
+          ? "Delegation policy / Advisor continuity"
+          : this.mode.kind === "correction"
+            ? "Delegation policy / Launch correction (global)"
+            : this.mode.kind === "advanced" ||
+                this.mode.kind === "advanced-reader-enabled" ||
+                this.mode.kind === "advanced-reader-role" ||
+                this.mode.kind === "advanced-input"
+              ? "Delegation policy / Context advanced"
+              : this.mode.kind === "provider"
+                ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
+                : this.mode.kind === "extension"
+                  ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
+                  : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
     const status = this.working ?? (this.isDirty() ? "Modified" : "");
     const gap = Math.max(1, width - visibleWidth(modeLabel) - visibleWidth(status));
     const statusText = this.theme.fg("warning", status);
@@ -721,7 +749,7 @@ export class DelegatePanel implements Component, Focusable {
   private renderFooter(width: number): string[] {
     const hint =
       this.mode.kind === "settings"
-        ? "↑↓ move · Enter edit · A apply · Esc close"
+        ? "↑↓ move · Enter edit · A apply · C continuity · Esc close"
         : this.mode.kind === "model"
           ? "Type search · ↑↓ move · PgUp/PgDn · Enter choose · Esc back"
           : this.mode.kind === "advanced"
@@ -1557,6 +1585,102 @@ export class DelegatePanel implements Component, Focusable {
     ].slice(0, budget);
   }
 
+  /**
+   * Advisor continuity is observable and repairable from here, never by editing the private
+   * journal. The status line is read without taking the journal lock, and both actions report the
+   * outcome in the panel's own message row.
+   */
+  private async loadContinuity(): Promise<void> {
+    if (!this.continuityStatus) return;
+    this.continuityBusy = true;
+    this.tui.requestRender();
+    try {
+      this.continuityText = await this.continuityStatus();
+    } catch {
+      this.continuityText = "Advisor continuity status is unavailable.";
+    } finally {
+      this.continuityBusy = false;
+      this.tui.requestRender();
+    }
+  }
+
+  private handleContinuityInput(data: string): void {
+    if (this.mode.kind !== "continuity") return;
+    const count = CONTINUITY_ACTIONS.length + 1;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    else if (matchesKey(data, "home")) this.mode.selected = 0;
+    else if (matchesKey(data, "end")) this.mode.selected = count - 1;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      const action = CONTINUITY_ACTIONS[this.mode.selected];
+      if (!action) {
+        this.mode = { kind: "settings" };
+        return;
+      }
+      if (action === "status") {
+        void this.loadContinuity();
+        return;
+      }
+      const run = action === "recover" ? this.onRecoverContinuity : this.onResetContinuity;
+      if (!run) {
+        this.message = {
+          kind: "error",
+          text: "Advisor continuity is not available in this session.",
+        };
+        return;
+      }
+      this.continuityBusy = true;
+      void run().then(
+        (outcome) => {
+          this.message = { kind: outcome.type, text: outcome.message };
+          this.continuityBusy = false;
+          void this.loadContinuity();
+        },
+        () => {
+          this.message = { kind: "error", text: "Advisor continuity action failed." };
+          this.continuityBusy = false;
+          this.tui.requestRender();
+        },
+      );
+    }
+  }
+
+  private renderContinuity(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "continuity" }>,
+  ): string[] {
+    const blocks = [
+      ...CONTINUITY_ACTIONS.map((action, index) => [
+        selectedLine(this.theme, CONTINUITY_LABELS[action], width, index === mode.selected),
+      ]),
+      [selectedLine(this.theme, "Back", width, mode.selected === CONTINUITY_ACTIONS.length)],
+    ];
+    const description = wrapTextWithAnsi(CONTINUITY_DESCRIPTION, width).slice(
+      0,
+      Math.max(0, Math.floor(budget / 2)),
+    );
+    const status = this.continuityBusy
+      ? ["Reading Advisor continuity…"]
+      : wrapTextWithAnsi(this.continuityText ?? "No continuity state was read yet.", width);
+    const statusRows = status.slice(
+      0,
+      Math.max(0, budget - description.length - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...statusRows.map((line) => this.theme.fg("dim", line)),
+      ...this.renderBlockViewport(
+        blocks,
+        mode.selected,
+        width,
+        Math.max(1, budget - description.length - statusRows.length),
+      ),
+    ];
+  }
+
   private renderDiscard(width: number, budget: number): string[] {
     const options = ["Keep editing", "Discard changes"];
     const selected = this.mode.kind === "discard-confirm" ? this.mode.selected : 0;
@@ -1602,6 +1726,11 @@ export class DelegatePanel implements Component, Focusable {
     else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.requestClose();
     else if (matchesKey(data, "enter") || matchesKey(data, "space")) this.activateSettingsItem();
     else if (data.toLowerCase() === "a") void this.applyDraft();
+    // Advisor continuity is one extra row of the same panel, not a second interface.
+    else if (data.toLowerCase() === "c") {
+      this.mode = { kind: "continuity", selected: 0 };
+      void this.loadContinuity();
+    }
   }
 
   private moveSettings(delta: number): void {

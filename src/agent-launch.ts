@@ -22,6 +22,8 @@ const STABLE_SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SHA256_LOWER_HEX = /^[0-9a-f]{64}$/;
 const DIAGNOSTIC_SEVERITIES = new Set(["warning", "host-required"]);
+/** A host-allocated execution id is an opaque token, never a path or a free-form string. */
+const EXECUTION_RUN_ID = /^[A-Za-z0-9._-]{1,128}$/;
 const DELEGATION_EVENTS = {
   request: "prompt-template:subagent:request",
   started: "prompt-template:subagent:started",
@@ -89,6 +91,7 @@ export type AgentLaunchFailureCode =
   | "request-emit-failed"
   | "terminal-metadata-mismatch"
   | "terminal-result-invalid"
+  | "journal-unavailable"
   | "host-terminal-status"
   | "host-status-unrecognized";
 /**
@@ -122,7 +125,11 @@ export type AgentLaunchModules = Readonly<{
 }>;
 
 export type AgentLaunchResult<Value> =
-  | { kind: "completed"; value: Value }
+  /**
+   * `runId` is the host-allocated id of the execution, kept apart from the preflight binding id in
+   * the request. It is only a handle for a later continuation; the answer never depends on it.
+   */
+  | { kind: "completed"; value: Value; runId?: string }
   | { kind: "unavailable"; reason?: AgentLaunchFailure }
   | { kind: "unavailable-context"; reason?: AgentLaunchFailure }
   | { kind: "busy" }
@@ -164,6 +171,15 @@ export type AgentLaunchDefinition<Request extends AgentLaunchRequest, Value> = R
   result: AgentLaunchResultExpectation<Request, Value>;
 }>;
 
+export type AgentLaunchExecuteOptions = Readonly<{
+  /**
+   * Runs once the contract is bound and immediately before the request is emitted. Returning
+   * `false` settles the launch locally without sending anything. Only the Advisor path uses it, to
+   * confirm that its journal already holds the pending turn.
+   */
+  beforeRequest?: () => Promise<boolean>;
+}>;
+
 export type AgentLaunchDependencies = {
   loader?: () => Promise<AgentLaunchModules | undefined>;
   setTimer?: (callback: () => void, delay: number) => Timer;
@@ -178,6 +194,7 @@ type ActiveRun<Value> = {
   requestId: string;
   nodeId: string;
   modules: AgentLaunchModules | undefined;
+  beforeRequest: (() => Promise<boolean>) | undefined;
   requestSent: boolean;
   started: boolean;
   settled: boolean;
@@ -635,6 +652,7 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
     request: Request,
     host: AgentLaunchHost,
     signal?: AbortSignal,
+    options: AgentLaunchExecuteOptions = {},
   ): Promise<AgentLaunchResult<Value>> {
     if (this.closed || (request.context === "fork" && !this.definition.allowFork))
       return Promise.resolve({
@@ -654,6 +672,7 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
         requestId: this.createId(),
         nodeId: this.createId(),
         modules: undefined,
+        beforeRequest: options.beforeRequest,
         requestSent: false,
         started: false,
         settled: false,
@@ -782,6 +801,21 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
         ),
       );
       if (!this.isLive(active)) return;
+      // The consumer's last chance to refuse before anything is sent: a false answer means nothing
+      // was emitted, so the launch settles locally and no child can exist.
+      if (active.beforeRequest) {
+        let confirmed = false;
+        try {
+          confirmed = await active.beforeRequest();
+        } catch {
+          confirmed = false;
+        }
+        if (!this.isLive(active)) return;
+        if (!confirmed) {
+          active.settle({ kind: "unavailable", reason: { code: "journal-unavailable" } });
+          return;
+        }
+      }
 
       active.requestSent = true;
       this.clearPreflightTimer(active);
@@ -889,9 +923,13 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
         return;
       }
       const completed = completedValue(payload.result, this.definition.result);
+      const runId =
+        typeof payload.runId === "string" && EXECUTION_RUN_ID.test(payload.runId)
+          ? payload.runId
+          : undefined;
       active.settle(
         completed.ok
-          ? { kind: "completed", value: completed.value }
+          ? { kind: "completed", value: completed.value, ...(runId ? { runId } : {}) }
           : { kind: "failed", reason: { code: "terminal-result-invalid" } },
       );
       return;

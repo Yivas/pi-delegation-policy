@@ -142,8 +142,8 @@ function advisorPolicy(
 
 ${
   launch === "tool"
-    ? `Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief whenever context is fresh, and preferably also for a possible rejected fork: objective and constraints, relevant facts, options and proposal, uncertainty. The tool chooses context automatically; fork sends this conversation to each advisor's provider.`
-    : `Launch every listed Advisor with the host's subagent tool ${providerProfile ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —" : 'using agent "pi-delegation-policy.advisor" exactly — never a host agent or alias named "advisor" or "oracle" —'} with its exact model and a supported thinking level from its role line, never an ambient default, in the background unless the host or the user requires foreground.${count > 1 ? " Ask every listed Advisor the same question in one call." : ""}`
+    ? `Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation whenever context is fresh, and preferably also for a possible rejected fork: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. The tool chooses context automatically; fork sends this conversation to each advisor's provider. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.`
+    : `Launch every listed Advisor with the host's subagent tool ${providerProfile ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —" : 'using agent "pi-delegation-policy.advisor" exactly — never a host agent or alias named "advisor" or "oracle" —'} with its exact model and a supported thinking level from its role line, never an ambient default, in the background unless the host or the user requires foreground.${count > 1 ? " Ask every listed Advisor the same question in one call." : ""} Keep each returned run id and continue a thread with the same tool's resume action, passing that id, the new question and evidence, and output with outputMode file-only; read that file for the answer and never change model, profile or permissions on a resume.`
 }
 
 ${launch === "role" ? ADVISOR_CONTEXT_GUIDANCE[context] : ""}
@@ -176,7 +176,7 @@ const LIMITS_BOUNDARY: Record<"correct" | "block", string> = {
 const LIMITS_REFUSAL =
   "It refuses a call whose model, level, or Advisor profile it cannot settle, and a workflow script whose models it cannot see; the refusal lists the accepted launches.";
 const LIMITS_RETENTION =
-  "Consultation costs latency, tokens, and normal executor/provider retention.";
+  "Consultation costs latency, tokens, and normal executor/provider retention. Only the first turn of a thread carries the verified launch contract; later turns rely on the host's inherited contract plus the agent, model and thinking it reports, and any mismatch blocks the thread instead of retrying it.";
 
 function limitsTools(advisorTool: boolean): string {
   return advisorTool

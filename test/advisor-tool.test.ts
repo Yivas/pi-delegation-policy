@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import fs, { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -16,6 +17,19 @@ import {
   PROVIDER_EXTENSION_ADVISOR_EXTENSION,
 } from "../src/advisor-provider-extension.ts";
 import { AdvisorLog, ADVISOR_LOG_MAX_BYTES } from "../src/advisor-log.ts";
+import {
+  AdvisorJournalError,
+  AdvisorThreadJournal,
+  advisorParentKey,
+  getAdvisorThreadsPath,
+  readAdvisorAnswer,
+  readAdvisorThreads,
+  reserveAdvisorAnswer,
+  upsertAdvisorThread,
+  type AdvisorJournalExclusiveResult,
+  type AdvisorJournalSession,
+  type AdvisorThreadRecord,
+} from "../src/advisor-threads.ts";
 import { getLaunchCorrectionPath } from "../src/launch-correction-mode.ts";
 import type { AgentLaunchModules } from "../src/agent-launch.ts";
 import {
@@ -101,11 +115,11 @@ type Tool = {
   parameters: unknown;
   execute: (
     id: string,
-    input: { question: string; brief?: string },
+    input: { question: string; brief?: string; evidence?: string },
     signal: AbortSignal | undefined,
     update: unknown,
     context: never,
-  ) => Promise<{ content: Array<{ text: string }> }>;
+  ) => Promise<{ content: Array<{ text: string }>; details?: Payload }>;
 };
 
 class Bus {
@@ -116,6 +130,8 @@ class Bus {
   /** The host wraps a fork task before it launches the child and binds that wrapped task. */
   wrapForExecution: (task: string) => string = forkTask;
   failRequestEmit = false;
+  /** The host allocates one execution run id per admitted launch. */
+  runSeq = 0;
   on(event: string, listener: (payload: unknown) => void) {
     const listeners = this.listeners.get(event) ?? new Set();
     listeners.add(listener);
@@ -137,11 +153,13 @@ class Bus {
   finish(request: Payload, status = "completed", answer: unknown = sentinel, error?: string) {
     const task = request.task as string;
     const executionTask = request.context === "fork" ? this.wrapForExecution(task) : task;
+    this.runSeq += 1;
     this.emit(events.startedEvent, request);
     this.emit(events.responseEvent, {
       requestId: request.requestId,
       ownerRunId: request.ownerRunId,
       nodeId: request.nodeId,
+      runId: `synthetic-run-${this.runSeq}`,
       status,
       agent: request.agent,
       model: `${request.model}:${request.thinking}`,
@@ -214,9 +232,13 @@ async function harness(
     packageVersion?: unknown;
     activeTools?: string[];
     correctionMode?: "block";
+    /** Shared journal so a test can gate or fail its writes. */
+    journal?: AdvisorThreadJournal;
+    directory?: string;
+    sessionId?: string;
   } = {},
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "advisor-tool-"));
+  const directory = options.directory ?? (await mkdtemp(join(tmpdir(), "advisor-tool-")));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
   const path = getGlobalConfigPath(directory);
@@ -240,7 +262,10 @@ async function harness(
     hasUI: false,
     mode: "rpc",
     getContextUsage: () => ({ tokens }),
-    sessionManager: { getBranch: () => branch, getSessionId: () => "synthetic-session" },
+    sessionManager: {
+      getBranch: () => branch,
+      getSessionId: () => options.sessionId ?? "synthetic-session",
+    },
     modelRegistry: {
       find: (provider: string, id: string) =>
         available.find((model) => model.provider === provider && model.id === id),
@@ -260,10 +285,17 @@ async function harness(
   );
   const modules: AgentLaunchModules =
     options.forkTaskNormalizer === false ? { ...loaded, normalizeForkTask: undefined } : loaded;
-  const executor = new AdvisorExecutor({ loader: async () => modules });
+  const executor = new AdvisorExecutor({
+    loader: async () => modules,
+    ...(options.journal ? { journal: options.journal } : {}),
+  });
   const logPath = join(directory, "events.jsonl");
   const log = new AdvisorLog(logPath);
-  createPiDelegationPolicy({ advisorExecutor: executor, advisorLog: log })({
+  createPiDelegationPolicy({
+    advisorExecutor: executor,
+    advisorLog: log,
+    ...(options.journal ? { advisorJournal: options.journal } : {}),
+  })({
     events: bus,
     on: (event: string, handler: Handler) => handlers.set(event, handler),
     registerTool: (tool: Tool) => {
@@ -283,6 +315,9 @@ async function harness(
   const hook = async (name: string, event: Payload = {}) =>
     handlers.get(name)?.(event as never, ctx as never);
   await hook("session_start");
+  // A consultation belongs to an operative task, and only a public prompt opens one.
+  await hook("input", { source: "interactive", text: "synthetic prompt" });
+  await hook("before_agent_start");
   return {
     bus,
     ctx,
@@ -297,15 +332,39 @@ async function harness(
     path,
     logPath,
     executor,
-    call: async (input = { question: sentinel, brief: sentinel }, signal?: AbortSignal) =>
+    call: async (
+      input: { question: string; brief?: string; evidence?: string } = {
+        question: sentinel,
+        brief: sentinel,
+      },
+      signal?: AbortSignal,
+    ) =>
       (await tools.get("consult_advisor")!.execute("id", input, signal, undefined, ctx as never))
         .content[0]!.text,
+    callBoth: async (
+      input: { question: string; brief?: string; evidence?: string } = {
+        question: sentinel,
+        brief: sentinel,
+      },
+    ) => {
+      const result = await tools
+        .get("consult_advisor")!
+        .execute("id", input, undefined, undefined, ctx as never);
+      return { text: result.content[0]!.text, details: result.details as Payload };
+    },
+    // A new user prompt settles the previous task and opens another one, with a new thread.
+    newTask: async () => {
+      await hook("agent_settled");
+      await hook("input", { source: "interactive", text: "synthetic prompt" });
+      await hook("before_agent_start");
+    },
     close: async () => {
       await hook("session_shutdown");
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
       // Windows can delay directory removal even after the writer has drained.
-      await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      if (!options.directory)
+        await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     },
   };
 }
@@ -316,6 +375,42 @@ async function until(condition: () => boolean) {
     await new Promise((resolveTick) => setTimeout(resolveTick, 5));
   }
 }
+/** Hold one real filesystem read, after its snapshot is obtained but before its caller resumes. */
+function holdRead(matches: (path: string) => boolean) {
+  const original = fs.readFile;
+  let armed = true;
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fs.readFile = (async (...args: Parameters<typeof fs.readFile>) => {
+    const held = armed && matches(String(args[0]));
+    if (held) armed = false;
+    try {
+      return await original(...args);
+    } finally {
+      if (held) {
+        enter();
+        await gate;
+      }
+    }
+  }) as typeof fs.readFile;
+  syncBuiltinESMExports();
+  return {
+    entered,
+    release,
+    restore: () => {
+      release();
+      fs.readFile = original;
+      syncBuiltinESMExports();
+    },
+  };
+}
+
 const logEvents = async (path: string): Promise<Payload[]> =>
   (await readFile(path, "utf8"))
     .split("\n")
@@ -1103,6 +1198,7 @@ test("a verified 0.83.1 contract admits the Advisor in fork and fresh and binds 
     // The synthetic host binds the wrapped fork task, exactly as the preflight did.
     run.bus.respond = (request) => run.bus.finish(request);
     assert.match(await run.call(), /example\/first \[fork\]/);
+    await run.newTask();
     run.ctx.getContextUsage = () => ({ tokens: 60_000 });
     assert.match(
       await run.call({ question: sentinel, brief: sentinel }),
@@ -1136,6 +1232,7 @@ test("stable pi-subagents releases at or above the minimum bind fork and fresh a
     try {
       run.bus.respond = (request) => run.bus.finish(request);
       assert.match(await run.call(), new RegExp(sentinel), packageVersion);
+      await run.newTask();
       run.ctx.getContextUsage = () => ({ tokens: 60_000 });
       assert.match(await run.call(), new RegExp(sentinel), packageVersion);
       assert.deepEqual(
@@ -1948,7 +2045,9 @@ test("advisor group terminal timeout cancels each child and settles locally", as
   const bus = new Bus();
   const modules = await fakeModules();
   const timers: Array<{ callback: () => void; delay: number; live: boolean }> = [];
+  const directory = await mkdtemp(join(tmpdir(), "advisor-timeout-"));
   const executor = new AdvisorExecutor({
+    journal: new AdvisorThreadJournal(join(directory, "threads.json")),
     loader: async () => modules,
     setTimer: (callback, delay) => {
       const timer = { callback, delay, live: true };
@@ -1961,12 +2060,30 @@ test("advisor group terminal timeout cancels each child and settles locally", as
   });
   bus.respond = (request) => bus.emit(events.startedEvent, request);
   const pending = executor.execute(
-    ["first", "second"].map((id) => ({
-      question: sentinel,
-      context: "fork" as const,
-      model: { provider: "example", id, thinking: "high" },
-      availableModels: [{ provider: "example", id, fullId: `example/${id}`, reasoning: true }],
-    })),
+    {
+      slots: ["first", "second"].map((id, slot) => ({
+        kind: "launch" as const,
+        slot,
+        model: `example/${id}`,
+        fingerprint: {
+          provider: "example",
+          model: id,
+          thinking: "high",
+          profile: ADVISOR_AGENT_NAME,
+          admission: "",
+          packageVersion: "0.27.0",
+          epoch: 0,
+        },
+        request: {
+          question: sentinel,
+          context: "fork" as const,
+          model: { provider: "example", id, thinking: "high" },
+          availableModels: [{ provider: "example", id, fullId: `example/${id}`, reasoning: true }],
+        },
+      })),
+      consult: { question: sentinel, context: "fork" as const },
+      task: { parentKey: "a".repeat(64), taskToken: "synthetic-task-0001" },
+    },
     { cwd: "/synthetic", sessionId: "synthetic", events: bus },
     undefined,
     () => undefined,
@@ -1974,13 +2091,17 @@ test("advisor group terminal timeout cancels each child and settles locally", as
   await until(() => bus.requests.length === 2);
   for (const timer of timers.filter((timer) => timer.live && timer.delay === 120_000))
     timer.callback();
+  const timedOut = await pending;
   assert.deepEqual(
-    (await pending).map((answer) => answer.result.kind),
-    ["timed-out", "timed-out"],
+    timedOut.slots.map((slot) => slot.status),
+    ["blocked", "blocked"],
   );
+  assert.equal(timedOut.summary, "blocked");
+  assert.match(timedOut.slots[0]?.detail ?? "", /did not reply within 120 seconds/);
   assert.equal(bus.cancels.length, 2);
   assert.ok(timers.every((timer) => !timer.live));
   executor.close();
+  await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 
 test("a failed third global replacement restores the exact previous three-file state", async () => {
@@ -2032,7 +2153,9 @@ for (const version of ["0.76.1", "0.83.1"] as const) {
       const original = modules.resolveSubagentLaunchContract;
       const bus = new Bus();
       bus.respond = (request) => bus.finish(request);
+      const directory = await mkdtemp(join(tmpdir(), "advisor-profile-"));
       const executor = new AdvisorExecutor({
+        journal: new AdvisorThreadJournal(join(directory, "threads.json")),
         loader: async () => ({
           ...modules,
           resolveSubagentLaunchContract: async (input) => {
@@ -2058,31 +2181,1351 @@ for (const version of ["0.76.1", "0.83.1"] as const) {
           },
         }),
       });
-      const [answer] = await executor.execute(
-        [
-          {
+      const group = await executor.execute(
+        {
+          slots: [
+            {
+              kind: "launch",
+              slot: 0,
+              model: `${profile.provider}/synthetic-model`,
+              fingerprint: {
+                provider: profile.provider,
+                model: "synthetic-model",
+                thinking: "low",
+                profile: profile.agent,
+                admission: "",
+                packageVersion: "0.27.0",
+                epoch: 0,
+              },
+              request: {
+                question: "synthetic question",
+                brief: "synthetic brief",
+                context: "fresh",
+                providerExtension: profile.providerExtension,
+                model: { provider: profile.provider, id: "synthetic-model", thinking: "low" },
+                availableModels: [
+                  {
+                    provider: profile.provider,
+                    id: "synthetic-model",
+                    fullId: `${profile.provider}/synthetic-model`,
+                  },
+                ],
+              },
+            },
+          ],
+          consult: {
             question: "synthetic question",
             brief: "synthetic brief",
             context: "fresh",
-            providerExtension: profile.providerExtension,
-            model: { provider: profile.provider, id: "synthetic-model", thinking: "low" },
-            availableModels: [
-              {
-                provider: profile.provider,
-                id: "synthetic-model",
-                fullId: `${profile.provider}/synthetic-model`,
-              },
-            ],
           },
-        ],
+          task: { parentKey: "b".repeat(64), taskToken: "synthetic-task-0002" },
+        },
         { cwd: "/synthetic", sessionId: "synthetic-session", events: bus },
         undefined,
         () => undefined,
       );
-      assert.equal(answer?.result.kind, extra ? "unavailable" : "completed");
+      const answer = group.slots[0];
+      assert.equal(answer?.status, extra ? "unavailable" : "complete");
       assert.equal(bus.requests.length, extra ? 0 : 1);
       if (!extra) assert.equal(bus.requests[0]?.agent, profile.agent);
       executor.close();
+      await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Advisor continuity: the public boundary for a second turn, the private journal and the RPC.
+// ---------------------------------------------------------------------------------------------
+
+type RpcRequest = { version: number; requestId: string; method: string; params: Payload };
+
+/** The per-turn answer directory names its slot, which is all a synthetic host needs to answer. */
+function slotOfOutput(output: string): number {
+  // The operation directory is `<slot>-<ordinal>`; the task token above it is opaque.
+  const directory = output.slice(0, Math.max(0, output.lastIndexOf("answer.md")));
+  const name =
+    directory
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .pop() ?? "";
+  return Number(name.split("-")[0]);
+}
+
+/**
+ * A synthetic `pi-subagents` RPC bridge: it answers `ping`, revives a thread with a new run id,
+ * writes the per-turn output file the way a real host does, and reports the snapshot status.
+ */
+class RpcHost {
+  requests: RpcRequest[] = [];
+  resumes: Payload[] = [];
+  stops: string[] = [];
+  sessionId = "synthetic-session";
+  agent = ADVISOR_AGENT_NAME;
+  thinking = "high";
+  answer: (slot: number) => string | undefined = (slot) => `answer-${slot}`;
+  state: (slot: number) => "complete" | "running" | "failed" = () => "complete";
+  model: (slot: number) => string = (slot) =>
+    `example/${["first", "second", "third"][slot] ?? "first"}`;
+  /** The receipt the host returns for a revival; a test can drop it or make it unusable. */
+  receipt: (slot: number, runId: string) => Payload = (_slot, runId) => ({ runId });
+  /** Opens the exact window between sending a request and receiving its reply. */
+  beforeReply?: (method: string) => Promise<void>;
+  private readonly runs = new Map<string, number>();
+  private seq = 0;
+  private readonly bus: Bus;
+
+  constructor(bus: Bus) {
+    this.bus = bus;
+    bus.on("subagents:rpc:v1:request", (payload) => void this.handle(payload as RpcRequest));
+  }
+
+  private reply(requestId: string, data: Payload): void {
+    this.bus.emit(`subagents:rpc:v1:reply:${requestId}`, {
+      version: 1,
+      requestId,
+      success: true,
+      data,
+    });
+  }
+
+  private async handle(request: RpcRequest): Promise<void> {
+    this.requests.push(request);
+    const params = (request.params ?? {}) as Payload;
+    if (this.beforeReply) await this.beforeReply(request.method);
+    if (request.method === "ping")
+      return this.reply(request.requestId, {
+        version: 1,
+        capabilities: { resume: true },
+        events: { asyncComplete: "subagent:async-complete" },
+        session: { sessionId: this.sessionId },
+      });
+    if (request.method === "resume") {
+      this.resumes.push(params);
+      const slot = slotOfOutput(String(params.output));
+      this.seq += 1;
+      const runId = `resume-run-${this.seq}`;
+      this.runs.set(runId, slot);
+      const text = this.answer(slot);
+      if (text !== undefined) await writeFile(String(params.output), text, "utf8");
+      return this.reply(request.requestId, { text: "", details: this.receipt(slot, runId) });
+    }
+    if (request.method === "status") {
+      const runId = String(params.id);
+      const slot = this.runs.get(runId);
+      if (slot === undefined) return this.reply(request.requestId, { text: "" });
+      const state = this.state(slot);
+      const step = {
+        id: runId,
+        kind: "step",
+        label: "advisor",
+        state: state === "complete" ? "complete" : state === "failed" ? "failed" : "running",
+        agent: this.agent,
+        model: this.model(slot),
+        thinking: this.thinking,
+      };
+      return this.reply(request.requestId, {
+        text: "",
+        details: { mode: "single", results: [] },
+        asyncSnapshot: {
+          kind: "pi-subagents.async-status-snapshot",
+          version: 1,
+          runs: [{ id: runId, kind: "subagent", label: "advisor", state, children: [step] }],
+        },
+      });
+    }
+    if (request.method === "stop") {
+      this.stops.push(String(params.id));
+      return this.reply(request.requestId, { text: "stopping" });
+    }
+    return this.reply(request.requestId, { text: "" });
+  }
+}
+
+const journalThreads = (value: unknown): Payload[] =>
+  Object.values((value as { parents: Record<string, { threads: Payload[] }> }).parents).flatMap(
+    (parent) => parent.threads,
+  );
+
+test("a second turn resumes the exact new run id and returns its own file", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /example\/first \[fork\]/);
+    assert.equal(rpc.requests.length, 0, "the first turn is a launch, never a resume");
+
+    const answer = await run.call({ question: "second question", evidence: "new evidence" });
+    assert.match(answer, /example\/first \[fork\]:\nanswer-0/);
+    assert.match(answer, /example\/second \[fork\]:\nanswer-1/);
+    assert.match(answer, /Consultation complete: 2 of 2 advisors answered/);
+
+    // One resume per slot, addressed to the run id the first turn returned, with its own file.
+    assert.deepEqual(
+      rpc.resumes.map((params) => [params.id, params.outputMode, "model" in params]).sort(),
+      [
+        ["synthetic-run-1", "file-only", false],
+        ["synthetic-run-2", "file-only", false],
+      ],
+    );
+    const outputs = rpc.resumes.map((params) => String(params.output));
+    assert.equal(new Set(outputs).size, 2);
+    assert.ok(outputs.every((output) => output.startsWith(run.path.slice(0, -5))));
+    const firstResume = rpc.resumes.find((params) => params.id === "synthetic-run-1");
+    assert.match(String(firstResume?.message), /second question[\s\S]*new evidence/);
+
+    // Status is queried by the new run id of this turn, never by the previous one.
+    assert.deepEqual(
+      [
+        ...new Set(
+          rpc.requests
+            .filter((request) => request.method === "status")
+            .map((request) => String(request.params?.id)),
+        ),
+      ].sort(),
+      ["resume-run-1", "resume-run-2"],
+    );
+
+    // The journal keeps metadata only, and the second turn extends the same chain.
+    const journal = await readFile(getAdvisorThreadsPath(), "utf8");
+    assert.doesNotMatch(journal, new RegExp(sentinel));
+    assert.doesNotMatch(journal, /second question|new evidence|answer-0|answer-1/);
+    assert.deepEqual(
+      journalThreads(JSON.parse(journal))
+        .map((record) => [record.slot, record.state, (record.runIds as string[]).length])
+        .sort(),
+      [
+        [0, "answered", 2],
+        [1, "answered", 2],
+      ],
+    );
+    // The local log stays content-free across both turns.
+    await run.hook("before_provider_request", {
+      payload: { instructions: "host" },
+    });
+    await run.log.flush();
+    const log = await readFile(run.logPath, "utf8");
+    assert.doesNotMatch(log, new RegExp(sentinel));
+    assert.doesNotMatch(log, /second question|new evidence|answer-0|answer-1/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a completed turn without a usable answer blocks the parent until the host proves it", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    rpc.answer = () => undefined;
+    assert.match(await run.call({ question: "second question" }), /wrote no answer file/);
+
+    // No retry inside the task, and no fresh launch behind the block.
+    const requests = run.bus.requests.length;
+    const resumes = rpc.resumes.length;
+    assert.match(
+      await run.call({ question: "third question" }),
+      /an earlier turn may still be running/,
+    );
+    assert.equal(run.bus.requests.length, requests);
+    assert.equal(rpc.resumes.length, resumes);
+
+    // The uncertainty survives the end of the task and an explicit reset.
+    await run.newTask();
+    assert.match(await run.call(), /an earlier turn may still be running/);
+    await run.command("advisor threads reset");
+    assert.match(run.notifications.at(-1)?.message ?? "", /reset changed nothing/);
+
+    // Public terminal proof reconciles it, and the next consultation starts a new thread.
+    await run.command("advisor threads recover");
+    assert.match(run.notifications.at(-1)?.message ?? "", /proven, closed/);
+    assert.match(await run.call(), /Consultation complete/);
+    assert.equal(run.bus.requests.length, requests + 2);
+  } finally {
+    await run.close();
+  }
+});
+
+test("three configured slots keep their positions and two answers are partial", async () => {
+  const third = { provider: "example", model: "third" };
+  const run = await harness({ ...base, advisors: [first, second, third] });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    const { text: answer, details } = await run.callBoth();
+    const consultation = details.advisorConsultation as Payload;
+    assert.equal(consultation.summary, "partial");
+    assert.deepEqual(
+      (consultation.slots as Payload[]).map((slot) => [slot.slot, slot.status, slot.model]),
+      [
+        [0, "complete", "example/first"],
+        [1, "complete", "example/second"],
+        [2, "unavailable", "example/third"],
+      ],
+    );
+    assert.match(answer, /example\/third \[unknown\]:\nAdvisor 3 model is not registered in Pi\./);
+    assert.match(answer, /Consultation partial: 2 of 3 advisors answered/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("the journal keeps every parent and every slot under concurrent writers", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-journal-"));
+  const path = join(directory, "threads.json");
+  const journal = new AdvisorThreadJournal(path);
+  const parentA = "a".repeat(64);
+  const parentB = "b".repeat(64);
+  const parentC = "c".repeat(64);
+  const parentD = "d".repeat(64);
+  const record = (slot: number, taskToken: string, state: "pending" | "closed" = "pending") => ({
+    slot,
+    taskToken,
+    fingerprint: {
+      provider: "example",
+      model: `m${slot}`,
+      thinking: "high",
+      profile: ADVISOR_AGENT_NAME,
+      admission: "",
+      packageVersion: "0.27.0",
+      epoch: 0,
+    },
+    state,
+    ordinal: 1,
+    runIds: [],
+    updatedAt: 1,
+  });
+  const read = async () =>
+    JSON.parse(await readFile(path, "utf8")) as {
+      parents: Record<string, { threads: Payload[] }>;
+    };
+  try {
+    // Two parents interleave: neither write may carry the other parent's stale entries.
+    await journal.exclusive(parentA, async (session) => {
+      await session.mutate((latest) => upsertAdvisorThread(latest, record(0, "task-aaaa-0001"), 2));
+    });
+    await journal.exclusive(parentB, async (session) => {
+      await session.mutate((latest) => upsertAdvisorThread(latest, record(0, "task-bbbb-0001"), 3));
+    });
+    await journal.exclusive(parentA, async (session) => {
+      await session.mutate((latest) => upsertAdvisorThread(latest, record(1, "task-aaaa-0001"), 4));
+    });
+    const both = await read();
+    assert.deepEqual(
+      Object.entries(both.parents)
+        .map(([key, parent]) => [key, parent.threads.map((thread) => thread.slot).sort()])
+        .sort(),
+      [
+        [parentA, [0, 1]],
+        [parentB, [0]],
+      ],
+    );
+
+    // Three slots of one group commit concurrently: every record survives on disk.
+    const group = await journal.exclusive(parentC, async (session) => {
+      await Promise.all(
+        [0, 1, 2].map((slot) =>
+          session.mutate((latest) =>
+            upsertAdvisorThread(latest, record(slot, "task-cccc-0001"), 5),
+          ),
+        ),
+      );
+      return session
+        .partition()
+        .threads.map((thread) => thread.slot)
+        .sort();
+    });
+    assert.deepEqual(group, { ok: true, value: [0, 1, 2] });
+    assert.deepEqual(
+      (await read()).parents[parentC]?.threads.map((thread) => thread.slot).sort(),
+      [0, 1, 2],
+    );
+
+    // A second instance cannot take a parent another one still owns.
+    const held = await journal.exclusive(parentC, async () =>
+      new AdvisorThreadJournal(path).exclusive(parentC, async () => "unreachable"),
+    );
+    assert.deepEqual(held, { ok: true, value: { ok: false, code: "journal-busy" } });
+
+    // An unresolved record is never evicted to make room for new ones.
+    const bounded = await journal.exclusive(parentD, async (session) => {
+      for (let slot = 0; slot < 30; slot += 1)
+        await session.mutate((latest) =>
+          upsertAdvisorThread(
+            latest,
+            record(
+              slot,
+              `task-dddd-${String(slot).padStart(4, "0")}`,
+              slot === 0 ? "pending" : "closed",
+            ),
+            6 + slot,
+          ),
+        );
+      const threads = session.partition().threads;
+      return {
+        count: threads.length,
+        unresolved: threads.filter((thread) => thread.state === "pending").length,
+      };
+    });
+    assert.ok(bounded.ok);
+    if (bounded.ok) {
+      assert.equal(bounded.value.unresolved, 1);
+      assert.ok(bounded.value.count <= 24, `bounded journal kept ${bounded.value.count} records`);
+    }
+    assert.equal(
+      (await read()).parents[parentD]?.threads.length,
+      bounded.ok ? bounded.value.count : -1,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("a configuration change fences a turn that is still running", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    rpc.state = () => "running";
+    const pending = run.call({ question: "second question" });
+    await until(() => rpc.resumes.length === 2);
+    await run.command("advisor off");
+    const answer = await pending;
+    assert.match(answer, /Advisor cancelled before replying/);
+    assert.doesNotMatch(answer, /answer-0|answer-1/);
+    assert.ok(rpc.stops.length >= 1, "the fenced turn asks the host to stop its own run");
+  } finally {
+    await run.close();
+  }
+});
+
+test("role mode launches nothing, and a run without an operative task fails closed", async () => {
+  const role = await harness({ ...base, advisorLaunch: "role" });
+  try {
+    assert.match(await role.call(), /Advisor launch is "role"/);
+    assert.equal(role.bus.requests.length, 0);
+    await assert.rejects(readFile(getAdvisorThreadsPath()), { code: "ENOENT" });
+  } finally {
+    await role.close();
+  }
+  // An extension-only run opens no operative task, so a consultation starts nothing.
+  const extension = await harness();
+  try {
+    extension.bus.respond = (request) => extension.bus.finish(request);
+    await extension.hook("agent_settled");
+    await extension.hook("input", { source: "extension", text: "internal" });
+    await extension.hook("before_agent_start");
+    assert.match(await extension.call(), /this run has no operative task/);
+    assert.equal(extension.bus.requests.length, 0);
+  } finally {
+    await extension.close();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Review corrections: current-operation recovery, fencing windows, lock reclamation, resolved
+// identity, closing barriers, brief scope and canonical confinement.
+// ---------------------------------------------------------------------------------------------
+
+function journalRecord(
+  slot: number,
+  taskToken: string,
+  state: AdvisorThreadRecord["state"] = "pending",
+): AdvisorThreadRecord {
+  return {
+    slot,
+    taskToken,
+    fingerprint: {
+      provider: "example",
+      model: `m${slot}`,
+      thinking: "high",
+      profile: ADVISOR_AGENT_NAME,
+      admission: "",
+      packageVersion: "0.27.0",
+      epoch: 0,
+    },
+    state,
+    ordinal: 1,
+    runIds: [],
+    updatedAt: 1,
+  };
+}
+
+/** A journal whose writes can be held or refused, to open the exact windows under review. */
+class GatedJournal extends AdvisorThreadJournal {
+  failNext = 0;
+  /** Refuse the write that would persist `accepted` for this turn ordinal. */
+  failAcceptedOrdinal = 0;
+  onHold?: () => void;
+  private gate: Promise<void> | undefined;
+  private releaseGate: (() => void) | undefined;
+
+  holdNext(): void {
+    this.gate = new Promise<void>((resolve) => {
+      this.releaseGate = resolve;
+    });
+  }
+
+  release(): void {
+    this.releaseGate?.();
+    this.releaseGate = undefined;
+    this.gate = undefined;
+  }
+
+  override async exclusive<Value>(
+    parentKey: string,
+    run: (session: AdvisorJournalSession) => Promise<Value>,
+  ): Promise<AdvisorJournalExclusiveResult<Value>> {
+    if (this.failNext > 0) {
+      this.failNext -= 1;
+      return { ok: false, code: "journal-write-failed" };
+    }
+    const gate = this.gate;
+    return super.exclusive(parentKey, async (session) =>
+      run({
+        ...session,
+        mutate: async (update) => {
+          // The update is pure, so previewing it identifies the exact transition to refuse.
+          if (this.failAcceptedOrdinal > 0) {
+            const preview = update(session.partition());
+            const refused = preview.threads.some(
+              (record) =>
+                record.state === "accepted" && record.ordinal === this.failAcceptedOrdinal,
+            );
+            if (refused) throw new AdvisorJournalError("journal-write-failed");
+          }
+          if (gate) {
+            this.onHold?.();
+            await gate;
+          }
+          return session.mutate(update);
+        },
+      }),
+    );
+  }
+}
+
+const answeredSlots = async (path = getAdvisorThreadsPath()): Promise<Payload[]> => {
+  const loaded = JSON.parse(await readFile(path, "utf8")) as {
+    parents: Record<string, { threads: Payload[] }>;
+  };
+  return Object.values(loaded.parents).flatMap((parent) => parent.threads);
+};
+
+test("a lost receipt blocks recovery instead of proving the previous turn", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    assert.match(await run.call({ question: "second" }), /answer-0/);
+    // The host accepts the third turn but returns no usable receipt.
+    rpc.receipt = () => ({});
+    assert.match(await run.call({ question: "third" }), /without a usable run id/);
+
+    // The previous turn is complete in the public snapshot, yet it proves nothing about this one.
+    await run.command("advisor threads recover");
+    const recovered = run.notifications.at(-1)?.message ?? "";
+    assert.match(recovered, /no receipt for the current turn/);
+    assert.match(recovered, /stays blocked/);
+
+    const requests = run.bus.requests.length;
+    const resumes = rpc.resumes.length;
+    await run.newTask();
+    assert.match(await run.call(), /an earlier turn may still be running/);
+    assert.equal(run.bus.requests.length, requests);
+    assert.equal(rpc.resumes.length, resumes);
+    await run.command("advisor threads reset");
+    assert.match(run.notifications.at(-1)?.message ?? "", /reset changed nothing/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a receipt that cannot be persisted blocks the parent with no current operation id", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-accepted-"));
+  const journal = new GatedJournal(join(directory, "threads.json"));
+  const run = await harness(base, models, 10_000, { journal });
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    // The receipt is accepted by the host but never reaches the journal.
+    journal.failAcceptedOrdinal = 2;
+    assert.match(await run.call({ question: "second" }), /journal could not be written/);
+    assert.equal(rpc.resumes.length, 2, "the host accepted the turn before the write failed");
+    const records = await answeredSlots(journal.filePath);
+    const record = records.find((entry) => entry.slot === 0);
+    assert.equal(record?.state, "pending", JSON.stringify(records));
+    assert.equal(record?.operationRunId, undefined, JSON.stringify(records));
+    // Recovery cannot prove it, and a new task does not unlock generation.
+    await run.command("advisor threads recover");
+    assert.match(run.notifications.at(-1)?.message ?? "", /no receipt for the current turn/);
+    const requests = run.bus.requests.length;
+    await run.newTask();
+    assert.match(await run.call(), /an earlier turn may still be running/);
+    assert.equal(run.bus.requests.length, requests);
+  } finally {
+    await run.close();
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("a revocation during the pending write stops the launch before it is emitted", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-fence-pending-"));
+  const journal = new GatedJournal(join(directory, "threads.json"));
+  const run = await harness(base, models, 10_000, { journal });
+  try {
+    const held = new Promise<void>((resolve) => {
+      journal.onHold = resolve;
+    });
+    journal.holdNext();
+    const pending = run.call();
+    await held;
+    await run.command("advisor off");
+    journal.release();
+    assert.match(await pending, /Advisor cancelled before replying/);
+    assert.equal(run.bus.requests.length, 0);
+  } finally {
+    await run.close();
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("a revocation during the probe stops the resume before it is sent", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    let releasePing!: () => void;
+    const pingHeld = new Promise<void>((resolve) => {
+      rpc.beforeReply = async (method) => {
+        if (method !== "ping") return;
+        resolve();
+        await new Promise<void>((release) => {
+          releasePing = release;
+        });
+      };
+    });
+    const pending = run.call({ question: "second" });
+    await pingHeld;
+    await run.command("advisor off");
+    releasePing();
+    assert.match(await pending, /Advisor cancelled before replying/);
+    assert.equal(rpc.resumes.length, 0);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a revocation while another slot is pending discards an already answered slot", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    rpc.state = (slot) => (slot === 0 ? "complete" : "running");
+    const pending = run.call({ question: "second" });
+    const deadline = Date.now() + 5_000;
+    let answered = false;
+    while (!answered && Date.now() < deadline) {
+      answered = (await answeredSlots(run.path.replace(/\.json$/, ".advisor-threads.json"))).some(
+        (record) => record.slot === 0 && record.state === "answered" && record.ordinal === 2,
+      );
+      if (!answered) await new Promise((tick) => setTimeout(tick, 10));
+    }
+    assert.ok(answered, "slot 1 should have been answered before the revocation");
+    await run.command("advisor off");
+    const answer = await pending;
+    assert.doesNotMatch(answer, /answer-0/);
+    assert.match(answer, /Advisor cancelled before replying/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("concurrent recoverers cannot delete a lock another one just acquired", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-reclaim-"));
+  const path = join(directory, "threads.json");
+  const parentKey = "e".repeat(64);
+  const lockDir = join(`${path}.lock`, parentKey);
+  // A stale group lock whose recorded owner is provably gone.
+  await mkdir(lockDir, { recursive: true });
+  await writeFile(
+    join(lockDir, "owner.json"),
+    `${JSON.stringify({ owner: "dead-owner", pid: 999_999, startedAt: 1 })}\n`,
+  );
+  const onlyDeadIsFinished = (owner: { owner: string }) => owner.owner === "dead-owner";
+  const first = new AdvisorThreadJournal(path, { ownerFinished: onlyDeadIsFinished });
+  const second = new AdvisorThreadJournal(path, { ownerFinished: onlyDeadIsFinished });
+  try {
+    // A stale read taken before the gate proves nothing: the removal is decided by the fresh read
+    // inside it, and the loser of the gate never touches anything.
+    const staleRead = await first.lockState(parentKey);
+    assert.equal(staleRead.kind, "held");
+    const outcomes = await Promise.all([
+      first.releaseStaleLock(parentKey),
+      second.releaseStaleLock(parentKey),
+    ]);
+    assert.equal(outcomes.filter((outcome) => outcome === "released").length, 1);
+    assert.ok(
+      outcomes.every(
+        (outcome) => outcome === "released" || outcome === "busy" || outcome === "gate-stale",
+      ),
+      `unexpected reclamation outcomes: ${outcomes.join(",")}`,
+    );
+    // The gate is free again and no victim tomb is left behind.
+    assert.equal(await first.gateState(), "free");
+    assert.deepEqual(
+      (await readdir(directory)).filter((entry) => entry.includes(".stale-")),
+      [],
+    );
+    // A lock a live writer holds is never removed, even by a concurrent recoverer.
+    const held = await first.exclusive(parentKey, async (session) => {
+      await session.mutate((latest) =>
+        upsertAdvisorThread(latest, journalRecord(0, "task-eeee-0001"), 2),
+      );
+      return second.releaseStaleLock(parentKey);
+    });
+    assert.deepEqual(held, { ok: true, value: "busy" });
+    const after = await second.exclusive(parentKey, async (session) =>
+      session.partition().threads.map((record) => record.slot),
+    );
+    assert.deepEqual(after, { ok: true, value: [0] });
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("an orphan or stale reclamation gate is never reclaimed automatically", async () => {
+  for (const kind of ["ownerless", "stale"] as const) {
+    const directory = await mkdtemp(join(tmpdir(), `advisor-gate-${kind}-`));
+    const path = join(directory, "threads.json");
+    const gate = `${path}.reclaim.lock`;
+    await mkdir(gate, { recursive: true });
+    if (kind === "stale")
+      await writeFile(
+        join(gate, "owner.json"),
+        `${JSON.stringify({ owner: "dead-gate", pid: 999_999, startedAt: 1 })}\n`,
+      );
+    // A stale commit lock forces the reclaim path, which is the only path that takes the gate.
+    await mkdir(`${path}.commit.lock`, { recursive: true });
+    await writeFile(
+      join(`${path}.commit.lock`, "owner.json"),
+      `${JSON.stringify({ owner: "dead-commit", pid: 999_999, startedAt: 1 })}\n`,
+    );
+    const journal = new AdvisorThreadJournal(path, {
+      ownerFinished: (owner) => owner.owner === "dead-gate" || owner.owner === "dead-commit",
+    });
+    try {
+      assert.equal(await journal.gateState(), kind === "stale" ? "stale" : "ownerless");
+      const result = await journal.exclusive("a".repeat(64), async (session) => {
+        await session.mutate((latest) =>
+          upsertAdvisorThread(latest, journalRecord(0, "task-aaaa-0003"), 2),
+        );
+        return "ran";
+      });
+      assert.deepEqual(result, { ok: false, code: "journal-gate-stale" });
+      // No write reached the journal behind the unreclaimed gate.
+      assert.deepEqual((await readAdvisorThreads(path)).file.parents, {});
+      assert.equal(await journal.releaseStaleLock("a".repeat(64)), "gate-stale");
+      // The gate is left exactly as found: same directory, same owner record, no tomb.
+      assert.equal(await journal.gateState(), kind === "stale" ? "stale" : "ownerless");
+      assert.deepEqual(
+        (await readdir(directory)).filter((entry) => entry.includes(".stale-")),
+        [],
+      );
+      assert.equal(
+        kind === "stale" ? await readFile(join(gate, "owner.json"), "utf8") : "",
+        kind === "stale"
+          ? `${JSON.stringify({ owner: "dead-gate", pid: 999_999, startedAt: 1 })}\n`
+          : "",
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  }
+});
+
+test("an unpublished owner aborts the lock instead of entering the critical section", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-publish-"));
+  const path = join(directory, "threads.json");
+  try {
+    const journal = new AdvisorThreadJournal(path, {
+      publishOwner: async () => {
+        throw new Error("owner record unavailable");
+      },
+    });
+    let entered = 0;
+    const result = await journal.exclusive("a".repeat(64), async () => {
+      entered += 1;
+      return "ran";
+    });
+    assert.deepEqual(result, { ok: false, code: "journal-write-failed" });
+    assert.equal(entered, 0);
+    // The unpublished claim was released, so a working instance can take the lock afterwards.
+    const working = new AdvisorThreadJournal(path);
+    const after = await working.exclusive("a".repeat(64), async () => "ran");
+    assert.deepEqual(after, { ok: true, value: "ran" });
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("a failed publication never releases a later claim of the same journal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-publish-overlap-"));
+  const path = join(directory, "threads.json");
+  const parentKey = "a".repeat(64);
+  const lockDir = join(`${path}.lock`, parentKey);
+  const originalRm = fs.rm;
+  let removalHeld = false;
+  let releaseRemoval!: () => void;
+  let removed!: () => void;
+  const claimRemoved = new Promise<void>((resolve) => {
+    removed = resolve;
+  });
+  const removalGate = new Promise<void>((resolve) => {
+    releaseRemoval = resolve;
+  });
+  let enteredSecond!: () => void;
+  let releaseSecond!: () => void;
+  const secondEntered = new Promise<void>((resolve) => {
+    enteredSecond = resolve;
+  });
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  let failPublication = true;
+  const journal = new AdvisorThreadJournal(path, {
+    publishOwner: async (ownerPath, text) => {
+      if (failPublication) {
+        failPublication = false;
+        throw new Error("synthetic owner publication failure");
+      }
+      await writeFile(ownerPath, text, "utf8");
+    },
+  });
+  let first: ReturnType<typeof journal.exclusive> | undefined;
+  let second: ReturnType<typeof journal.exclusive> | undefined;
+  try {
+    fs.rm = (async (...args: Parameters<typeof fs.rm>) => {
+      const hold = !removalHeld && String(args[0]) === lockDir;
+      if (hold) removalHeld = true;
+      await originalRm(...args);
+      if (hold) {
+        removed();
+        await removalGate;
+      }
+    }) as typeof fs.rm;
+    syncBuiltinESMExports();
+    first = journal.exclusive(parentKey, async () => "first callback must not run");
+    await claimRemoved;
+    // The first claim is gone, but its failure path has not returned yet. The same instance
+    // publishes a second claim and keeps owning its critical section throughout the assertions.
+    second = journal.exclusive(parentKey, async () => {
+      enteredSecond();
+      await secondGate;
+      return "second";
+    });
+    await secondEntered;
+    releaseRemoval();
+    assert.deepEqual(await first, { ok: false, code: "journal-write-failed" });
+    const lockWhileSecondHeld = await journal.lockState(parentKey);
+    const third = await new AdvisorThreadJournal(path).exclusive(parentKey, async () => "ENTERED");
+    assert.deepEqual(
+      third,
+      { ok: false, code: "journal-busy" },
+      `lock was ${lockWhileSecondHeld.kind}`,
+    );
+    assert.equal(lockWhileSecondHeld.kind, "held");
+    releaseSecond();
+    assert.deepEqual(await second, { ok: true, value: "second" });
+    assert.deepEqual(await journal.lockState(parentKey), { kind: "free" });
+  } finally {
+    releaseRemoval();
+    releaseSecond();
+    await Promise.allSettled([first, second]);
+    fs.rm = originalRm;
+    syncBuiltinESMExports();
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("a contender never touches a gate another instance is still publishing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-gate-window-"));
+  const path = join(directory, "threads.json");
+  const commitLock = `${path}.commit.lock`;
+  // A stale commit lock forces the reclaim path, which is where the gate is taken.
+  await mkdir(commitLock, { recursive: true });
+  await writeFile(
+    join(commitLock, "owner.json"),
+    `${JSON.stringify({ owner: "dead-commit", pid: 999_999, startedAt: 1 })}\n`,
+  );
+  let releasePublish!: () => void;
+  let gateClaimed!: () => void;
+  const claimed = new Promise<void>((resolve) => {
+    gateClaimed = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    releasePublish = resolve;
+  });
+  const first = new AdvisorThreadJournal(path, {
+    ownerFinished: (owner) => owner.owner === "dead-commit",
+    publishOwner: async (ownerPath, text) => {
+      if (ownerPath.includes(".reclaim.lock")) {
+        gateClaimed();
+        await paused;
+      }
+      await writeFile(ownerPath, text, "utf8");
+    },
+  });
+  const second = new AdvisorThreadJournal(path);
+  try {
+    const firstRun = first.exclusive("a".repeat(64), async (session) => {
+      await session.mutate((latest) =>
+        upsertAdvisorThread(latest, journalRecord(0, "task-aaaa-0002"), 2),
+      );
+      return "first";
+    });
+    await claimed;
+    // The gate exists but its owner is not published yet: the contender must not touch it.
+    const blocked = await second.exclusive("b".repeat(64), async (session) => {
+      await session.mutate((latest) =>
+        upsertAdvisorThread(latest, journalRecord(0, "task-bbbb-0002"), 2),
+      );
+      return "second";
+    });
+    assert.deepEqual(blocked, { ok: false, code: "journal-gate-stale" });
+    assert.equal(await second.gateState(), "ownerless");
+    assert.deepEqual((await readAdvisorThreads(path)).file.parents["b".repeat(64)], undefined);
+    releasePublish();
+    assert.deepEqual(await firstRun, { ok: true, value: "first" });
+    assert.equal(await first.gateState(), "free");
+    // The commit lock was reclaimed through the tomb, so a later writer succeeds.
+    const after = await second.exclusive("b".repeat(64), async () => "second");
+    assert.deepEqual(after, { ok: true, value: "second" });
+  } finally {
+    releasePublish();
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("a resolved thinking change fences a turn that is still running", async () => {
+  const available: Array<(typeof models)[number]> = models.map((entry) => ({ ...entry }));
+  const run = await harness(base, available);
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    rpc.state = () => "running";
+    const pending = run.call({ question: "second" });
+    await until(() => rpc.resumes.length === 2);
+    // Same provider and model, but the registry now resolves a different thinking level: the slot
+    // identity differs even though no configured setting changed.
+    const replaced = { ...available[0]!, thinkingLevelMap: { high: null } };
+    available[0] = replaced as (typeof models)[number];
+    await run.hook("before_provider_request", { payload: { instructions: "host" } });
+    const answer = await pending;
+    assert.match(answer, /Advisor cancelled before replying/);
+    assert.doesNotMatch(answer, /answer-0/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a task whose closing tombstones fail stays blocked until reconciliation", async () => {
+  for (const mode of ["busy", "write"] as const) {
+    const directory = await mkdtemp(join(tmpdir(), `advisor-close-${mode}-`));
+    const path = join(directory, "threads.json");
+    const journal = new GatedJournal(path);
+    const run = await harness(base, models, 10_000, { journal });
+    const rpc = new RpcHost(run.bus);
+    try {
+      run.bus.respond = (request) => run.bus.finish(request);
+      assert.match(await run.call(), /Consultation complete/);
+      if (mode === "busy") {
+        // Another instance owns the parent lock while the task settles.
+        const blocker = new AdvisorThreadJournal(path);
+        let releaseHold!: () => void;
+        const hold = new Promise<void>((resolve) => {
+          releaseHold = resolve;
+        });
+        const acquired = new Promise<void>((resolve) => {
+          void blocker.exclusive(advisorParentKey("synthetic-session"), async () => {
+            resolve();
+            await hold;
+          });
+        });
+        await acquired;
+        await run.hook("agent_settled");
+        releaseHold();
+        await new Promise((tick) => setTimeout(tick, 20));
+      } else {
+        journal.failNext = 1;
+        await run.hook("agent_settled");
+      }
+      assert.match(run.notifications.at(-1)?.message ?? "", /closing state could not be persisted/);
+      // The task is retired even when its durable closing obligation remains.
+      const requests = run.bus.requests.length;
+      assert.match(await run.call(), /no operative task/);
+      assert.equal(run.bus.requests.length, requests);
+      await run.hook("input", { source: "interactive" });
+      await run.hook("before_agent_start");
+      assert.match(await run.call(), /closing state of an earlier task could not be persisted/);
+      await run.command("advisor threads recover");
+      assert.match(run.notifications.at(-1)?.message ?? "", /closed/);
+      assert.ok((await answeredSlots(path)).every((record) => record.state === "closed"));
+      const resumes = rpc.resumes.length;
+      assert.match(
+        await run.call({ question: "again", brief: "new task" }),
+        /Consultation complete/,
+      );
+      assert.equal(rpc.resumes.length, resumes, "a settled task is never resumed");
+      assert.equal(run.bus.requests.length, requests + 2);
+    } finally {
+      await run.close();
+      await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  }
+});
+
+test("a continuation needs no new brief when the context switches to fresh", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /\[fork\]/);
+    run.ctx.getContextUsage = () => ({ tokens: 60_000 });
+    assert.match(await run.call({ question: "second question" }), /answer-0/);
+    assert.equal(rpc.resumes.length, 2);
+    // A first fresh launch still fails closed without a brief.
+    await run.newTask();
+    assert.match(await run.call({ question: "third" }), /fresh context requires brief/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("an answer path under a linked parent directory is refused", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-confine-"));
+  const root = join(directory, "output");
+  const outside = join(directory, "outside");
+  const parentKey = "f".repeat(64);
+  try {
+    await mkdir(root, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    // A pre-existing link where the operation directory would live.
+    await symlink(
+      outside,
+      join(root, parentKey),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const answerPath = join(root, parentKey, "task-ffff-0001", "0-2", "answer.md");
+    assert.equal(await reserveAdvisorAnswer(answerPath, dirname(answerPath), root), "outside");
+    await mkdir(dirname(answerPath), { recursive: true });
+    await writeFile(answerPath, "linked answer", "utf8");
+    assert.deepEqual(await readAdvisorAnswer(answerPath, dirname(answerPath), root), {
+      ok: false,
+      code: "answer-outside",
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("ownership: revocation during the initial runtime read cannot renew authorization", async () => {
+  for (const phase of ["launch", "resume"] as const)
+    for (const change of ["off", "task"] as const) {
+      const run = await harness();
+      const rpc = new RpcHost(run.bus);
+      run.bus.respond = (request) => run.bus.finish(request);
+      if (phase === "resume") assert.match(await run.call(), /Consultation complete/);
+      const requests = run.bus.requests.length;
+      const resumes = rpc.resumes.length;
+      const gate = holdRead((path) => path === getLaunchCorrectionPath(run.path));
+      try {
+        const pending = run.call();
+        await gate.entered;
+        if (change === "off") {
+          await writeConfig(run.path, { ...base, advisorMode: "off" });
+          await run.hook("before_provider_request", { payload: { instructions: "host" } });
+        } else {
+          await run.hook("session_tree");
+          await run.hook("input", { source: "interactive" });
+          await run.hook("before_agent_start");
+        }
+        gate.release();
+        const answer = await pending;
+        assert.doesNotMatch(answer, new RegExp(sentinel));
+        assert.equal(run.bus.requests.length, requests, `${phase}/${change}`);
+        assert.equal(rpc.resumes.length, resumes, `${phase}/${change}`);
+      } finally {
+        gate.restore();
+        await run.close();
+      }
+    }
+});
+
+test("ownership: revocation during the final journal cleanup discards all answers", async () => {
+  const third = { provider: "example", model: "third" };
+  const available = [...models, { ...models[0]!, id: "third", name: "third" }];
+  const run = await harness({ ...base, advisors: [first, second, third] }, available);
+  const ownerPath = join(
+    `${getAdvisorThreadsPath()}.lock`,
+    advisorParentKey("synthetic-session"),
+    "owner.json",
+  );
+  const gate = holdRead((path) => path === ownerPath);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    const pending = run.callBoth();
+    await gate.entered;
+    await run.command("advisor off");
+    gate.release();
+    const answer = await pending;
+    assert.doesNotMatch(answer.text, new RegExp(sentinel));
+    assert.match(answer.text, /cancelled/);
+    assert.deepEqual(
+      ((answer.details.advisorConsultation as Payload).slots as Payload[]).map((slot) => [
+        slot.slot,
+        slot.status,
+      ]),
+      [
+        [0, "blocked"],
+        [1, "blocked"],
+        [2, "blocked"],
+      ],
+    );
+  } finally {
+    gate.restore();
+    await run.close();
+  }
+});
+
+test("ownership: closing T2 never satisfies the failed closing obligation of T1", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-retired-"));
+  const journal = new GatedJournal(join(directory, "threads.json"));
+  const run = await harness(base, models, 10_000, { journal });
+  new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    journal.failNext = 1;
+    await run.hook("agent_settled");
+    await run.hook("input", { source: "interactive" });
+    await run.hook("before_agent_start");
+    await run.hook("agent_settled");
+    await run.hook("input", { source: "interactive" });
+    await run.hook("before_agent_start");
+    const requests = run.bus.requests.length;
+    assert.match(await run.call(), /closing state of an earlier task/);
+    assert.equal(run.bus.requests.length, requests);
+    await run.command("advisor threads recover");
+    assert.ok((await answeredSlots(journal.filePath)).every((record) => record.state === "closed"));
+    assert.match(await run.call(), /Consultation complete/);
+    assert.equal(run.bus.requests.length, requests + 2);
+  } finally {
+    await run.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ownership: concurrent parents retain closing debts across a reload and another parent's recovery", async () => {
+  const a = await harness(base, models, 10_000, { sessionId: "parent-a" });
+  const b = await harness(base, models, 10_000, {
+    directory: dirname(a.path),
+    sessionId: "parent-b",
+  });
+  const originalRead = fs.readFile;
+  const originalRename = fs.rename;
+  try {
+    for (const run of [a, b]) {
+      run.bus.respond = (request) => run.bus.finish(request);
+      assert.match(await run.call(), /Consultation complete/);
+    }
+    // Both close attempts fail their journal commit. Both old companion writers see the same
+    // empty snapshot: this is the lost-update interleaving, not a probabilistic Promise.all test.
+    fs.rename = (async (...args: Parameters<typeof fs.rename>) => {
+      if (String(args[1]) === getAdvisorThreadsPath()) throw new Error("synthetic closing failure");
+      return originalRename(...args);
+    }) as typeof fs.rename;
+    fs.readFile = (async (...args: Parameters<typeof fs.readFile>) => {
+      if (String(args[0]).endsWith(".advisor-closing.json"))
+        return JSON.stringify({ schemaVersion: 1, parents: {} });
+      return originalRead(...args);
+    }) as typeof fs.readFile;
+    syncBuiltinESMExports();
+    await Promise.all([a.hook("agent_settled"), b.hook("agent_settled")]);
+    fs.rename = originalRename;
+    fs.readFile = originalRead;
+    syncBuiltinESMExports();
+    // Fresh extension instances have none of the old in-memory failure flags.
+    for (const sessionId of ["parent-a", "parent-b"]) {
+      const fresh = await harness(base, models, 10_000, { directory: dirname(a.path), sessionId });
+      const rpc = new RpcHost(fresh.bus);
+      rpc.sessionId = sessionId;
+      try {
+        fresh.bus.respond = (request) => fresh.bus.finish(request);
+        assert.match(await fresh.call(), /closing state of an earlier task/, sessionId);
+        assert.equal(fresh.bus.requests.length, 0);
+        if (sessionId === "parent-a") await fresh.command("advisor threads recover");
+        // Closing the reload's unrelated token cannot erase the other parent's obligation.
+        await fresh.hook("agent_settled");
+      } finally {
+        await fresh.close();
+      }
+    }
+  } finally {
+    fs.rename = originalRename;
+    fs.readFile = originalRead;
+    syncBuiltinESMExports();
+    await b.close();
+    await a.close();
+  }
+});
+
+test("ownership: answered obligations are never evicted for another parent", async () => {
+  const runs: Awaited<ReturnType<typeof harness>>[] = [];
+  try {
+    for (let parent = 0; parent < 17; parent += 1) {
+      const run = await harness(base, models, 10_000, {
+        ...(runs[0] ? { directory: dirname(runs[0].path) } : {}),
+        sessionId: `retained-${parent}`,
+      });
+      runs.push(run);
+      run.bus.respond = (request) => run.bus.finish(request);
+      assert.match(await run.call(), /Consultation complete/);
+    }
+    const firstRun = runs[0]!;
+    const reloaded = await harness(base, models, 10_000, {
+      directory: dirname(firstRun.path),
+      sessionId: "retained-0",
+    });
+    try {
+      reloaded.bus.respond = (request) => reloaded.bus.finish(request);
+      assert.match(await reloaded.call(), /closing state of an earlier task/);
+      assert.equal(reloaded.bus.requests.length, 0);
+    } finally {
+      await reloaded.close();
+    }
+  } finally {
+    for (const run of runs.reverse()) await run.close();
+  }
+});
+
+test("ownership: root and ancestor junctions are refused before any external side effect", async () => {
+  for (const linked of ["root", "parent"] as const) {
+    const run = await harness();
+    const rpc = new RpcHost(run.bus);
+    const root = run.path.replace(/\.json$/, ".advisor-output");
+    const outside = join(dirname(run.path), "outside");
+    try {
+      run.bus.respond = (request) => run.bus.finish(request);
+      assert.match(await run.call(), /Consultation complete/);
+      await mkdir(outside);
+      if (linked === "parent") await mkdir(root);
+      await symlink(
+        outside,
+        linked === "root" ? root : join(root, advisorParentKey("synthetic-session")),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const answer = await run.call({ question: "next" });
+      assert.deepEqual(await readdir(outside), [], linked);
+      assert.equal(rpc.resumes.length, 0, linked);
+      assert.doesNotMatch(answer, /answer-0/);
+    } finally {
+      await run.close();
+    }
+  }
+});
+
+test("ownership: answer reading creates no paths after detecting a root junction", async () => {
+  const run = await harness({ ...base, advisors: [first] });
+  const rpc = new RpcHost(run.bus);
+  const root = run.path.replace(/\.json$/, ".advisor-output");
+  const outside = join(dirname(run.path), "outside-read");
+  let swapped = false;
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    await mkdir(outside);
+    rpc.beforeReply = async (method) => {
+      if (method !== "status" || swapped) return;
+      swapped = true;
+      await fs.rename(root, `${root}-saved`);
+      await symlink(outside, root, process.platform === "win32" ? "junction" : "dir");
+    };
+    const answer = await run.call({ question: "next" });
+    assert.ok(swapped, "the link is present only after reservation and terminal proof");
+    assert.deepEqual(await readdir(outside), []);
+    assert.doesNotMatch(answer, /answer-0/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("ownership: answer cleanup never removes a directory through a root junction", async () => {
+  const run = await harness({ ...base, advisors: [first] });
+  const rpc = new RpcHost(run.bus);
+  const root = run.path.replace(/\.json$/, ".advisor-output");
+  const outside = join(dirname(run.path), "outside-cleanup");
+  const originalRename = fs.rename;
+  let marker: string | undefined;
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    await mkdir(outside);
+    fs.rename = (async (...args: Parameters<typeof fs.rename>) => {
+      if (!marker && String(args[1]) === getAdvisorThreadsPath() && rpc.resumes.length) {
+        const next = JSON.parse(await readFile(args[0], "utf8"));
+        if (
+          journalThreads(next).some((record) => record.state === "answered" && record.ordinal === 2)
+        ) {
+          const output = String(rpc.resumes[0]!.output);
+          const externalOperation = join(outside, relative(root, dirname(output)));
+          await mkdir(externalOperation, { recursive: true });
+          marker = join(externalOperation, "keep.md");
+          await writeFile(marker, "external file must survive");
+          await originalRename(root, `${root}-saved`);
+          await symlink(outside, root, process.platform === "win32" ? "junction" : "dir");
+        }
+      }
+      return originalRename(...args);
+    }) as typeof fs.rename;
+    syncBuiltinESMExports();
+    assert.match(await run.call({ question: "next" }), /answer-0/);
+    assert.ok(marker, "the link is present before cleanup, after the answer commit");
+    assert.equal(await readFile(marker, "utf8"), "external file must survive");
+  } finally {
+    fs.rename = originalRename;
+    syncBuiltinESMExports();
+    await run.close();
+  }
+});
+
+test("three valid slots resume together with distinct files", async () => {
+  const third = { provider: "example", model: "third" };
+  const available = [models[0]!, models[1]!, { ...models[0]!, id: "third", name: "third" }];
+  const run = await harness({ ...base, advisors: [first, second, third] }, available);
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete: 3 of 3 advisors answered/);
+    const answer = await run.call({ question: "second" });
+    assert.match(answer, /answer-0/);
+    assert.match(answer, /answer-1/);
+    assert.match(answer, /answer-2/);
+    assert.match(answer, /Consultation complete: 3 of 3 advisors answered/);
+    assert.equal(rpc.resumes.length, 3);
+    assert.equal(new Set(rpc.resumes.map((params) => String(params.output))).size, 3);
+    assert.deepEqual([...new Set(rpc.resumes.map((params) => String(params.id)))].sort(), [
+      "synthetic-run-1",
+      "synthetic-run-2",
+      "synthetic-run-3",
+    ]);
+  } finally {
+    await run.close();
+  }
+});

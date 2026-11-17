@@ -223,11 +223,48 @@ checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/n
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
   models and a thinking level it chooses per run. The extension observes matching attempts but does
   not launch them.
-- `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
-  advisor in parallel through the public `pi-subagents` delegation API. It requires stable SemVer
-  `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every launch must
-  still pass the strict contract and terminal-binding checks. Otherwise it returns unavailable text.
-  No model, provider or executor fallback is added.
+- `tool`: the always-registered `consult_advisor({ question, brief?, evidence? })` launches one
+  child per valid advisor in parallel through the public `pi-subagents` delegation API. It requires
+  stable SemVer `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every
+  launch must still pass the strict contract and terminal-binding checks. Otherwise it returns
+  unavailable text. No model, provider or executor fallback is added.
+
+In `tool` launch a consultation keeps each advisor's conversation for the rest of the operative
+task. The first call launches the packaged profiles and is the only turn that carries the verified
+launch contract. Later calls in the same task continue each thread with the public RPC `resume`,
+passing the new question plus `evidence` and never a run id, output path, model or profile. The
+answer is accepted only from the per-turn output file the extension owns, after the new run id
+reports one completed step with the same agent, model and thinking; a resumed turn relies on the
+contract the host inherits plus those observed values, not on a re-verified digest. A mismatch,
+timeout or missing answer blocks the thread: it is never retried, replaced by a fresh launch, or
+continued from an older run id, and recovery can only use the receipt of the turn that is actually
+pending, never an earlier one. A task ends when it settles and cannot be resumed, even if persisting
+its closure fails. Its answered records remain closing obligations in the same journal; a new task
+cannot bypass them, and recovery must persist their closures before consultation can restart.
+Uncertain turns still require terminal proof for their current operation. A fresh prompt, a branch
+move or a configuration change starts a new thread, and a prompt an extension sends opens no task,
+so a consultation from one starts nothing. The journal is private and content-free; the answer
+files and child sessions keep the host's and provider's normal retention. Output paths are checked
+from the trusted agent directory before creating descendants or reading answers; pre-existing
+symlinks and junctions in the owned tree are refused. This is not protection against a malicious
+host runtime replacing paths concurrently.
+
+Every configured advisor keeps its position and gets an explicit result, so two answers out of
+three report `partial`. `/delegate advisor threads status|recover|reset`, or `C` in the
+`/delegate` panel, reports the continuity state, reconciles a possibly live turn with public
+terminal proof, and abandons threads only when nothing may still be running.
+
+Continuity uses three lock directories of its own beside the journal, all under the same agent
+directory: `delegation-policy.advisor-threads.json.lock/<parent>` per session,
+`delegation-policy.advisor-threads.json.commit.lock` for each write, and
+`delegation-policy.advisor-threads.json.reclaim.lock` for the short reclamation section. A
+reclamation gate left behind by a crashed process is never reclaimed automatically, so recovery can
+stay blocked until it is cleared by hand; `/delegate advisor threads recover` reports that case and
+changes nothing. Clear it only with every Pi process that uses this configuration stopped and
+confirmed finished: remove `delegation-policy.advisor-threads.json.reclaim.lock`, and a
+`delegation-policy.advisor-threads.json.lock/<parent>` whose recorded owner is gone. Never remove a
+lock while a process that uses it may still be running. The locks assume one host and a local
+filesystem, and owner liveness is the only OS signal they use.
 
 Both modes ask for consultation after orientation before substantive work, when stuck, before changing
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
