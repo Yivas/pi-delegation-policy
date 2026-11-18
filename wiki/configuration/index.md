@@ -5,9 +5,6 @@ description: Set valid global defaults, session-branch overrides, and optional t
 
 # Configuration
 
-> Independent Advisor mode and its companion file are available from version `0.17.0`.
-> Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
-
 ## Quick valid configuration
 
 The safest route is to open `/delegate`, choose exact models from Pi's available catalog, and apply
@@ -70,8 +67,8 @@ writes `off` for both intensity and Advisor mode and returns the other fields to
 
 ## Configuration change notice
 
-From `0.22.0`, a change to effective delegation settings adds one extension-owned notice to the
-requests of the next user turn. It names the previous and new intensity, preference, role models,
+A change to effective delegation settings adds one extension-owned notice to the requests of the
+next user turn. It names the previous and new intensity, preference, role models,
 thinking policies, Advisor settings, or ContextShunt mode and reader settings. It explicitly directs
 new work to the current valid assignments rather than older settings in the conversation. Changes
 to global defaults count when they reach the branch; opening or cancelling the editor, identical
@@ -214,8 +211,9 @@ eligible visual work by task fit.
 
 ## Advisor
 
-Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**
-and optional **Advisor 2** and **Advisor 3**, each with an exact model. Advisor thinking is not a
+Advisor is optional, outside the ordinary-role minimum, and has no model until you configure one. Its
+mode defaults to `with-delegation`, so a configured Advisor is consulted while delegation is active.
+Configure **Advisor 1** and optional **Advisor 2** and **Advisor 3**, each with an exact model. Advisor thinking is not a
 setting: role launch lets the main agent choose it per run, and tool launch picks it automatically.
 Every valid advisor gets the same question, so each extra advisor adds a consultation at every
 checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
@@ -235,7 +233,8 @@ checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/n
 In `tool` launch a consultation keeps each advisor's conversation for the rest of the operative
 task. The first call launches the packaged profiles and is the only turn that carries the verified
 launch contract. Later calls in the same task continue each thread with the public RPC `resume`,
-passing the new question plus `evidence` and never a run id, output path, model or profile. The
+carrying only the new question plus `evidence`: the extension supplies the run id and the output
+path, and the host inherits the model and profile. The
 answer is accepted only from the per-turn output file the extension owns, after the new run id
 reports one completed step with the same agent, model and thinking; a resumed turn relies on the
 contract the host inherits plus those observed values, not on a re-verified digest. A mismatch,
@@ -273,18 +272,16 @@ Both modes ask for consultation after orientation before substantive work, when 
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
 reactive steps and mechanics in a settled approach need no new call.
 
-Every consultation runs in fresh context: the request carries the question and a short self-contained
-`brief` — objective and constraints, relevant facts, options and proposal, uncertainty — and never the
-conversation. A first consultation in a thread requires that brief; a later call in the same task sends
-only the new question and evidence. The Advisor therefore sees only what you write in the brief, so a
-thin brief weakens the advice. The tool launches each advisor at the highest level its model supports
-among `high`, `medium`, `low`, `minimal` and `off`, in that order. A level above `high` is used only by
-a model that supports none of them.
+Every consultation runs in fresh context and carries the question plus a short self-contained `brief`
+(objective and constraints, relevant facts, options and proposal, uncertainty), never the
+conversation. A first consultation in a thread requires that brief. A later call sends only the new
+question and the evidence of what changed. The Advisor therefore sees only what you write in the brief, so a thin brief
+weakens the advice. The tool launches each advisor at the highest level its model supports among
+`high`, `medium`, `low`, `minimal` and `off`, in that order. A level above `high` is used only by a
+model that supports none of them.
 
-One pending call per tool: an advisor group launches one child per configured valid advisor, while the
-independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
-detected authorization changes cancel the tool group. Partial results preserve a successful answer.
-Local timeouts and cancellation do not cap external generation, retries or cost.
+Concurrency, cancellation, and what each turn sends are limits of the surface:
+[limits and privacy](/limits-and-privacy/#advisor-role) states them.
 
 **Advisor mode** is an independent axis you set in the panel or with `/delegate advisor …`:
 
@@ -339,7 +336,7 @@ unavailable. Nothing is installed automatically and other Advisors remain indepe
 loads no provider code while Advisor is off. It does not inventory irrelevant legacy copies; version
 labels are not signatures, and a resolution-to-load race remains. A persistent dispatch guard keeps
 initialization errors from silently choosing builtin transport. No provider payload or headers are
-reimplemented. The option is available from 0.23.0.
+reimplemented.
 One bounded fresh/background real-provider consultation completed on Pi 1.4.0 with pi-subagents
 0.83.1. Launch metadata showed the prompt runtime and provider bridge, no required extensions and no
 observed tool calls. Fork, `consult_advisor` and other builds were not validated by that run.
@@ -409,17 +406,16 @@ answer through the built-in provider or fail as before.
 
 ## Launch correction mode {#launch-correction-mode}
 
-While delegation is active, the launch check corrects three unambiguous cases instead of refusing
-them, and tells the agent what it applied. A role name in place of a model becomes that role's exact
-provider/model with a level; a role's exact model with no `:LEVEL` gains one; and a child whose model
-is exactly one configured Advisor's runs with that Advisor's profile. Accepted role names are
-`small`, `medium`, `large`, `visual-design`, `ui-design`, `uidesign`, `advisor`, `advisor-1`,
-`advisor-2` and `advisor-3`, case-insensitive. The added level is the role's fixed level, the lowest
-supported level inside its range, or `medium` clamped to what the model supports when the role has no
-policy. Anything the guard cannot settle is still refused.
+While delegation is active, or while an Advisor is enabled, the launch check corrects three
+unambiguous cases instead of refusing them, and tells the agent what it applied. The three cases, and
+the refusals that remain, are listed under [launch check](/limits-and-privacy/#launch-check). Accepted
+role names are `small`, `medium`, `large`, `visual-design`, `ui-design`, `uidesign`, `advisor`,
+`advisor-1`, `advisor-2` and `advisor-3`, case-insensitive. The added level is the role's fixed level,
+the lowest supported level inside its range, or `medium` clamped to what the model supports when the
+role has no policy.
 
 A test mode refuses those cases instead, which keeps the pre-correction behaviour for measurement.
-Set it in `/delegate`, on the **Launch correction** row: `correct` is the default, and `block` is the
+Set it in `/delegate`, on the **Launch correction** row. `correct` is the default, and `block` is the
 measurement mode. The row is global for every session, not a session setting, and the panel says so
 before you change it. **Apply changes** and **Save effective configuration as defaults** both store a
 changed value before their own step, so a failure there stops the step and reports it; **Cancel**
@@ -482,7 +478,8 @@ temporary-file write, so a failure leaves the previous file in place.
 
 ## Persistence and compatibility
 
-- Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7 delegation only.
+- Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7: intensity, preference, the
+  tri-state ordinary roles, `uiDesign`, the thinking policies, and the ContextShunt configuration.
 - Launch correction mode: `delegation-policy.launch-correction.json`, schema 1 with `mode`. Missing
   or invalid state means `correct`. Older versions ignore it.
 - Advisor reminder: `delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`off` or
@@ -496,6 +493,9 @@ temporary-file write, so a failure leaves the previous file in place.
   or mismatched state falls back to Advisor 1 and role launch with a diagnostic, not `A:ERR` for a
   valid first advisor. Older versions ignore it, and `0.21`–`0.23` fall back to Advisor 1 when it
   holds `advisor3`. A save from one of those versions then drops Advisors 2 and 3.
+- Provider admissions: `delegation-policy.provider-extensions.json`, schema 1 with `providers`, one
+  package and version per admitted provider. An invalid file is ignored with a diagnostic and leaves
+  the other Advisors running.
 - Session Apply: schema 2 off guard, extension entry, schema-8 companion, then schema-7 delegation
   commit. The legacy companion remains adjacent to that commit. A failure leaves both axes off.
 
@@ -512,27 +512,21 @@ transaction. All three previous files must be readable or absent. On failure, re
 our committed prefix, never a detected foreign write; otherwise report partial save and reload disk.
 Checks are not locks. A crash can leave Advisor off or Advisor 1 only in role mode until repaired.
 
-Records are written only while a policy block is active; both delegation and Advisor off produce no
-events, except records written in the short window before the next request notices that the policy
-is off. Content-free events go to `~/.pi/agent/delegation-policy.events.jsonl` (or Pi's configured
-agent dir): time, extension version, SHA-256 policy-block hash when it changes, intensity, Advisor
-modes, context and count; consultation model IDs, status, context and duration; one `task` summary
-per main-agent task from a user prompt to the next settle (duration, tool calls, edits, the position
-of the first edit and of the first consult, whether the consult came before the first edit, subagent
-launches and refusals); one `launch` record per subagent call that launches children (allowed or
-refused, a closed refusal code, child count, one role code per child, and the closed kinds of
-correction applied); an allowed record with no
-children appears only in that off window and still counts as a launch, while a refusal (for example
-a workflow script or a parallel call without tasks) can also carry no children. Consultation, `task`
-and `launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a
-`consult_advisor` call counts whether or not it reached a model, and its real outcome is the
-`consultation` event. `subagentLaunches` counts allowed calls that launch a child other than an
-Advisor: a call that launches only Advisors counts as a consult, a mixed call counts as both, and a
-refused call counts only as a refusal. Role observations are attempts, not proof of completion;
-duration zero means unknown. Questions, briefs, answers, conversations, project paths and raw errors
-are excluded. Writes are serialized, rotate at 256 KiB to one `.1` backup, and failures never break a
-request. Shutdown drains queued writes for at most five seconds. No network telemetry is sent; model
-identifiers can still be sensitive.
+Content-free events go to `delegation-policy.events.jsonl` in the same agent directory, never to the
+network. [Limits and privacy](/limits-and-privacy/#local-content-free-log) lists every field, the
+rotation, the shutdown drain, and the cases in which no event is written.
+
+### Version floors {#version-floors}
+
+These are the version requirements and admissions the extension enforces. Anything outside them
+fails closed rather than falling back to another model, provider, or executor.
+
+| Component                               | Requirement                                                                         | When it is unmet                                                                                   |
+| --------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Pi                                      | `>=0.87.1`                                                                          | The extension needs the per-request hook that this floor introduced, so earlier Pi is unsupported. |
+| `pi-subagents` (Advisor `tool`, reader) | stable SemVer `>=0.76.1`, no upper bound                                            | `unavailable` text or `reader-unavailable`, before any request                                     |
+| `@gotgenes/pi-permission-system`        | only `33.0.3` is admitted, and only when the host adds it                           | The reader rejects the extra runtime and returns `reader-unavailable`                              |
+| `@gotgenes/pi-anthropic-auth`           | only `3.4.3`, `3.4.4`, or `3.6.0` is admitted, and only when the opt-in is selected | That Advisor is unavailable, with no fallback to the standard profile                              |
 
 ### Downgrade
 
@@ -545,10 +539,10 @@ schema 7 readers such as `0.16.0`; earlier versions keep their existing limitati
 ## ContextShunt
 
 `contextShunt.mode` is independent from delegation intensity: `off` is the default and does no
-classification, metrics, archive I/O, or interception; `observe` records decisions without changing
-calls or results; `enforce` covers only recognized native reads, conservative bounded PowerShell
-reads, and known successful textual results. Delegation `off` suspends the effective mode without
-deleting the saved preference.
+classification, metrics, archive I/O, or interception. `observe` records decisions without changing
+calls or results. `enforce` covers only recognized native reads, one conservative bounded
+`Get-Content`/`gc` form on `bash` and `powershell`, and known successful textual results. Delegation
+`off` suspends the effective mode without deleting the saved preference.
 
 Limits, patterns, and the reader settings inherit per field between global defaults and the branch.
 Preflight limits use declared lines and post-result limits use real UTF-8 bytes and returned lines.

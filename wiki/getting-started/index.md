@@ -5,9 +5,6 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 # Installation and first use
 
-> Independent Advisor mode and its companion file are available from version `0.17.0`.
-> Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
-
 ## Requirements
 
 - Version `0.29.0` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
@@ -37,8 +34,9 @@ API, reasoning support, context window, and maximum output; that metadata is tra
 stored. The panel uses text, not only colour, to distinguish `disabled`, `not configured`, and an
 exact reference.
 
-Thinking is optional per role. Leave a **thinking** row unset to let the main agent choose a level
-for each launch, or configure one fixed level or an inclusive range. The panel lists only the levels
+Thinking is optional for each ordinary role and for Visual Design, and Advisor thinking is not a
+setting. Leave a **thinking** row unset to let the main agent choose a level for each launch, or
+configure one fixed level or an inclusive range. The panel lists only the levels
 that role's model supports, and a configured level is validated locally when the policy is loaded.
 
 Changes stay in a draft until **Apply changes**; closing a modified draft asks whether to keep editing
@@ -65,42 +63,33 @@ diagnose it.
 ## 4. Enable the Advisor when you want it
 
 Configure **Advisor 1** and optional **Advisor 2** and **Advisor 3** in `/delegate`, then select
-**Advisor mode** or run `/delegate advisor on`. Default **Advisor launch: role** asks the main agent
-to consult every valid entry in one background call. Optional **tool** mode uses explicit
-`consult_advisor({ question, brief?, evidence? })` through the authorized external executor, never from hooks.
-Every consultation runs in fresh context and needs a self-contained brief; the extension never sends
-the conversation. A fork default configured in `pi-subagents` itself is outside what the extension
-can read, so check that setting if your Advisors must never see it. The tool's executor requires stable `pi-subagents` SemVer `>=0.76.1`, with no
-upper bound, and the strict launch contract; prereleases and invalid versions are rejected. Advisor thinking is automatic. `A:PART`
-means only some entries are valid and usable.
+**Advisor mode**. The default mode is `with-delegation`, so a configured Advisor is consulted while
+delegation is active. Selecting `on` keeps consultation with delegation `off`, which shows as
+`D:OFF A:ON`.
 
-With delegation `off` and mode `on`, status shows `D:OFF A:ON`: consultation-only guidance is
-injected and ordinary roles are not required. Mode `off` silences consultation and keeps the saved
-model. The default `with-delegation` preserves the previous coupling to active delegation. A
-consultation sends the question and brief to another model — the extension never adds the
-conversation, and it refuses a call that asks to fork the session for an Advisor — and it can add
-latency and cost even with delegation off. A fork default set in `pi-subagents` itself stays outside
-the extension's reach.
+Default **Advisor launch: role** asks the main agent to consult every valid entry in one background
+call. Optional **tool** mode uses the explicit `consult_advisor({ question, brief?, evidence? })`
+tool through the authorized external executor, never from a hook. It requires stable `pi-subagents`
+SemVer `>=0.76.1`, with no upper bound, and the strict launch contract, and it rejects prereleases and
+invalid versions. Every consultation runs in fresh context and needs a self-contained brief: the
+extension never sends the conversation, and it refuses a call that asks to fork the session for an
+Advisor. A fork default configured in `pi-subagents` itself is outside what the extension can read,
+so check that setting if your Advisors must never see it. Consultation sends the question and brief
+to another model and can add latency and cost, including with delegation off.
 
-Validation is reported per axis. An enabled Advisor whose model is missing, out of scope,
-or unauthenticated produces `A:ERR` and removes only
-consultation: valid delegation and an otherwise authorized ContextShunt reader keep working.
-Conversely, invalid delegation settings do not suppress a valid enabled Advisor. A malformed main
-delegation file still fails closed, and a malformed or stale Advisor companion affects only Advisor:
-the companion keeps its saved model only while it is readable and valid. A corrupt or unreadable
-companion cannot supply Advisor settings: settings still present in a legacy delegation file are
-retained, and otherwise the Advisor model must be configured again. Read
-[configuration](/configuration/#advisor) for the modes, and
-[limits and privacy](/limits-and-privacy/#advisor-role) for the signals and
-retention.
+Validation is reported per axis: an enabled Advisor that is unusable produces `A:ERR` and removes
+only consultation, while `A:PART` means only some entries are valid and usable. Invalid delegation
+settings do not suppress a valid enabled Advisor. [Configuration](/configuration/#errors-by-axis)
+lists the per-axis cases, and [limits and privacy](/limits-and-privacy/#advisor-role) states what
+each turn sends and retains.
 
 ## 5. Turn on ContextShunt only when needed
 
 Choose **Context protection** in `/delegate`: start with `observe`, then choose `enforce` explicitly
 if the reported decisions help. `off` is the default and does no classification, metrics, archive
 I/O, or interception. `observe` changes neither a call nor its result. `enforce` covers recognized
-native reads, conservative bounded PowerShell reads, and known successful text results; it never
-launches a worker, re-runs a command, or bypasses tool permissions. When it preserves a large known
+native reads, one conservative bounded `Get-Content`/`gc` form, and known successful text results. It
+never launches a worker, re-runs a command, or bypasses tool permissions. When it preserves a large known
 text result, `context_shunt_recover` returns one bounded line or byte range.
 
 [Limits and privacy](/limits-and-privacy/#contextshunt-limits) states the caps,
@@ -108,25 +97,25 @@ the reader contract, and what one request sends.
 
 ## 6. Know what is saved
 
-- Delegation defaults go to `~/.pi/agent/delegation-policy.json` in schema 7, so version `0.16.0`
-  keeps reading delegation after a downgrade.
-- Advisor settings go to the `delegation-policy.advisor.json` companion next to it; the main file
+- Delegation defaults go to `~/.pi/agent/delegation-policy.json` in schema 7, which also holds the
+  ContextShunt configuration.
+- Advisor settings go to the `delegation-policy.advisor.json` companion next to it, and the main file
   never carries an Advisor mode.
-- Advisors 2 and 3 and launch mode live in `delegation-policy.advisor-extension.json`, bound by normalized
-  schema-8 state. Invalid or missing extension state falls back to Advisor 1 in role mode with a notice.
-- A branch saves a schema 2 off guard, extension entry, schema-8 companion, then schema-7 commit. A failure leaves the guard authoritative, so both features stay off for that branch.
+- Advisors 2 and 3 and launch mode live in `delegation-policy.advisor-extension.json`.
+- A branch saves a schema 2 off guard, extension entry, schema-8 companion, then schema-7 commit. A
+  failure leaves the guard authoritative, so both features stay off for that branch.
 
 Loading never rewrites a file: schemas 2 through 9 are normalized in memory only. **Save effective
-configuration as defaults** updates the global files and not the branch. Before installing an older
-package, follow the downgrade steps in
-[configuration](/configuration/#global-defaults-and-inheritance).
+configuration as defaults** updates the global files and not the branch.
+[Persistence](/configuration/#persistence-and-compatibility) lists every file and the downgrade
+steps for older packages.
 
 ## 7. When a change takes effect
 
-With version `0.29.0` on Pi `0.87.1` or later, the policy is refreshed before each LLM request, so a
-change made during a turn affects that turn's next request. A request already in progress, and
-host-owned role subagents keep their original state; tool groups cancel on detected authorization changes. Turning everything off removes the
-injected block when that version next applies its policy. Version `0.14.1` applies changes on the next
+The policy is refreshed before each LLM request, so a change made during a turn affects that turn's
+next request. A request already in progress keeps its starting state, and host-owned role subagents
+keep their original one. Tool groups cancel on detected authorization changes. Turning everything off
+removes the injected block on the next application. Version `0.14.1` applies changes on the next
 agent run.
 
 ## Local checkout (secondary)

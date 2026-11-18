@@ -18,6 +18,13 @@ body:
       label: Pi version
     validations:
       required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      description: Some behaviour differs between platforms, for example path handling on Linux and Windows.
+    validations:
+      required: true
   - type: textarea
     id: reproduction
     attributes:

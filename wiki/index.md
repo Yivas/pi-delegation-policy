@@ -32,7 +32,11 @@ The extension injects guidance only while an active configuration is valid. It c
 
 ## Start here
 
-Version **0.29.0** requires Pi `0.87.1` or later (`>=0.87.1`). Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
+These pages describe Version **0.29.0**.
+
+- Requires Pi `0.87.1` or later (`>=0.87.1`).
+- Version `0.14.1` supports Pi `0.84.3` or later.
+- Every admitted dependency and its floor: [version floors](/configuration/#version-floors).
 
 1. [Install the extension and reach a valid status](/getting-started/).
 2. [Configure models, intensity, and thinking policies](/configuration/).
@@ -48,7 +52,9 @@ Version **0.29.0** requires Pi `0.87.1` or later (`>=0.87.1`). Version `0.14.1` 
 
 ## Availability
 
-Independent Advisor mode and its companion file are available from version `0.17.0`. A configuration saved without an explicit Advisor mode keeps the previous behavior: Advisor is consulted only while delegation is active. Selecting `on` enables consultation with delegation off.
+Advisor has no model until you configure one. Its mode defaults to `with-delegation`, so a configured
+Advisor is consulted while delegation is active. [Configuration](/configuration/#advisor) lists the
+modes, the companion files, and what each turn sends.
 
 ## Product boundary
 

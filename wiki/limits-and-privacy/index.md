@@ -5,9 +5,6 @@ description: Understand the product boundary, fail-closed behavior, local data, 
 
 # Limits and privacy
 
-> Independent Advisor mode and its companion file are available from version `0.17.0`.
-> Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
-
 ## Product boundary
 
 `pi-delegation-policy` requires Pi `0.87.1` or later and adds one policy block while an active
@@ -27,9 +24,10 @@ client; the executor performs model calls. A content-free local log is described
 
 ### Launch check
 
-From 0.26.0, while delegation is active, the extension checks a `subagent` call before anything
-launches. From 0.28.0 it corrects the three cases that are unambiguous instead of refusing them by default
-(the global row can still be set to `block`, which refuses every call it would otherwise correct):
+While delegation is active, or while an Advisor is enabled, the extension checks a `subagent` call
+before anything launches. It corrects the three cases that are unambiguous instead of refusing them
+by default (the global row can still be set to `block`, which refuses every call it would otherwise
+correct):
 
 - a role name in place of a model (`small`, `medium`, `large`, `visual-design`, `ui-design`,
   `uidesign`, `advisor`, `advisor-1` to `advisor-3`, case-insensitive) becomes that role's exact
@@ -71,8 +69,8 @@ measurement. It is the global **Launch correction** row in `/delegate`, stored i
 
 ## Configuration change notice
 
-From `0.22.0`, an effective configuration change can add an ephemeral notice to the next user turn's
-request context, in addition to the current policy. Turning both delegation and Advisor off has a
+An effective configuration change can add an ephemeral notice to the next user turn's request
+context, in addition to the current policy. Turning both delegation and Advisor off has a
 single exception to zero injection: one notice says they were disabled **by this policy**; subsequent
 turns inject nothing while both stay off. This does not revoke authority from the user, host, or
 another extension and does not itself cancel children or initiate a turn.
@@ -164,27 +162,17 @@ files, and unredacted logs from anything you publish.
 
 ## Advisor role
 
-Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**
-and optional **Advisor 2** and **Advisor 3**, each with an exact model. Advisor thinking is not a
-setting: role launch lets the main agent choose it per run, and tool launch picks it automatically.
-Every valid advisor gets the same question, so each extra advisor adds a consultation, and its cost,
-at every checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
+Advisor has no model by default and stays outside the ordinary-role minimum. Its entries, launch mode,
+and mode are configured in [configuration](/configuration/#advisor). This section states only what a
+consultation sends and retains. The packaged no-tools/no-extensions
 `pi-delegation-policy.advisor` profile advises and executes nothing.
 
-**Advisor launch** inherits globally or per branch, defaulting to `role`:
-
-- `role`: the main agent launches every valid advisor in one background subagent call, with exact
-  models and a thinking level it chooses per run. The extension observes matching attempts but does
-  not launch them.
-- `tool`: the always-registered `consult_advisor({ question, brief?, evidence? })` launches one child per valid
-  advisor in parallel through the public `pi-subagents` delegation API. It requires stable SemVer
-  `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every launch must
-  still pass the strict contract and terminal-binding checks. Otherwise it returns unavailable text.
-  No model, provider or executor fallback is added.
-
-Both modes ask for consultation after orientation before substantive work, when stuck, before changing
-approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
-reactive steps and mechanics in a settled approach need no new call.
+In `role` mode the main agent launches each valid advisor and the extension only observes matching
+attempts. In `tool` mode the always-registered `consult_advisor({ question, brief?, evidence? })`
+launches one child per valid advisor through the public `pi-subagents` delegation API. It requires
+stable SemVer `>=0.76.1`, with no upper bound, and it rejects prereleases and invalid versions. Every
+launch must still pass the strict contract and terminal-binding checks, or it returns unavailable text.
+No model, provider or executor fallback is added.
 
 Every consultation runs in fresh context: the request carries the question and a short self-contained
 `brief` — objective and constraints, relevant facts, options and proposal, uncertainty — and the
@@ -194,9 +182,7 @@ call in the same task sends only the new question and evidence. A call that asks
 Advisor is involved. One residual stays outside the extension's reach: a default such as
 `defaultSubagentContext: "fork"` lives in the `pi-subagents` configuration, which the extension does
 not read, so check it if this matters to you. The Advisor therefore sees only what you write in the
-brief, so a thin brief weakens the advice. The tool launches each advisor at the highest level its model supports
-among `high`, `medium`, `low`, `minimal` and `off`, in that order. A level above `high` is used only by
-a model that supports none of them.
+brief, so a thin brief weakens the advice.
 
 One pending call per tool: an advisor group launches one child per configured valid advisor, while the
 independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
@@ -206,21 +192,17 @@ Local timeouts and cancellation do not cap external generation, retries or cost.
 ### Optional provider extension
 
 The separate `pi-delegation-policy.advisor-anthropic-auth` profile can load the exact managed-user
-`@gotgenes/pi-anthropic-auth` 3.4.3, 3.4.4 or 3.6.0 installation after a per-Advisor opt-in. It preserves that
-extension's normal configuration, startup hook, provider aliases and account diagnostic command;
-trusted host code can access its normal authentication and files even though the model has no tools.
-The diagnostic can query account information only when explicitly invoked and is never run by
+`@gotgenes/pi-anthropic-auth` 3.4.3, 3.4.4 or 3.6.0 installation after a per-Advisor opt-in. It
+preserves that extension's normal configuration, startup hook, provider aliases and account diagnostic
+command. Trusted host code can access its normal authentication and files even though the model has no
+tools. The diagnostic can query account information only when explicitly invoked and is never run by
 initialization or availability probes. This is not a sandbox or a metadata-only extension.
 
-Only the verified absolute entry is loaded; other configured extensions are not inherited. Missing
-APIs, package/entry mismatches or initialization errors leave the dispatch guard closed, without
+Only the verified absolute entry is loaded, and other configured extensions are not inherited. Missing
+APIs, a package or entry mismatch, or an initialization error leaves the dispatch guard closed without
 choosing builtin transport. The check does not sign code or eliminate a resolution-to-load race.
-ContextShunt and the original Advisor profile stay unchanged. See
-[configuration](/configuration/#provider-extension) for supported installations and
-why downgrade to 0.22.2 silences all Advisors when an opt-in is saved. One bounded fresh/background
-real-provider consultation completed on Pi 1.4.0 with pi-subagents 0.83.1; launch metadata showed the
-prompt runtime and provider bridge, no required extensions and no observed tool calls. This does not
-validate `consult_advisor`, other builds, or a sole cause of an earlier failure.
+[Configuration](/configuration/#provider-extension) lists the supported installations and why a
+downgrade to `0.22.2` silences all Advisors when an opt-in is saved.
 
 An [admitted provider extension](/configuration/#admitted-provider-extensions) works the same way for
 any other provider, with a weaker check: only its installed identity and listed user source are
@@ -271,8 +253,9 @@ is not an external retention policy.
 ContextShunt starts `off`. In that mode its hooks return immediately without classification, metrics,
 artifact I/O, or changes. `observe` simulates the same admitted-request window as enforcement but
 returns the original call and result. `enforce` consults Pi's public `getAllTools()` provenance and
-blocks only built-in known declared oversized ranges: native `read` and a deliberately narrow
-PowerShell `Get-Content`/`gc` form with `-TotalCount` or `-First`. Declared limits count lines only,
+blocks only built-in known declared oversized ranges: native `read`, and a deliberately narrow
+`Get-Content`/`gc` form with `-TotalCount` or `-First` accepted on the `bash` and `powershell` tools.
+Declared limits count lines only,
 and rejected calls do not consume or renew the shared tool-and-declared-path window. Same-named SDK or
 extension tools remain unchanged; observe may report those names only as non-binding heuristics.
 Composite commands, redirects, pipes, unbounded shell reads, user `!` commands, and unknown or
@@ -314,10 +297,14 @@ configuration, and the ordinary role named by `contextShunt.readerRole` enabled 
 model. In any other state `context_shunt_delegate` returns a bounded error and no answer, and nothing
 is launched.
 
-The package declares the profile `agents/pi-delegation-policy.bulk-reader.md` so a compatible
-executor can discover it by path. It allows only `read`, `grep`, `find`, and `ls`; it is a guided
-read-only contract rather than an isolation boundary, and the extension never installs it into user
-agent directories nor launches it by itself.
+The launch uses the packaged profile `agents/pi-delegation-policy.context-shunt-inline-reader.md`: fresh
+context, empty `tools:` and `extensions:`, a replace prompt, no project resources, and the internal
+`structured_output` tool as its only surface. It analyzes the supplied snapshot and cites only the
+ranges it was given. It cannot read files, run commands, delegate, or see the conversation.
+`context_shunt_delegate` launches it through the external executor, and nothing launches it from a
+hook. The package also ships the guided `pi-delegation-policy.bulk-reader` profile for discovery by a
+compatible executor. This extension never installs it into user agent directories and never launches
+it.
 
 Input is validated before anything is launched:
 
@@ -373,9 +360,8 @@ promise future-build compatibility. The reader was verified with `0.76.1` on Pi 
 Pi `0.87.1`, the declared minimum, is not verified for the reader. There is no fallback model,
 provider, or retry.
 
-From `0.19.0`, the reader also accepts the host's permission runtime described below. Version
-`0.18.0` and earlier reject any extra runtime, so with host permission rules their reader returns
-`reader-unavailable`.
+The reader also accepts the host's permission runtime described below. Builds up to `0.18.0` reject
+any extra runtime, so with host permission rules their reader returns `reader-unavailable`.
 
 The contract check accepts a child that loads only the packaged prompt runtime. It also accepts that
 runtime followed by the exact `@gotgenes/pi-permission-system` `33.0.3` entry, which the host adds when

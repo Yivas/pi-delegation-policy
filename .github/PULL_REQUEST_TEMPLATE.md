@@ -4,9 +4,9 @@
 
 ## Checks
 
-- [ ] I ran the formatter, lint, typecheck, tests, and build.
+- [ ] I ran the formatter, lint, typecheck, tests, build, and `npm run pack:check`.
 - [ ] Examples contain no private configuration or credentials.
-- [ ] This change adds no launch of its own beyond the explicit `context_shunt_delegate` tool, and never starts one from a hook.
+- [ ] This change adds no launch of its own beyond the explicit `context_shunt_delegate` tool and, in `tool` mode, `consult_advisor`. Nothing starts from a hook.
 - [ ] Documentation and schema changes are included when needed.
 
 ## Privacy

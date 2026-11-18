@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Documentation
+
+- Remove the duplicated documentation and leave each paragraph with one home. `README.md` covers the
+  product, install, intensities, roles, commands, and state files. `SECURITY.md` covers the security
+  posture, what reaches another model, local records, and reporting. The wiki covers the mechanics.
+  The event log now lives once, and the provider opt-ins keep their mechanics in the configuration
+  reference with a security summary in `SECURITY.md`. The Advisor contract and the launch check keep
+  a short summary in the README with a link. The duplicated event-log field list, the repeated
+  Advisor thread paragraphs, and the per-feature version-introduction notes are gone. This file
+  already recorded those introductions. The notes that condition a user decision stay where they are:
+  the Pi floor, the admitted dependency versions, the schema compatibility, and the downgrade steps.
+- `SECURITY.md` no longer says the Advisor is off by default. The Advisor has no model until one is
+  configured, and its mode defaults to `with-delegation`, so a configured Advisor is consulted while
+  delegation is active. The previous wording could be read as promising that no consultation happens
+  without an explicit `on`.
+- The wiki described the ContextShunt reader as the guided `pi-delegation-policy.bulk-reader` profile
+  with `read`, `grep`, `find`, and `ls`. The launch uses
+  `agents/pi-delegation-policy.context-shunt-inline-reader.md`, with empty `tools:` and `extensions:`,
+  fresh context, and only the internal `structured_output` result. The bulk-reader profile ships for
+  discovery and is never launched by this extension.
+- The launch check is documented as running while delegation is active **or** while an Advisor is
+  enabled, which is what it does in an Advisor-only session.
+- A resumed Advisor thread: the model sends only the new question and `evidence`, while the extension
+  supplies the run id and the output path in its own `resume` payload. The host inherits the model and
+  the profile.
+- The state inventory now names `delegation-policy.provider-extensions.json`, and the schema-7 file is
+  described as also holding the ContextShunt configuration.
+- The status example follows the real field order and spells out its `advisor-N=` token, and the
+  `Get-Content`/`gc` declared-range form is documented for the `bash` tool as well as `powershell`.
+- `CONTRIBUTING.md` and the pull request template list `npm run pack:check`, the pull request template
+  names `consult_advisor` among the explicit launchers, the bug template asks for the operating
+  system, and `CODE_OF_CONDUCT.md` is an explicit adaptation of Contributor Covenant 2.1 with a
+  reachable private reporting channel.
+
 ## 0.29.0 - 2026-11-18
 
 ### Changed

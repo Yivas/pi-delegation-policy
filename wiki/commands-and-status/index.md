@@ -5,9 +5,6 @@ description: Operate the /delegate panel and interpret its status in Pi.
 
 # Commands and status
 
-> Independent Advisor mode and its companion file are available from version `0.17.0`.
-> Existing configurations keep Advisor tied to delegation until `on` is selected explicitly.
-
 ## 1. Commands
 
 Use `/delegate` in Pi's TUI to open the keyboard-first editor; `Alt+G` opens the same editor when
@@ -115,7 +112,7 @@ turn's next request. A request already in progress keeps the state it started wi
 already launched in role mode remain host-owned; tool groups cancel on detected authorization changes; turning everything off removes the
 block when the extension next applies its policy.
 
-From `0.22.0`, the next user turn also carries a request-only notice of changed role assignments and
+The next user turn also carries a request-only notice of changed role assignments and
 settings. Changes made before that turn are grouped; cancelling, saving identical values or reverting
 to the previous configuration produces no notice. A change during a running turn waits for the next
 user turn's notice, while the policy itself still updates before the next request. Turning both axes
@@ -132,7 +129,7 @@ role or by the main agent.
 
 ## 5. Read the footer and status output
 
-From `0.22.1`, the footer revalidates after all session-start handlers finish, using Pi's public
+The footer revalidates after all session-start handlers finish, using Pi's public
 post-start discovery event. This clears an earlier `D:ERR` when another extension makes the
 configured model available later in startup, without waiting for a message or menu action. A model
 that is still missing or unusable keeps `D:ERR`. The event order was checked in Pi `0.87.1` and
@@ -154,14 +151,18 @@ that is still missing or unusable keeps `D:ERR`. The event order was checked in 
 example:
 
 ```text
-small=disabled (session) | medium=provider/example-medium (global) | large=not configured (default)
-ui-design=disabled (default) | advisor=provider/example-advisor (global) | thinking-small=fixed:high (global)
-thinking-medium=range:low..high (session) | thinking-large=unset (default) | thinking-ui-design=unset (default)
-advisor-mode=with-delegation (global); A:ON
+D:AGG intensity=aggressive (session) | preference=standard (default) | small=provider/example-small (global)
+medium=provider/example-medium (global) | large=disabled (session) | ui-design=disabled (default)
+advisor-mode=with-delegation (global); A:ON | advisor=provider/example-advisor (global) | advisor-launch=role (default)
+advisor-1=provider/example-advisor; profile=pi-delegation-policy.advisor (global)
+thinking-small=fixed:high (global) | thinking-medium=range:low..high (session) | thinking-large=unset (default) | thinking-ui-design=unset (default)
+context=off (default) | context-reader-enabled=false (default) | context-reader-role=small (default)
+context-reader-answer-max-bytes=8192 (default); executor checked only on invocation
 ```
 
 The source is `default`, `global`, or `session`. The optional role tokens `ui-design=` and `advisor=`
-keep their order, and `thinking-ui-design=` closes the thinking group. Each thinking policy is reported
+keep their order. `advisor=` repeats the first configured entry while `advisor-N=` reports each entry
+once with its profile, and `thinking-ui-design=` closes the thinking group. Each thinking policy is reported
 as `unset`, `fixed:<level>`, or `range:<min>..<max>`: the token says what the policy allows, not which
 level a launch used, and that per-run choice is never stored. `unset (session)` means the branch keeps
 no policy even when global defaults set one.
@@ -178,13 +179,11 @@ reveals session content.
 
 ### Consult Advisor tool
 
-`consult_advisor({ question, brief?, evidence? })` is always registered but unavailable outside tool launch mode
-or without an enabled valid advisor. Every consultation runs in fresh context: the task is the question
-and a short self-contained brief, and the conversation is never sent. A first consultation in a thread
-requires that brief; a later call sends only the new question and evidence. Labelled answers survive
-another advisor's failure. One pending call per
-tool: an advisor group launches one child per valid configured advisor; the reader remains independent.
-Abort, branch changes, shutdown and detected authorization changes cancel the group.
+`consult_advisor({ question, brief?, evidence? })` is always registered but unavailable outside tool launch
+mode or without an enabled valid advisor. It never receives the conversation: a first consultation
+requires the brief, and a later call in the same task sends the new question and evidence.
+[Limits and privacy](/limits-and-privacy/#advisor-role) states what each turn sends, the concurrency
+limit, the cancellation rules, and the retention.
 
 Status adds `advisor-launch=` and one `advisor-N=` token per entry, with its profile and source. In tool mode
 policy text asks for this tool, not the generic subagent launcher, whatever the session uses. See [privacy](/limits-and-privacy/#local-content-free-log) for the local metadata log.
@@ -204,15 +203,14 @@ the executor is checked only on invocation. `/delegate context status` reports t
 adds `context-limits=`, `context-coverage=`, and `context-events=`, without paths or preserved text.
 Nothing starts the reader from a hook.
 
-ContextShunt registers two normal tools. `context_shunt_delegate` takes the opaque artifact ID, one
-question of at most 2048 UTF-8 bytes, and the thinking level for that call; it returns an answer with
-at most 16 citations to exact line ranges of the preserved snapshot, `insufficient-evidence`, or a
-receipt whose `answerArtifactId` `context_shunt_recover` reads back as one bounded line range
-(`lineOffset`, `lineLimit`) or byte range (`byteOffset`, `maxBytes`). The serialized result stays
-within `answerMaxBytes`. Both tools are always registered, and each call decides its own availability:
-with the reader disabled, with delegation `off`, with an effective mode other than `enforce`, with an
-invalid configuration, or with the reader role's model unavailable, `context_shunt_delegate` returns
-`output-unavailable` and no answer. The executor needs stable `pi-subagents` SemVer `>=0.76.1`,
+ContextShunt registers two normal tools. `context_shunt_delegate` takes an artifact ID, one question
+of at most 2048 UTF-8 bytes, and the thinking level for that call. `context_shunt_recover` reads a
+receipt back as one bounded line or byte range. The
+[reader contract](/limits-and-privacy/#contextshunt-reader) states the answer shape, the citation
+limit, the caps, and the failure codes. Both tools are always registered, and each call decides its
+own availability: with the reader disabled, with delegation `off`, with an effective mode other than
+`enforce`, with an invalid configuration, or with the reader role's model unavailable,
+`context_shunt_delegate` returns `output-unavailable` and no answer. The executor needs stable `pi-subagents` SemVer `>=0.76.1`,
 with no upper bound, and the strict launch contract; prereleases and invalid versions are rejected.
 An absent or incompatible executor fails closed with `reader-unavailable`.
 

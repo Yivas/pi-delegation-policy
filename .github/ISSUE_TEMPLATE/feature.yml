@@ -25,7 +25,7 @@ body:
     id: alternatives
     attributes:
       label: Alternatives considered
-      description: Note any existing commands, presets, or Pi APIs you considered.
+      description: Note any existing `/delegate` rows, commands, or Pi APIs you considered.
   - type: checkboxes
     id: boundaries
     attributes:

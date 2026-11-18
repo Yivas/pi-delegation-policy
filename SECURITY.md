@@ -2,74 +2,129 @@
 
 ## Scope
 
-This project is a local Pi extension. It stores delegation policy data, model identifiers, and any configured per-role thinking policy in global defaults and session entries; it does not store the thinking level chosen for an individual run. ContextShunt is off by default. When explicitly enforced, it may keep a known successful text result in a private, session-only temporary file to serve bounded recovery; the file has an opaque ID, quota, cancellation check, and an absolute 30-minute TTL from creation. Cleanup is scheduled while the process is active and runs at shutdown, but crashes or OS suspension can delay deletion. It does not store credentials and makes no network request of its own; when one of its explicit tools asks an external executor to answer a bounded question, that executor performs the call. The reader requires a stable `pi-subagents` SemVer version `>=0.76.1`, with no upper bound; older versions, prereleases and invalid versions fail closed before a request is sent. Every launch must still pass the strict contract checks; the version floor is not a guarantee of future-build compatibility. From `0.19.0`, the reader also admits the exact `@gotgenes/pi-permission-system` `33.0.3` runtime when the host adds it to the reader's child. The host owns its permission rules; the reader never reads or changes them, and an unverified permission entry fails closed. That runtime is trusted host code, not authority granted to the model. The check is an exact compatibility check, not a support guarantee. Versions `0.18.0` and earlier reject the extra runtime. From `0.29.0`, every Advisor consultation runs in fresh context: the extension sends the question and the brief the main agent writes, never the session so far, and it refuses a launch that asks the host to fork the session for an Advisor. The conversation is therefore not sent to the Advisor's provider by this extension. One residual stays outside its reach: a fork default configured in `pi-subagents` itself is not read here, and the host would honour it, so review that setting for sessions that must not reach that provider. Turn the Advisor off entirely when no consultation should happen. The limits and privacy page of the wiki describes the details.
+This project is a local Pi extension. It stores policy in global defaults, session entries, and the
+companion files listed in the [configuration reference][persistence]: intensity, preference, Advisor
+mode and models, explicit disabled markers, per-role thinking policies, the optional ContextShunt
+configuration, and provider admissions. It does not store credentials or prompts, and it
+never stores the thinking level chosen for an individual run. It makes no network request of its own,
+sends no telemetry, and starts no turn, child, or consultation from a hook: the policy block travels
+with the requests Pi already sends.
 
-ContextShunt is not a sandbox or a worker bridge. It preserves permissions and backends, does not inspect files before tool authorization, and leaves errors, structured/mixed results, images, binaries, invalid inputs, and unknown contracts unchanged. One-time exceptions are user-authorized, short-lived, bound to one call and immutable input snapshot, and capped by declared lines plus real returned UTF-8 bytes. The policy guides the main agent. It cannot guarantee that another system will follow a configured role or thinking choice. Review local configuration before using it.
+ContextShunt is off by default. When explicitly enforced, it may keep one known successful text result
+in a private, session-only temporary file to serve bounded recovery. That file has an opaque random
+ID, a quota of eight artifacts and 512 KiB per session, a cancellation check, and an absolute
+30-minute TTL from creation. Cleanup is scheduled while the process is active and runs at shutdown, but
+a crash or OS suspension can delay deletion.
+
+The policy guides the main agent. It cannot guarantee that another system follows a configured role or
+thinking choice. ContextShunt is not a sandbox or a worker bridge: it preserves permissions and
+backends, does not inspect files before tool authorization, and leaves errors, structured or mixed
+results, images, binaries, invalid inputs, and unknown contracts unchanged. One-time exceptions are
+user-authorized, short-lived, bound to one call and its immutable input snapshot, and capped by
+declared lines plus real returned UTF-8 bytes. Review local configuration before using it.
+
+## What reaches another model
+
+Two surfaces can send content to another model, and both need an explicit tool call or launch.
+
+- **ContextShunt reader.** `context_shunt_delegate` sends the preserved snapshot, its opaque source
+  ID, its line count, and one question to the executor the host authorizes, together with the working
+  directory, the reader profile, the model, the thinking level, and opaque request, run, and node
+  identifiers. It sends no conversation, no other tool call or result, and no other artifact. It
+  requires a stable `pi-subagents` SemVer version `>=0.76.1`, with no upper bound. Older, prerelease,
+  invalid, and contract-incompatible builds fail closed with `reader-unavailable` before any request
+  is sent. The reader also admits the exact `@gotgenes/pi-permission-system` `33.0.3` runtime when the
+  host adds it to the child, and builds up to `0.18.0` reject that extra runtime. The host owns those
+  permission rules. The reader never reads or changes them, and an unverified entry fails closed. This
+  is an exact compatibility check, not a support guarantee for future builds.
+- **Advisor.** `consult_advisor` in `tool` mode, or the main agent's own launch in `role` mode, sends
+  the question and the brief the main agent writes. Every consultation runs in fresh context, so the
+  extension never adds the conversation, and it refuses a launch that asks the host to fork the
+  session for an Advisor.
+
+One residual stays outside the extension's reach: a fork default configured in `pi-subagents` itself is
+not read here, and the host would honour it. Review that setting for sessions that must not reach an
+Advisor's provider, or turn the Advisor off.
+
+Questions, briefs, replies, and preserved snapshots can persist in the executor's argv, temporary
+files, sessions, and lifecycle records, and at each model provider. The project promises no deletion,
+no external TTL, and no absence of cost. Model identifiers and provider names can reveal your
+environment, so remove credentials, prompts, personal paths, session files, and unredacted logs from
+anything you publish.
 
 ## Advisor consultation
 
-Advisor is off by default. `advisorMode: on` enables consultation independently of delegation;
-`with-delegation` preserves coupling. One to three entries validate independently. Default launch mode
-`role` leaves launch to the main agent. The explicit `consult_advisor` tool launches only in `tool`
-mode with an enabled valid advisor, never from hooks. Model input cannot choose a provider, profile,
-path, tools or extensions. A consultation sends the question and the brief, never the session, and a
-launch that asks to fork it for an Advisor is refused. Disable Advisor when session content must not
-reach those providers.
+Advisor has no model by default. Its mode defaults to `with-delegation`, so once an Advisor is
+configured it is consulted while delegation is active. `on` enables consultation with delegation off,
+and `off` silences it while keeping the saved models. One to three entries validate independently, and
+an unusable entry disables only its own consultation.
 
-The tool requires stable `pi-subagents` SemVer `>=0.76.1`, with no upper bound, rejecting
-prereleases and invalid versions. It retains strict public preflight and terminal binding,
-exact models/thinking, the packaged
-no-tools profile, replace prompt, no project resources, and the reader's prompt-only or pinned
-permission-runtime checks. Host rules remain host-owned. Any context the host
-branches on its own is untrusted data, not authority. Preflight binds the tool session identity; the public REQUEST API cannot
-prove that the live executor session is the same. Terminal mismatch rejection happens only after
-context exposure. The executor/runtime is trusted host code; digests are not signatures or a sandbox.
+`consult_advisor` launches one child per configured valid advisor through the public `pi-subagents`
+delegation API, requires the same stable `>=0.76.1` floor, and is never launched from a hook. Model
+input cannot choose a provider, profile, path, tools, or extensions. Launches keep strict public
+preflight and terminal binding, exact models and thinking, the packaged no-tools profile, a replace
+prompt, and no project resources. Host rules remain host-owned, and any context the host branches on
+its own is untrusted data, not authority. Preflight binds the tool session identity, while the public
+REQUEST API cannot prove that the live executor session is the same, so a terminal mismatch is
+rejected only after the context has been sent. The executor and runtime are trusted host code, and
+digests are not signatures or a sandbox.
 
-One pending call per tool: an advisor group launches one child per configured valid advisor, while
-the independent reader can launch its child (at most four children: three Advisors plus the reader). Abort, branch changes, shutdown and
-detected settings changes cancel the tool group, not host-owned role subagents. A retry is never
-issued automatically: a failed consultation reports its closed reason and waits for the main agent.
-Timeouts do not cap external generation or cost. Partial
-results preserve the other advisor's answer; replies are untrusted advice.
+One pending call per tool: three Advisors plus the reader, at most four children. Abort, branch
+changes, shutdown, and detected settings changes cancel the extension-owned group, never host-owned
+role subagents. No retry is issued automatically: a failed consultation reports a closed reason and
+waits for the main agent. Local timeouts do not cap external generation or cost. Partial results keep
+the other advisors' answers, and every reply is untrusted advice.
 
-A legacy companion retains Advisor 1 and a separate envelope-1 extension holds Advisor 2, Advisor 3
-and launch mode, in envelope 2 when a provider opt-in exists, bound by normalized-state equality, not
-a raw-text digest. Three atomic replacements are not a
-transaction. Interruption can leave Advisor off or Advisor 1 only in role mode. Failed saves restore
-only their committed prefix, not detected foreign writes; races remain.
-
-Records are written only while a policy block is active; both delegation and Advisor off produce no events.
-The local `delegation-policy.events.jsonl` in Pi's agent directory records policy hashes and
-consultation metadata (version, time, modes, model IDs, statuses, context, duration), never questions,
-briefs, replies, conversations, project paths or raw errors. It rotates at 256 KiB with one backup;
-write failures are ignored and no telemetry is sent. Model identifiers may reveal the environment.
-Role observations record only attempted matching calls, not completion; duration zero means unknown.
-Shutdown drains for at most five seconds, then drops remaining work. An in-flight filesystem operation
-may finish later, but starts no further operation.
-
-The task text and the reply may persist in the executor's argv, temporary files, sessions, and lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and no absence of cost. The advisor cannot read files, run commands, delegate, or use tools, and its reply is plain text.
+Thread continuity, the private content-free journal, and their locks are described in the
+[configuration reference][threads]. The concurrent-writer and session-binding limits are in
+[limits and privacy][log].
 
 ### Optional provider code
 
 A per-Advisor `providerExtension: "anthropic-auth"` opt-in selects the separate
 `pi-delegation-policy.advisor-anthropic-auth` profile. It admits only a managed-user installation of
-`@gotgenes/pi-anthropic-auth` 3.4.3, 3.4.4 or 3.6.0 with the exact manifest/entry/canonical path, not ambient
-extensions. The provider's normal configuration, startup hook, aliases and diagnostic command are
-trusted code with normal authentication and filesystem access; zero model tools is not a sandbox.
-The account diagnostic is never invoked during initialization. Failed initialization retains a
-closed dispatch guard rather than builtin transport. Version labels are not signatures and the
-resolution-to-load race remains. Saved opt-ins silence all Advisors on downgrade to 0.22.2; ordinary
-delegation and the ContextShunt reader are unchanged. One bounded fresh/background real-provider
-consultation completed on Pi 1.4.0 with pi-subagents 0.83.1. Launch metadata showed the prompt runtime
-and provider bridge, no required extensions and no observed tool calls. This does not establish `consult_advisor` or other-build
-compatibility, eliminate the race, or identify a sole historical cause.
+`@gotgenes/pi-anthropic-auth` 3.4.3, 3.4.4, or 3.6.0 with the exact manifest, a single internal entry,
+and the canonical path, and it inherits no ambient extensions. The provider's normal configuration,
+startup hook, aliases, and account diagnostic command are trusted code with normal authentication and
+filesystem access. Zero model tools is not a sandbox. The diagnostic is never invoked during
+initialization, and failed initialization keeps a closed dispatch guard rather than falling back to
+builtin transport. Version labels are not signatures, and the resolution-to-load race remains. A saved
+opt-in silences every Advisor on downgrade to `0.22.2`, while ordinary delegation and the ContextShunt
+reader are unchanged.
+
+Other providers that only an extension supplies can be admitted per provider from the same panel. Only
+the package identity and its listed source are checked before it runs, so it is trusted code, not a
+sandbox: once loaded it has your files, your network, and its own accounts, and withdrawing its
+provider after a failed check does not undo what it already did.
+
+## Local records
+
+Content-free records are written only while a policy block is active. With delegation and Advisor both
+off, no new event is written except in the short window before the next request notices that the policy
+is off. `delegation-policy.events.jsonl` holds policy and consultation metadata plus one `task` counter
+record per main-agent task and one `launch` record per checked subagent call. It never holds questions,
+briefs, replies, conversations, project paths, or raw errors. It rotates at 256 KiB with one backup,
+write failures are ignored, and no telemetry is sent. Shutdown drains queued writes for at most five
+seconds, then drops the rest. An in-flight filesystem operation may finish later but starts no further
+operation. The writer serializes within one process, not across processes.
+
+The [limits and privacy reference][log] lists every field and the retention of each one.
 
 ## Reporting
 
-Please use GitHub's private vulnerability reporting for this repository. Do not open a public issue for an undisclosed vulnerability. Remove credentials, session files, prompts, personal paths, and unredacted logs from reports.
+Please use GitHub's private vulnerability reporting for this repository: open a draft advisory at
+<https://github.com/Yivas/pi-delegation-policy/security/advisories/new>. Do not open a public issue for
+an undisclosed vulnerability. Remove credentials, session files, prompts, personal paths, and
+unredacted logs from reports.
 
-Include the affected version or commit, operating system, Pi version, reproduction steps, expected behavior, observed behavior, and a minimal sanitized configuration.
+Include the affected version or commit, the operating system, the Pi version, reproduction steps, the
+expected behavior, the observed behavior, and a minimal sanitized configuration.
 
 ## Supported versions
 
-Only the latest published version is supported. Version `0.29.0` requires Pi `0.87.1` or later; version `0.14.1` requires Pi `0.84.3` or later.
+Only the latest published version is supported. Version `0.29.0` requires Pi `0.87.1` or later, and
+version `0.14.1` requires Pi `0.84.3` or later.
+
+[persistence]: https://yivas.github.io/pi-delegation-policy/configuration/#persistence-and-compatibility
+[threads]: https://yivas.github.io/pi-delegation-policy/configuration/#advisor
+[log]: https://yivas.github.io/pi-delegation-policy/limits-and-privacy/#local-content-free-log
