@@ -11,6 +11,7 @@ import type { ContextWithSystemEvent, ExtensionContext } from "@earendil-works/p
 import { matchesKey, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import piDelegationPolicy, {
   getArgumentCompletions,
+  launchRoleCodes,
   parseCommand,
   statusText,
 } from "../src/index.ts";
@@ -3101,6 +3102,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/index.ts",
     "src/launch-correction-mode.ts",
     "src/launch-guard.ts",
+    "src/launch-report.ts",
     "src/prompt.ts",
     "src/provider-admissions.ts",
     "src/provider-package.ts",
@@ -4398,4 +4400,85 @@ test("the thinking selector lists only the role model's supported levels and exp
     missingModel.panel.render(100).join("\n"),
     /Small model example\/small is not available; levels cannot be listed\./,
   );
+});
+
+test("the launch report lists exactly the roles the guard could launch", () => {
+  const base = runtime();
+  assert.deepEqual(launchRoleCodes(base), ["small", "medium", "large", "uiDesign"]);
+
+  const withoutVisual = runtime({
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    intensity: "normal",
+    uiDesign: null,
+  });
+  assert.deepEqual(launchRoleCodes(withoutVisual), ["small", "medium", "large"]);
+
+  const withAdvisor = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, advisor, advisorMode: "on" },
+  );
+  assert.deepEqual(launchRoleCodes(withAdvisor), [
+    "small",
+    "medium",
+    "large",
+    "uiDesign",
+    "advisor",
+  ]);
+
+  // An enabled Advisor whose model does not resolve is still a role the policy offered.
+  withAdvisor.modelStatuses.set("advisor", { kind: "unavailable" });
+  withAdvisor.advisorErrors = ["Advisor model is not available."];
+  assert.equal(launchRoleCodes(withAdvisor).includes("advisor"), true);
+
+  // Intensity does not change the row set: the count is historical, so a role stays on the line with
+  // its zero instead of disappearing when delegation is turned off.
+  const off = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" });
+  assert.deepEqual(launchRoleCodes(off), ["small", "medium", "large", "uiDesign"]);
+
+  // An Advisor mode with nothing configured offers no launch, so it gets no row even though the
+  // status still reports its mode.
+  const emptyAdvisor = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, advisorMode: "on" },
+  );
+  assert.equal(launchRoleCodes(emptyAdvisor).includes("advisor"), false);
+});
+
+test("the status command reports the launch counts from the guard's own log", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeFile(
+      join(directory, "delegation-policy.events.jsonl"),
+      `${JSON.stringify({ event: "launch", outcome: "allowed", roles: ["small"] })}\n`,
+      "utf8",
+    );
+    const handlers = new Map<
+      string,
+      (event: Record<string, unknown>, ctx: ExtensionContext) => unknown
+    >();
+    const commands = new Map<
+      string,
+      { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+    >();
+    const messages: string[] = [];
+    const pi = {
+      on: (name: string, handler: typeof handlers extends Map<string, infer H> ? H : never) =>
+        handlers.set(name, handler),
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      appendEntry: () => undefined,
+    };
+    const current = context({ branch: [] });
+    current.ui.notify = (message: string) => messages.push(message);
+
+    piDelegationPolicy(pi as never);
+    await handlers.get("session_start")?.({ type: "session_start" }, current);
+    await commands.get("delegate")?.handler("status", current);
+
+    assert.match(messages.at(-1) ?? "", /launches=1 \(Small 1\)/);
+  });
 });

@@ -8,6 +8,12 @@ import type { AdvisorTurnContext } from "./advisor-threads.ts";
 import type { AdvisorLaunch, AdvisorMode, Intensity } from "./types.ts";
 
 export const ADVISOR_LOG_MAX_BYTES = 256 * 1024;
+
+/** The one place the event log path is spelled, so a reader can never drift from its writer. */
+export function getEventLogPath(configPath = getGlobalConfigPath()): string {
+  return join(dirname(configPath), "delegation-policy.events.jsonl");
+}
+
 const FILE_OPERATIONS = { appendFile, mkdir, rename, rm, stat };
 const VERSION = (
   JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -65,10 +71,7 @@ export class AdvisorLog {
   private readonly path: string;
   private readonly files: typeof FILE_OPERATIONS;
 
-  constructor(
-    path = join(dirname(getGlobalConfigPath()), "delegation-policy.events.jsonl"),
-    files = FILE_OPERATIONS,
-  ) {
+  constructor(path = getEventLogPath(), files = FILE_OPERATIONS) {
     this.path = path;
     this.files = files;
   }

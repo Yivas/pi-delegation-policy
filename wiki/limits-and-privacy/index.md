@@ -233,6 +233,12 @@ duration zero means unknown. Questions, briefs, answers, conversations, project 
 are excluded. Writes are serialized, rotate at 256 KiB to one `.1` backup, and failures never break
 a request. Shutdown drains queued writes for at most five seconds, then drops remaining work. An
 in-flight filesystem operation may finish later, but starts no further operation.
+`/delegate status` reads this log back, and only this log: it tails the current file and its rotated
+predecessor, bounded to the last 4 MiB of each, and reports allowed launches per role plus a refusal
+count. The tail can cut a line, which is skipped, so the report may undercount and never invents a
+record; a missing or unreadable log reports `launches=none recorded`. Reading it changes no file and
+touches no launch.
+
 No network telemetry is sent; model identifiers can still be sensitive.
 
 The writer serializes within one process, not across processes; concurrent sessions share no lock.

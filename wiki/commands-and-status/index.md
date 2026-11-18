@@ -152,12 +152,13 @@ example:
 
 ```text
 D:AGG intensity=aggressive (session) | preference=standard (default) | small=provider/example-small (global)
-medium=provider/example-medium (global) | large=disabled (session) | ui-design=disabled (default)
+medium=provider/example-medium (global) | large=provider/example-large (global) | ui-design=provider/example-visual (global)
 advisor-mode=with-delegation (global); A:ON | advisor=provider/example-advisor (global) | advisor-launch=role (default)
 advisor-1=provider/example-advisor; profile=pi-delegation-policy.advisor (global)
 thinking-small=fixed:high (global) | thinking-medium=range:low..high (session) | thinking-large=unset (default) | thinking-ui-design=unset (default)
 context=off (default) | context-reader-enabled=false (default) | context-reader-role=small (default)
 context-reader-answer-max-bytes=8192 (default); executor checked only on invocation
+launches=41 (Small 12, Medium 0, Large 4, Visual Design 0, Advisor 25)
 ```
 
 The source is `default`, `global`, or `session`. The optional role tokens `ui-design=` and `advisor=`
@@ -170,8 +171,21 @@ no policy even when global defaults set one.
 `A:ERR` means an enabled Advisor cannot be used; it does not affect valid delegation or an authorized
 ContextShunt reader, and `D:ERR` does not suppress a valid enabled Advisor. With Advisor off, an
 unusable companion is reported as a diagnostic in `details=` and the footer keeps `A:OFF`. Read
-[errors by axis](/configuration/#errors-by-axis) for the exact cases. None of
-these labels proves that a launch happened or that another system followed the guidance.
+[errors by axis](/configuration/#errors-by-axis) for the exact cases.
+
+`launches=` closes the line with the one field that does report launches: the guard's own records,
+counted by role, for the current log and its rotated predecessor. It prints
+`launches=<allowed calls> (<role> <count>, …)` with every configured role, so a role that never ran
+stays visible at zero next to the ones that did; a refusal is counted apart as `; refused=<n>`, and a
+log without any launch event reads `launches=none recorded`. Two naming rules keep the line
+readable: an Advisor row **at zero** needs an entry configured _and_ its mode active, so
+`advisor-mode=with-delegation` with delegation off leaves it out unless the log already records an
+Advisor launch, and `unattributed` counts a child the guard could not match to an enabled role: no
+child object, no model, or a model no enabled role uses.
+
+The count is best-effort evidence: it says which role a launch was attributed to, not which model
+ran, whether the child finished, or how well it followed the brief. The `D:` and `A:` labels are
+configuration only and prove nothing about a launch.
 
 A sanitized restoration warning can accompany `D:OFF` when the latest stored session state is invalid
 or from a future schema, including a malformed `thinking` entry; it neither enables injection nor

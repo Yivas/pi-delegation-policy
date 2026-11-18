@@ -141,7 +141,9 @@ function policyText(policy: ThinkingPolicy | undefined): string {
   return "level" in policy ? policy.level : `LEVEL in ${policy.min}..${policy.max}`;
 }
 
-function enabledRoles(state: RuntimeState): Role[] {
+/** The roles a launch could name right now: the enabled ordinary ones plus a configured Visual
+ * Design. Exported so a report of what was launched agrees with the guard instead of restating it. */
+export function enabledRoles(state: RuntimeState): Role[] {
   return [
     ...enabledOrdinaryRoles(state.effective),
     ...(state.effective.uiDesign ? ["uiDesign" as const] : []),

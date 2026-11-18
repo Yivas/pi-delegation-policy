@@ -174,8 +174,11 @@ only the global files.
 `/delegate status` reports stable tokens with their source (`default`, `global`, or `session`), for
 example `advisor-mode=with-delegation (global); A:OFF` and `thinking-small=unset (default)`.
 `D:OFF`, `D:NORM`, `D:AGG`, and `D:ORCH` describe delegation. `A:OFF`, `A:ON`, `A:PART`, and `A:ERR`
-describe Advisor. None of them proves that a launch happened or that another system followed the
-guidance. See
+describe Advisor. Those labels describe configuration only; `launches=` is the field that reports
+launches, counted by role from the guard's own records, so a configured role that never ran stays
+visible at zero (the Advisor row at zero is the exception: it needs an entry configured and its mode
+active, though a recorded launch still prints), and a child the guard could not match to an enabled
+role counts as `unattributed`. Neither proves a child finished or followed its brief. See
 [commands and status](https://yivas.github.io/pi-delegation-policy/commands-and-status/) for the panel
 keys, the status field order, and the `D:ERR` diagnosis.
 

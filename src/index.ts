@@ -41,6 +41,7 @@ import { AdvisorResumeClient } from "./advisor-resume.ts";
 import type { AgentLaunchEventBus } from "./agent-launch.ts";
 import { admissionFor } from "./provider-admissions.ts";
 import {
+  enabledRoles,
   inspectSubagentLaunch,
   statedChildren,
   type LaunchChildRole,
@@ -71,6 +72,7 @@ import {
   readerToolError,
   type ReaderThinking,
 } from "./context-shunt-reader.ts";
+import { launchSummaryText, readLaunchCounts } from "./launch-report.ts";
 import { advisorRoleLines, buildDelegationPolicy } from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
@@ -361,6 +363,25 @@ function admissionText(entry: AdvisorSetting, state: RuntimeState): string {
       ? admissionFor(state.admissions ?? {}, entry.provider)
       : undefined;
   return pkg ? `; extension=${pkg.package}@${pkg.version}` : "";
+}
+
+/**
+ * The role codes the configuration enables, in the report's own order: the guard's own set plus a
+ * configured Advisor the policy asks for. These are the rows the launch count shows, so a zero reads
+ * as "configured and never chosen". Ordinary roles and Visual Design keep their row regardless of
+ * intensity, because the count is historical. The Advisor is the exception: its own mode can switch it
+ * off, so with `with-delegation` and delegation off the row disappears with it. An enabled but currently
+ * invalid Advisor keeps its row: the question is whether the role was offered, not whether its model
+ * resolves right now.
+ */
+export function launchRoleCodes(state: RuntimeState): LaunchChildRole[] {
+  return [
+    ...enabledRoles(state),
+    // An Advisor mode with no entry configured offers nothing to count.
+    ...(isAdvisorEnabled(state.effective) && state.effective.advisors.length > 0
+      ? (["advisor"] as const)
+      : []),
+  ];
 }
 
 export function statusText(state: RuntimeState): string {
@@ -1292,8 +1313,16 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           );
         if (action.kind === "status" || action.kind === "context-status") {
           const state = await refreshRuntime(ctx);
+          // `status` is the only place that answers "was this role ever used?", and it answers it
+          // from the guard's own records: a configured role at zero reads next to the ones that ran.
+          const launchLine =
+            action.kind === "status"
+              ? ` | ${launchSummaryText(await readLaunchCounts(), launchRoleCodes(state))}`
+              : "";
           ctx.ui.notify(
-            action.kind === "context-status" ? contextStatusText(state, shunt) : statusText(state),
+            action.kind === "context-status"
+              ? contextStatusText(state, shunt)
+              : `${statusText(state)}${launchLine}`,
             hasRuntimeError(state) || hasAdvisorError(state) ? "error" : "info",
           );
           return;
