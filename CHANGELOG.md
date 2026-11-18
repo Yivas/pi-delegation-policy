@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.28.0 - 2026-11-18
+
 ### Added
 
 - An automatic Advisor reminder, on by default, adds one short extension-owned line to the request
@@ -84,6 +86,18 @@
   or `reviewer` does not replace the model role. One emphasis line and one example follow per enabled
   role only, so the section adds no threshold, permission, ownership rule, or new Advisor consultation
   guidance.
+
+### Verification
+
+- The full suite passes: 335 tests, 332 passing and three skipped when their external fixtures are
+  absent. That covers the mechanism: rendering, stored files, refusals, thread continuation and
+  reminder timing.
+- Behaviour was not measured in a controlled before-and-after evaluation, so this release does not
+  claim that the model delegates or consults better than 0.27.0. What it claims is narrower and
+  checked: the policy renders as described, the launch correction applies only the three
+  unambiguous cases and refuses the rest, the brief guidance and the Advisor thread work, and the
+  reminder appears once per task under the conditions listed above. Version 0.27.0 stays available
+  if the new behaviour does not suit you.
 
 ## 0.27.0 - 2026-11-16
 

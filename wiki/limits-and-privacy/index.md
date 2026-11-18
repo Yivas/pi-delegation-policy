@@ -28,8 +28,8 @@ client; the executor performs model calls. A content-free local log is described
 ### Launch check
 
 From 0.26.0, while delegation is active, the extension checks a `subagent` call before anything
-launches. From the unreleased version after 0.27.0 it corrects the three cases that are unambiguous
-instead of refusing them:
+launches. From 0.28.0 it corrects the three cases that are unambiguous instead of refusing them by default
+(the global row can still be set to `block`, which refuses every call it would otherwise correct):
 
 - a role name in place of a model (`small`, `medium`, `large`, `visual-design`, `ui-design`,
   `uidesign`, `advisor`, `advisor-1` to `advisor-3`, case-insensitive) becomes that role's exact
