@@ -13,22 +13,23 @@ description: Operate the /delegate panel and interpret its status in Pi.
 Use `/delegate` in Pi's TUI to open the keyboard-first editor; `Alt+G` opens the same editor when
 available. The editor requires TUI mode, while these arguments also work in other modes:
 
-| Command                             | Effect                                                                    |
-| ----------------------------------- | ------------------------------------------------------------------------- |
-| `/delegate`                         | Open the keyboard-first selector.                                         |
-| `/delegate off`                     | Disable execution-delegation guidance; an enabled Advisor stays active.   |
-| `/delegate normal`                  | Enable balanced delegation guidance.                                      |
-| `/delegate aggressive`              | Enable delegation-first guidance.                                         |
-| `/delegate orchestrator`            | Delegate all transferable execution while the main agent keeps ownership. |
-| `/delegate status`                  | Show the effective session state.                                         |
-| `/delegate reset`                   | Turn delegation and Advisor off for the branch.                           |
-| `/delegate advisor off`             | Silence consultation and keep its model.                                  |
-| `/delegate advisor on`              | Enable consultation even with delegation off.                             |
-| `/delegate advisor with-delegation` | Keep the default coupling to active delegation.                           |
-| `/delegate context off`             | Stop ContextShunt work for this branch.                                   |
-| `/delegate context observe`         | Record what enforcement would block without changing calls.               |
-| `/delegate context enforce`         | Enforce recognized budgets and bounded recovery.                          |
-| `/delegate context status`          | Show the effective ContextShunt state.                                    |
+| Command                                             | Effect                                                                    |
+| --------------------------------------------------- | ------------------------------------------------------------------------- |
+| `/delegate`                                         | Open the keyboard-first selector.                                         |
+| `/delegate off`                                     | Disable execution-delegation guidance; an enabled Advisor stays active.   |
+| `/delegate normal`                                  | Enable balanced delegation guidance.                                      |
+| `/delegate aggressive`                              | Enable delegation-first guidance.                                         |
+| `/delegate orchestrator`                            | Delegate all transferable execution while the main agent keeps ownership. |
+| `/delegate status`                                  | Show the effective session state.                                         |
+| `/delegate reset`                                   | Turn delegation and Advisor off for the branch.                           |
+| `/delegate advisor off`                             | Silence consultation and keep its model.                                  |
+| `/delegate advisor on`                              | Enable consultation even with delegation off.                             |
+| `/delegate advisor with-delegation`                 | Keep the default coupling to active delegation.                           |
+| `/delegate context off`                             | Stop ContextShunt work for this branch.                                   |
+| `/delegate context observe`                         | Record what enforcement would block without changing calls.               |
+| `/delegate context enforce`                         | Enforce recognized budgets and bounded recovery.                          |
+| `/delegate context status`                          | Show the effective ContextShunt state.                                    |
+| `/delegate context allow TOKEN MAX_LINES MAX_BYTES` | Approve the next matching blocked read once.                              |
 
 Advisor configuration also works without the panel:
 
@@ -137,17 +138,17 @@ configured model available later in startup, without waiting for a message or me
 that is still missing or unusable keeps `D:ERR`. The event order was checked in Pi `0.87.1` and
 `1.1.0`; later availability changes still refresh on the next request or menu action.
 
-| Label    | Meaning                                                                | What to do                                                                  |
-| -------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive.           | Choose an active intensity only when the roles are ready.                   |
-| `D:NORM` | A valid `normal` configuration is active.                              | Delegate only with a clear expected benefit.                                |
-| `D:AGG`  | A valid `aggressive` configuration is active.                          | Delegate suitable substantial work unless coupling or overhead dominates.   |
-| `D:ORCH` | A valid `orchestrator` configuration is active.                        | Delegate all transferable execution first and retain final acceptance.      |
-| `D:ERR`  | Execution-delegation settings are invalid; a valid Advisor can remain. | Inspect `/delegate status` and correct the role or thinking policy.         |
-| `A:OFF`  | No Advisor guidance is injected.                                       | Enable the mode or configure a model if consultation is wanted.             |
-| `A:ON`   | All configured advisors are valid.                                     | Consultation may send a brief or the conversation to that model, with cost. |
-| `A:PART` | Some advisors are valid; consult only those entries.                   | Correct or remove the other entries.                                        |
-| `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model.                          |
+| Label    | Meaning                                                                | What to do                                                                        |
+| -------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive.           | Choose an active intensity only when the roles are ready.                         |
+| `D:NORM` | A valid `normal` configuration is active.                              | Delegate only with a clear expected benefit.                                      |
+| `D:AGG`  | A valid `aggressive` configuration is active.                          | Delegate suitable substantial work unless coupling or overhead dominates.         |
+| `D:ORCH` | A valid `orchestrator` configuration is active.                        | Delegate all transferable execution first and retain final acceptance.            |
+| `D:ERR`  | Execution-delegation settings are invalid; a valid Advisor can remain. | Inspect `/delegate status` and correct the role or thinking policy.               |
+| `A:OFF`  | No Advisor guidance is injected.                                       | Enable the mode or configure a model if consultation is wanted.                   |
+| `A:ON`   | All configured advisors are valid.                                     | Consultation sends the question and the brief, never the conversation, with cost. |
+| `A:PART` | Some advisors are valid; consult only those entries.                   | Correct or remove the other entries.                                              |
+| `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model.                                |
 
 `/delegate status` keeps stable tokens and reports exact effective references and sources, for
 example:
@@ -177,7 +178,7 @@ reveals session content.
 
 ### Consult Advisor tool
 
-`consult_advisor({ question, brief? })` is always registered but unavailable outside tool launch mode
+`consult_advisor({ question, brief?, evidence? })` is always registered but unavailable outside tool launch mode
 or without an enabled valid advisor. Every consultation runs in fresh context: the task is the question
 and a short self-contained brief, and the conversation is never sent. A first consultation in a thread
 requires that brief; a later call sends only the new question and evidence. Labelled answers survive

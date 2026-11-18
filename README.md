@@ -304,8 +304,11 @@ schema 7 readers such as `0.16.0`; earlier versions keep their existing limitati
 /delegate advisor off|on|with-delegation      Set the Advisor mode
 /delegate advisor launch role|tool           Select the launch surface
 /delegate advisor 1|2|3 model PROVIDER/MODEL  Configure an entry, in order
+/delegate advisor 1|2|3 model inherit          Follow the global default for an entry
 /delegate advisor 1|2|3 model remove         Remove an entry; entry 1 removes all
+/delegate advisor threads status|recover|reset  Inspect, recover or reset consultation threads
 /delegate context off|observe|enforce|status  Set or inspect ContextShunt
+/delegate context allow TOKEN LINES BYTES   Approve the next matching blocked read once
 ```
 
 The editor is a bounded, keyboard-first panel: one row per setting, a compact effective-policy

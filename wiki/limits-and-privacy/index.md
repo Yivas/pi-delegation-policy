@@ -176,7 +176,7 @@ at every checkpoint. Weigh disagreements; agreement is not proof. The packaged n
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
   models and a thinking level it chooses per run. The extension observes matching attempts but does
   not launch them.
-- `tool`: the always-registered `consult_advisor({ question, brief? })` launches one child per valid
+- `tool`: the always-registered `consult_advisor({ question, brief?, evidence? })` launches one child per valid
   advisor in parallel through the public `pi-subagents` delegation API. It requires stable SemVer
   `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every launch must
   still pass the strict contract and terminal-binding checks. Otherwise it returns unavailable text.

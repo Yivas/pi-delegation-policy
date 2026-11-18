@@ -9,7 +9,7 @@ ContextShunt is not a sandbox or a worker bridge. It preserves permissions and b
 ## Advisor consultation
 
 Advisor is off by default. `advisorMode: on` enables consultation independently of delegation;
-`with-delegation` preserves coupling. One or two entries validate independently. Default launch mode
+`with-delegation` preserves coupling. One to three entries validate independently. Default launch mode
 `role` leaves launch to the main agent. The explicit `consult_advisor` tool launches only in `tool`
 mode with an enabled valid advisor, never from hooks. Model input cannot choose a provider, profile,
 path, tools or extensions. A consultation sends the question and the brief, never the session, and a
@@ -26,14 +26,15 @@ prove that the live executor session is the same. Terminal mismatch rejection ha
 context exposure. The executor/runtime is trusted host code; digests are not signatures or a sandbox.
 
 One pending call per tool: an advisor group launches one child per configured valid advisor, while
-the independent reader can launch its child (at most three). Abort, branch changes, shutdown and
+the independent reader can launch its child (at most four children: three Advisors plus the reader). Abort, branch changes, shutdown and
 detected settings changes cancel the tool group, not host-owned role subagents. A retry is never
 issued automatically: a failed consultation reports its closed reason and waits for the main agent.
 Timeouts do not cap external generation or cost. Partial
 results preserve the other advisor's answer; replies are untrusted advice.
 
-A legacy companion retains Advisor 1 and a separate schema-9 extension holds Advisor 2 and launch
-mode, bound by normalized-state equality, not a raw-text digest. Three atomic replacements are not a
+A legacy companion retains Advisor 1 and a separate envelope-1 extension holds Advisor 2, Advisor 3
+and launch mode, in envelope 2 when a provider opt-in exists, bound by normalized-state equality, not
+a raw-text digest. Three atomic replacements are not a
 transaction. Interruption can leave Advisor off or Advisor 1 only in role mode. Failed saves restore
 only their committed prefix, not detected foreign writes; races remain.
 

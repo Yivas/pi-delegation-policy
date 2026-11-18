@@ -67,7 +67,7 @@ diagnose it.
 Configure **Advisor 1** and optional **Advisor 2** and **Advisor 3** in `/delegate`, then select
 **Advisor mode** or run `/delegate advisor on`. Default **Advisor launch: role** asks the main agent
 to consult every valid entry in one background call. Optional **tool** mode uses explicit
-`consult_advisor({ question, brief? })` through the authorized external executor, never from hooks.
+`consult_advisor({ question, brief?, evidence? })` through the authorized external executor, never from hooks.
 Every consultation runs in fresh context and needs a self-contained brief; the extension never sends
 the conversation. A fork default configured in `pi-subagents` itself is outside what the extension
 can read, so check that setting if your Advisors must never see it. The tool's executor requires stable `pi-subagents` SemVer `>=0.76.1`, with no

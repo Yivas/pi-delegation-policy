@@ -48,9 +48,11 @@ it, changes nothing: the main agent chooses that role's level for each launch.
 
 ## Global defaults, session inheritance, and saving {#global-defaults-and-inheritance}
 
-Global defaults may contain intensity, preference, tri-state ordinary roles, the `uiDesign` key, ordered `advisors`, independent
-`advisorMode` and `advisorLaunch`, and thinking policies per execution role. If global intensity is
-absent, the built-in default is `off`; preference defaults to `standard`, and Advisor mode defaults to
+Global defaults are spread over their files. The schema-7 delegation file holds intensity,
+preference, tri-state ordinary roles, the `uiDesign` key and thinking policies per execution role;
+the Advisor companion and its extension hold Advisor 1, Advisors 2 and 3, `advisorMode` and
+`advisorLaunch` ([persistence](#persistence-and-compatibility)). If global intensity is absent, the
+built-in default is `off`; preference defaults to `standard`, and Advisor mode defaults to
 `with-delegation`.
 
 A branch inherits a global value until it records an override. **Use global default** removes the
