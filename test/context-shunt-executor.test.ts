@@ -6,7 +6,6 @@ import { join, resolve } from "node:path";
 import test, { after } from "node:test";
 import {
   CONTEXT_SHUNT_READER_AGENT_NAME,
-  CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
   ContextShuntExecutor,
   createDefaultReaderExecutorLoader,
   READER_PREFLIGHT_TIMEOUT_MS,
@@ -117,7 +116,7 @@ function contract(
     version: 3,
     protocol: {
       lifecycleArtifactVersion: 3,
-      packageVersion: CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
+      packageVersion: "0.76.1",
     },
     runId: requestId,
     digest,
@@ -274,6 +273,8 @@ test("default loader accepts only the approved delegation event protocol", async
   });
   const valid = await validLoader();
   assert.equal(typeof valid?.resolveSubagentLaunchContract, "function");
+  // That stub exports no fork wrapper, so the optional normalizer stays absent.
+  assert.equal(valid?.normalizeForkTask, undefined);
   assert.deepEqual(valid?.admittedRuntimeExtensionLists(), [[promptRuntimePath]]);
   assert.deepEqual(
     valid && [valid.requestEvent, valid.startedEvent, valid.responseEvent, valid.cancelEvent],
@@ -307,6 +308,40 @@ test("default loader accepts only the approved delegation event protocol", async
       };
     });
     assert.equal(await loader(), undefined, exportName);
+  }
+});
+
+test("default loader keeps the public fork task wrapper optional", async () => {
+  const loaderWithSharedTypes = (sharedTypes: () => Promise<unknown>) =>
+    createDefaultReaderExecutorLoader(async (specifier) => {
+      if (specifier === "pi-subagents/preflight") {
+        return { resolveSubagentLaunchContract: async () => undefined };
+      }
+      if (specifier === "pi-subagents/child-tool-plan") {
+        return { resolvePiLaunchToolPlan: () => ({ runtimeExtensions: [promptRuntimePath] }) };
+      }
+      if (specifier === "pi-subagents/shared-types") return sharedTypes();
+      return {
+        SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
+        SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
+        SUBAGENT_DELEGATION_RESPONSE_EVENT: "prompt-template:subagent:response",
+        SUBAGENT_DELEGATION_CANCEL_EVENT: "prompt-template:subagent:cancel",
+      };
+    });
+  const wrapForkTask = (task: string) => `fork preamble\n\nTask:\n${task}`;
+  const withWrapper = await loaderWithSharedTypes(async () => ({ wrapForkTask }))();
+  assert.equal(withWrapper?.normalizeForkTask?.("task"), wrapForkTask("task"));
+  assert.equal(typeof withWrapper?.resolveSubagentLaunchContract, "function");
+  for (const sharedTypes of [
+    async () => ({}),
+    async () => ({ wrapForkTask: "not-a-function" }),
+    async () => {
+      throw new Error("shared types unavailable");
+    },
+  ]) {
+    const loaded = await loaderWithSharedTypes(sharedTypes)();
+    assert.equal(typeof loaded?.resolveSubagentLaunchContract, "function");
+    assert.equal(loaded?.normalizeForkTask, undefined);
   }
 });
 
@@ -639,6 +674,7 @@ test("preflight and request payloads use their exact public parser fields and on
     "task",
     "thinking",
   ]);
+  assert.equal(preflightInput.context, "fresh");
   assert.equal(preflightInput.parentSessionId, "session-1");
   assert.equal(preflightInput.model, "example/reader");
   assert.equal(preflightInput.thinking, "low");
@@ -662,6 +698,7 @@ test("preflight and request payloads use their exact public parser fields and on
     "thinking",
     "timeoutMs",
   ]);
+  assert.equal(emitted.context, "fresh");
   assert.equal(emitted.timeoutMs, READER_TERMINAL_TIMEOUT_MS);
   for (const forbidden of [
     "output",
@@ -793,6 +830,7 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
     ],
     ["launch digest", (value) => (value.launchContractDigest = "short")],
     ["context", (value) => (value.context = "shared")],
+    ["fork context", (value) => (value.context = "fork")],
     ["model", (value) => (value.model = "example/reader")],
     // `pi-subagents` 0.68.0 dropped `modelCandidates` with same-launch model switching, so a
     // second model can only reach us as a different resolved `model`. This is the surviving
@@ -878,31 +916,36 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
   }
 });
 
-test("accepts the pi-subagents 0.76.1 preflight and binds its terminal result", async () => {
-  const bus = new FakeEventBus();
-  const executor = new ContextShuntExecutor({
-    loader: async () =>
-      modules(async (input) => {
-        const fields = preflightFields(input);
-        return pi076Preflight(fields.runId as string, fields.cwd as string);
-      }),
-  });
-  const pending = executor.execute(request, {
-    cwd: "/workspace",
-    sessionId: "session-1",
-    events: bus,
-  });
-  const emitted = await waitForRequest(bus);
-  assert.deepEqual(emitted.intercomBridge, { mode: "off" });
-  start(bus, emitted);
-  bus.emit(events.responseEvent, {
-    ...completed(emitted),
-    launchContractDigest: pi076LaunchDigest,
-  });
-  assert.equal((await pending).kind, "completed");
+test("accepts stable pi-subagents releases from 0.76.1 and binds the reader terminal result", async () => {
+  for (const packageVersion of ["0.76.1", "0.83.1", "0.84.0", "1.0.0+build.01"]) {
+    const bus = new FakeEventBus();
+    const executor = new ContextShuntExecutor({
+      loader: async () =>
+        modules(async (input) => {
+          const fields = preflightFields(input);
+          return pi076Preflight(fields.runId as string, fields.cwd as string, (value) => {
+            (value.protocol as Record<string, unknown>).packageVersion = packageVersion;
+          });
+        }),
+    });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
+    const emitted = await waitForRequest(bus);
+    assert.deepEqual(emitted.intercomBridge, { mode: "off" });
+    start(bus, emitted);
+    bus.emit(events.responseEvent, {
+      ...completed(emitted),
+      launchContractDigest: pi076LaunchDigest,
+    });
+    assert.equal((await pending).kind, "completed", packageVersion);
+    executor.close();
+  }
 });
 
-test("rejects pi-subagents 0.76.1 contract drift and widening before REQUEST", async () => {
+test("rejects pi-subagents contract drift and widening before REQUEST", async () => {
   const protocol = (value: Record<string, unknown>) => value.protocol as Record<string, unknown>;
   const tools = (value: Record<string, unknown>) => value.tools as Record<string, unknown>;
   const withRuntime = (runtimeExtensions: string[]) => (value: Record<string, unknown>) => {
@@ -910,7 +953,12 @@ test("rejects pi-subagents 0.76.1 contract drift and widening before REQUEST", a
     tools(value).extensionArgs = runtimeExtensions;
   };
   const mutations: Array<[string, (value: Record<string, unknown>) => void]> = [
-    ["newer package", (value) => (protocol(value).packageVersion = "0.77.0")],
+    ...["0.76.0", "0.84.0-rc.1", "not-semver", null, 84].map(
+      (packageVersion): [string, (value: Record<string, unknown>) => void] => [
+        `unsupported package ${JSON.stringify(packageVersion)}`,
+        (value) => (protocol(value).packageVersion = packageVersion),
+      ],
+    ),
     ["retired package", (value) => (protocol(value).packageVersion = "0.69.0")],
     ["relabeled runtime extension", withRuntime(["/evil/subagent-prompt-runtime.js"])],
     ["additional runtime extension", withRuntime([promptRuntimePath, "/evil/ext.js"])],

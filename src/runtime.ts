@@ -1,4 +1,13 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { locateAdvisorAnthropicProvider } from "./advisor-anthropic-provider.ts";
+import {
+  admissionFor,
+  getProviderAdmissionsPath,
+  type ProviderAdmissions,
+  readProviderAdmissions,
+  RESERVED_PROVIDER,
+} from "./provider-admissions.ts";
+import { locateInstalledPackage } from "./provider-package.ts";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import {
   getGlobalConfigPath,
@@ -8,6 +17,17 @@ import {
   type ConfigDiagnostic,
 } from "./config.ts";
 import {
+  getLaunchCorrectionPath,
+  readLaunchCorrectionMode,
+  type LaunchCorrectionMode,
+} from "./launch-correction-mode.ts";
+import {
+  getAdvisorRemindersPath,
+  readAdvisorReminderMode,
+  type AdvisorReminderMode,
+} from "./advisor-reminders.ts";
+import {
+  type AdvisorSetting,
   MODEL_ROLES,
   ROLE_LABELS,
   type EffectiveDelegateState,
@@ -30,6 +50,22 @@ export type RuntimeState = {
   modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
   advisorErrors?: string[];
+  /** Global provider-extension admissions; absent means none. */
+  admissions?: ProviderAdmissions;
+  /** How the launch check treats a call it can correct; absent means `correct`. */
+  launchCorrection?: LaunchCorrectionMode;
+  /** Whether the extension may add its short Advisor reminder; absent means `remind`. */
+  advisorReminder?: AdvisorReminderMode;
+  /** The reminder companion was unreadable or invalid, so the mode above is suspended. */
+  advisorReminderInvalid?: boolean;
+  /** Advisor notes that never remove an Advisor or change the footer. */
+  advisorWarnings?: string[];
+  advisorEntries?: Array<{
+    index: number;
+    setting: AdvisorSetting;
+    status: ModelStatus;
+    errors: string[];
+  }>;
 };
 
 export function isAdvisorEnabled(effective: EffectiveDelegateState): boolean {
@@ -37,14 +73,14 @@ export function isAdvisorEnabled(effective: EffectiveDelegateState): boolean {
     effective.advisorMode === "on" ||
     (effective.advisorMode === "with-delegation" &&
       effective.intensity !== "off" &&
-      !!effective.advisor)
+      effective.advisors.length > 0)
   );
 }
 
 export function advisorStatusLabel(state: RuntimeState): string {
   if (hasAdvisorError(state)) return "A:ERR";
   if (!isAdvisorEnabled(state.effective)) return "A:OFF";
-  return "A:ON";
+  return (state.advisorErrors?.length ?? 0) > 0 ? "A:PART" : "A:ON";
 }
 
 export function isRoleEnabled(setting: OrdinaryRoleSetting | undefined): setting is ModelRef {
@@ -177,13 +213,27 @@ function readerRoleDiagnostic(state: RuntimeState): string | undefined {
 }
 
 export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> {
-  const loaded = await readConfig(getGlobalConfigPath());
+  const path = getGlobalConfigPath();
+  const loaded = await readConfig(path);
+  const admissions = await readProviderAdmissions(getProviderAdmissionsPath(path));
+  const correction = await readLaunchCorrectionMode(getLaunchCorrectionPath(path));
+  const reminder = await readAdvisorReminderMode(getAdvisorRemindersPath(path));
   const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
     effective: resolveDelegateState(loaded.defaults, restored.session),
     global: loaded.defaults,
     session: restored.session,
-    diagnostics: [...loaded.diagnostics, ...restored.diagnostics],
+    diagnostics: [
+      ...loaded.diagnostics,
+      ...restored.diagnostics,
+      ...(admissions.diagnostic ? [admissions.diagnostic] : []),
+      ...(correction.diagnostic ? [correction.diagnostic] : []),
+      ...(reminder.diagnostic ? [reminder.diagnostic] : []),
+    ],
+    admissions: admissions.admissions,
+    launchCorrection: correction.mode,
+    advisorReminder: reminder.mode,
+    advisorReminderInvalid: reminder.invalid === true,
     modelStatuses: new Map(),
     runtimeErrors: [],
   };
@@ -191,11 +241,19 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
   return state;
 }
 
+/** Scopes that report a side setting and never invalidate the delegation axis. */
+const SIDE_SETTING_SCOPES: ReadonlySet<string> = new Set([
+  "advisor-extension",
+  "launch-correction",
+  "advisor-reminder",
+]);
+
 export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): void {
   state.effective = resolveDelegateState(state.global, state.session);
   state.modelStatuses.clear();
   state.runtimeErrors = [];
   state.advisorErrors = [];
+  state.advisorWarnings = [];
 
   const advisorEnabled = isAdvisorEnabled(state.effective);
   for (const diagnostic of state.diagnostics) {
@@ -203,17 +261,43 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
       // An unusable Advisor state is only an error while Advisor is on; otherwise the diagnostic
       // stays informative in `details=` and the footer keeps reporting A:OFF.
       if (advisorEnabled) state.advisorErrors.push(diagnostic.message);
-    } else if (state.effective.intensity !== "off") {
+    } else if (
+      !SIDE_SETTING_SCOPES.has(diagnostic.scope ?? "") &&
+      state.effective.intensity !== "off"
+    ) {
       // Every other diagnostic belongs to the delegation axis, so a valid enabled Advisor keeps
       // working while delegation is reported broken.
       state.runtimeErrors.push(diagnostic.message);
     }
   }
   if (state.effective.intensity === "off" && !advisorEnabled) return;
+  state.advisorEntries = [];
   if (advisorEnabled) {
-    if (state.effective.advisor)
-      validateEnabledRole(ctx, state, "advisor", state.effective.advisor);
-    else state.advisorErrors.push("Advisor model is not configured.");
+    if (!state.effective.advisors.length)
+      state.advisorErrors.push("Advisor model is not configured.");
+    for (const [index, setting] of state.effective.advisors.entries()) {
+      const status = validateModelReference(ctx, setting);
+      const errors: string[] = [];
+      const label = index === 0 ? "Advisor" : `Advisor ${index + 1}`;
+      if (status.kind !== "available") errors.push(`${label} model ${statusDetail(status)}.`);
+      if (setting.providerExtension) {
+        if (setting.provider !== "anthropic")
+          errors.push(
+            `${label} Anthropic provider extension requires provider anthropic; the configured model is unchanged.`,
+          );
+        else if (status.kind === "available") {
+          const location = locateAdvisorAnthropicProvider(ctx.cwd);
+          if (!location.ok) errors.push(location.message);
+        }
+      } else if (status.kind === "available") {
+        const check = providerExtensionCheck(ctx, label, setting, state.admissions ?? {});
+        if (check?.kind === "error") errors.push(check.message);
+        else if (check) state.advisorWarnings.push(check.message);
+      }
+      if (index === 0) state.modelStatuses.set("advisor", status);
+      state.advisorEntries.push({ index, setting, status, errors });
+      state.advisorErrors.push(...errors);
+    }
   }
   if (state.effective.intensity === "off") return;
   for (const role of MODEL_ROLES) {
@@ -236,8 +320,103 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
   if (readerDiagnostic) state.runtimeErrors.push(readerDiagnostic);
 }
 
+/**
+ * An admitted package must still pass the identity the child will check: otherwise the child would
+ * refuse every request, so the Advisor is left out. Without an admission, a provider that an
+ * extension replaced natively in this session runs as a different implementation in the child,
+ * which loads no extension. That is only a warning: the built-in provider may still answer with its
+ * own credentials. Auth sources are not used as proof: a native provider reports its own key as an
+ * environment source.
+ */
+function providerExtensionCheck(
+  ctx: ExtensionContext,
+  label: string,
+  setting: AdvisorSetting,
+  admissions: ProviderAdmissions,
+): { kind: "error" | "warning"; message: string } | undefined {
+  const pkg = admissionFor(admissions, setting.provider);
+  if (pkg)
+    return locateInstalledPackage(ctx.cwd, pkg, { configured: true }).ok
+      ? undefined
+      : {
+          kind: "error",
+          message: `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; re-select the provider extension in /delegate.`,
+        };
+  if (setting.provider === RESERVED_PROVIDER) return undefined;
+  const native = ctx.modelRegistry?.getRegisteredNativeProvider?.(setting.provider);
+  return native
+    ? {
+        kind: "warning",
+        message: `${label} provider ${setting.provider} is replaced by an extension in this session, and the Advisor child does not load it; if its consultations fail, select its provider extension in /delegate.`,
+      }
+    : undefined;
+}
+
 export function hasAdvisorError(state: RuntimeState): boolean {
-  return (state.advisorErrors?.length ?? 0) > 0;
+  return (state.advisorErrors?.length ?? 0) > 0 && validAdvisors(state).length === 0;
+}
+
+export function validAdvisors(
+  state: RuntimeState,
+): Array<{ index: number; setting: AdvisorSetting; model: Model<Api> }> {
+  if (!isAdvisorEnabled(state.effective) || state.diagnostics.some((d) => d.scope === "advisor"))
+    return [];
+  if (state.advisorEntries)
+    return state.advisorEntries.flatMap((entry) =>
+      entry.status.kind === "available" && !entry.errors.length
+        ? [{ index: entry.index, setting: entry.setting, model: entry.status.model }]
+        : [],
+    );
+  // Callers that construct a validated single-advisor state directly use the original map.
+  const status = state.modelStatuses.get("advisor");
+  return status?.kind === "available" && !state.advisorErrors?.length && state.effective.advisors[0]
+    ? [{ index: 0, setting: state.effective.advisors[0], model: status.model }]
+    : [];
+}
+
+/**
+ * Every configured Advisor in its original position. A slot that cannot run keeps its index and an
+ * own-text cause, so a group never silently shrinks to the valid advisors.
+ */
+export type AdvisorSlot = Readonly<{
+  index: number;
+  setting: AdvisorSetting;
+  model?: Model<Api>;
+  unavailable?: string;
+}>;
+
+export function advisorSlots(state: RuntimeState): AdvisorSlot[] {
+  if (!isAdvisorEnabled(state.effective)) return [];
+  // A stale or invalid Advisor companion disables the whole axis, exactly as `validAdvisors` does.
+  const stale = state.diagnostics.find((diagnostic) => diagnostic.scope === "advisor");
+  if (stale)
+    return state.effective.advisors.map((setting, index) => ({
+      index,
+      setting,
+      unavailable: stale.message,
+    }));
+  return state.effective.advisors.map((setting, index) => {
+    const entry = state.advisorEntries?.find((candidate) => candidate.index === index);
+    if (entry)
+      return entry.status.kind === "available" && !entry.errors.length
+        ? { index, setting, model: entry.status.model }
+        : {
+            index,
+            setting,
+            unavailable:
+              entry.errors[0] ??
+              `${index === 0 ? "Advisor" : `Advisor ${index + 1}`} model is unavailable.`,
+          };
+    // A directly constructed state (tests, single-advisor callers) uses the original map.
+    const status = state.modelStatuses.get("advisor");
+    return index === 0 && status?.kind === "available" && !state.advisorErrors?.length
+      ? { index, setting, model: status.model }
+      : {
+          index,
+          setting,
+          unavailable: state.advisorErrors?.[0] ?? "Advisor model is unavailable.",
+        };
+  });
 }
 
 export function hasRuntimeError(state: RuntimeState): boolean {

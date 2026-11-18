@@ -454,7 +454,9 @@ class RpcPi {
         "--tools",
         this.name === "policy-update"
           ? "read,context_shunt_recover,set_policy"
-          : "read,context_shunt_recover",
+          : this.name === "advisor-reminder"
+            ? "read,context_shunt_recover,subagent"
+            : "read,context_shunt_recover",
         ...extensions.flatMap((extension) => ["--extension", extension]),
         "--model",
         "loopback/synthetic",
@@ -722,6 +724,20 @@ export default function adversarialExtension(pi) {
       },
     });
   }
+  if (mode === "advisor-reminder") {
+    // An active launcher is what the reminder requires; the synthetic stub records any invocation
+    // so the case can prove the reminder never launched a consultation.
+    pi.registerTool({
+      name: "subagent",
+      label: "Synthetic subagent launcher",
+      description: "Active launcher fixture; the Advisor reminder must never invoke it.",
+      parameters: Type.Object({}),
+      async execute(toolCallId) {
+        await record({ kind: "subagent-execute", toolCallId });
+        return { content: [{ type: "text", text: "SYNTHETIC-SUBAGENT-RESULT" }], details: {} };
+      },
+    });
+  }
   if (mode === "override") {
     pi.registerTool({
       name: "read",
@@ -913,6 +929,12 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
       commands.data?.commands?.some((command) => command.name === "delegate"),
     );
     if (caseName === "off") await rpc.prompt("/delegate off");
+    // A valid Advisor and its launcher come from public commands: the schema-4 fixture has no
+    // Advisor fields, and the case must not invent a parser for them.
+    if (caseName === "advisor-reminder") {
+      await rpc.prompt("/delegate advisor 1 model loopback/synthetic");
+      await rpc.prompt("/delegate advisor on");
+    }
 
     if (["mutation", "abort", "concurrent"].includes(caseName)) {
       await admitOneTimeException(rpc, caseName);
@@ -988,6 +1010,38 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
       recordAssertion(
         "off: source read result reaches the model",
         payloads[1]?.includes("SYNTHETIC-READ-MARKER"),
+      );
+    } else if (caseName === "advisor-reminder") {
+      const requests = requestsByCase.get(caseName) ?? [];
+      const reminderCount = (payload) => (payload.match(/<advisor_reminder>/g) ?? []).length;
+      recordAssertion(
+        "advisor-reminder: first provider request carries no reminder",
+        !payloads[0].includes("<advisor_reminder>"),
+      );
+      recordAssertion(
+        "advisor-reminder: second provider request ends with exactly one reminder",
+        reminderCount(payloads[1] ?? "") === 1 &&
+          JSON.stringify(requests[1]?.messages?.at(-1)?.content ?? "").includes(
+            "<advisor_reminder>",
+          ),
+      );
+      recordAssertion(
+        "advisor-reminder: orientation read completed before the reminder",
+        toolResults.some((event) => event.toolName === "read" && !event.isError),
+      );
+      recordAssertion(
+        "advisor-reminder: case environment carries no subagent child marker",
+        !("PI_SUBAGENT_CHILD" in prepared.environment) &&
+          !("PI_SUBAGENT_RUNNER_PID" in prepared.environment),
+      );
+      recordAssertion(
+        "advisor-reminder: active launcher is never invoked",
+        !audit.some((entry) => entry.kind === "subagent-execute"),
+      );
+      const entries = await rpc.send({ type: "get_entries" });
+      recordAssertion(
+        "advisor-reminder: stored session entries contain no reminder",
+        entries.success === true && !JSON.stringify(entries.data).includes("<advisor_reminder>"),
       );
     } else if (caseName === "observe") {
       recordAssertion(
@@ -1215,6 +1269,7 @@ async function main() {
   try {
     for (const [caseName, mode] of [
       ["off", "off"],
+      ["advisor-reminder", "off"],
       ["policy-update", "off"],
       ["observe", "observe"],
       ["forced-prompt", "observe"],
