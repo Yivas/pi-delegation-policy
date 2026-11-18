@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.29.0 - 2026-11-18
+
+### Changed
+
+- Advisor consultations always run in fresh context. The extension no longer chooses between forking
+  the session and sending a brief, no longer tracks context usage to decide, and never adds your
+  conversation to the request: each consultation sends the question and the brief you write, and a
+  first consultation in a task requires that brief. The thresholds, the automatic return to fork and
+  the retry after a rejected fork are gone. A call that asks the host to fork the session for an
+  Advisor is refused, so the same value cannot be moved to the child, to `options` or to the top level
+  of the call to bypass it. A fork default configured in `pi-subagents` itself stays outside the
+  extension's reach: it is not read, and the host would still honour it, so review that setting if
+  the Advisor must never see a session.
+- Threads keep working as before: the first call in a task launches the packaged profiles with the
+  verified contract, and later calls continue each thread with `resume`. Threads recorded by an
+  earlier build keep working, and their stored context value is only descriptive.
+
+### Limits
+
+- The Advisor sees only what the brief says. A thin brief now weakens the advice more than before,
+  because nothing else reaches it.
+- Behaviour was not measured in a controlled before-and-after evaluation.
+
 ## 0.28.1 - 2026-11-18
 
 ### Fixed
