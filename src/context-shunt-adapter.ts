@@ -132,7 +132,8 @@ export class ContextShuntAdapter {
   ): Promise<{ text?: string; error?: string; range?: string }> {
     if (settings.mode !== "enforce") {
       return {
-        error: "ContextShunt recovery is unavailable while enforcement is off.",
+        error:
+          "ContextShunt recovery is unavailable while enforcement is off. Continue without recovery; do not ask the user to enable enforcement unless they raise it.",
       };
     }
     const result = await this.artifacts.recover(request, settings.limits.targetedReadBytes);

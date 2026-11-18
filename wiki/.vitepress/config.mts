@@ -25,6 +25,8 @@ export default defineConfig({
     nav: [
       { text: "Getting started", link: "/getting-started/" },
       { text: "Configuration", link: "/configuration/" },
+      { text: "Commands and status", link: "/commands-and-status/" },
+      { text: "Limits and privacy", link: "/limits-and-privacy/" },
       { text: "GitHub", link: "https://github.com/Yivas/pi-delegation-policy" },
     ],
     sidebar: [

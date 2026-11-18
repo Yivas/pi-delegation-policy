@@ -16,8 +16,14 @@ const PACKAGE_MANIFEST_SEARCH_DEPTH = 3;
 /** `pi-subagents` 0.76.1 `src/api/preflight.ts` and `src/shared/launch-contract.ts`. */
 const LAUNCH_CONTRACT_VERSION = 3;
 const DEFINITION_PROJECTION_VERSION = 2;
+const MIN_SUBAGENTS_VERSION = [0n, 76n, 1n] as const;
+// Stable SemVer only: build metadata does not affect precedence; prereleases are not admitted.
+const STABLE_SEMVER =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SHA256_LOWER_HEX = /^[0-9a-f]{64}$/;
 const DIAGNOSTIC_SEVERITIES = new Set(["warning", "host-required"]);
+/** A host-allocated execution id is an opaque token, never a path or a free-form string. */
+const EXECUTION_RUN_ID = /^[A-Za-z0-9._-]{1,128}$/;
 const DELEGATION_EVENTS = {
   request: "prompt-template:subagent:request",
   started: "prompt-template:subagent:started",
@@ -53,11 +59,50 @@ export type AgentLaunchHost = Readonly<{
 export type AgentLaunchRequest = Readonly<{
   model: AgentLaunchModel;
   availableModels: readonly [AgentLaunchAvailableModel];
+  context?: "fresh" | "fork";
 }>;
 
 export type AgentLaunchJsonSchema = Readonly<Record<string, unknown>>;
 type AgentLaunchContract = Readonly<Record<string, unknown>>;
 export type AgentLaunchPreflight = (input: unknown) => Promise<unknown>;
+
+/** Terminal metadata the strict path binds; only these names may reach a consumer. */
+export type AgentLaunchTerminalField = "agent" | "model" | "thinking" | "launchContractDigest";
+/** Statuses the admitted delegation protocol can report for a terminal response. */
+export type AgentLaunchTerminalStatus =
+  | "invalid_request"
+  | "unavailable_context"
+  | "duplicate_node"
+  | "turn_budget_exhausted"
+  | "tool_budget_exhausted"
+  | "structured_output_failed"
+  | "acceptance_failed"
+  | "failed";
+export type AgentLaunchFailureCode =
+  | "launch-closed"
+  | "fork-not-allowed"
+  | "host-session-missing"
+  | "modules-unavailable"
+  | "fork-task-normalizer-unavailable"
+  | "preflight-unavailable"
+  | "preflight-timeout"
+  | "contract-rejected"
+  | "request-start-timeout"
+  | "request-emit-failed"
+  | "terminal-metadata-mismatch"
+  | "terminal-result-invalid"
+  | "journal-unavailable"
+  | "host-terminal-status"
+  | "host-status-unrecognized";
+/**
+ * Facts a consumer may render for a failed launch. Closed literals only: no host payload text,
+ * prompt, URL, path or provider message ever enters this type.
+ */
+export type AgentLaunchFailure = Readonly<{
+  code: AgentLaunchFailureCode;
+  field?: AgentLaunchTerminalField;
+  status?: AgentLaunchTerminalStatus;
+}>;
 
 export type AgentLaunchModules = Readonly<{
   resolveSubagentLaunchContract: AgentLaunchPreflight;
@@ -71,15 +116,26 @@ export type AgentLaunchModules = Readonly<{
   startedEvent: string;
   responseEvent: string;
   cancelEvent: string;
+  /**
+   * The public `wrapForkTask` export from `pi-subagents/shared-types`. The executor wraps a fork
+   * task before hashing the launch binding, so the preflight must hash the same wrapped task or
+   * its digest can never match the terminal one. Absent on builds without that export.
+   */
+  normalizeForkTask?: (task: string) => string;
 }>;
 
 export type AgentLaunchResult<Value> =
-  | { kind: "completed"; value: Value }
-  | { kind: "unavailable" }
+  /**
+   * `runId` is the host-allocated id of the execution, kept apart from the preflight binding id in
+   * the request. It is only a handle for a later continuation; the answer never depends on it.
+   */
+  | { kind: "completed"; value: Value; runId?: string }
+  | { kind: "unavailable"; reason?: AgentLaunchFailure }
+  | { kind: "unavailable-context"; reason?: AgentLaunchFailure }
   | { kind: "busy" }
   | { kind: "cancelled" }
   | { kind: "timed-out" }
-  | { kind: "failed" };
+  | { kind: "failed"; reason?: AgentLaunchFailure };
 
 export type AgentLaunchResultExpectation<Request, Value> =
   | Readonly<{
@@ -101,15 +157,30 @@ export type AgentLaunchResultExpectation<Request, Value> =
 export type AgentLaunchDefinition<Request extends AgentLaunchRequest, Value> = Readonly<{
   agentName: string;
   agentPath: string;
-  protocolVersion: string;
+  /**
+   * Whether this definition may ask the host to branch the session. No current consumer sets it: the
+   * Advisor runs in fresh context and the reader requests are fresh-only, so fork is requested nowhere.
+   */
+  allowFork?: boolean;
   /**
    * Builtin tools the child must expose. A profile that declares no tools and no
    * extensions exposes exactly these, so the contract must report the same list
    * as its effective allowlist, its required child tools, and its internal tools.
    */
   internalTools: readonly string[];
+  /** Exact configured entries admitted only by this profile, never by the shared reader. */
+  configuredExtensions?: readonly string[];
   buildTask: (request: Request) => string;
   result: AgentLaunchResultExpectation<Request, Value>;
+}>;
+
+export type AgentLaunchExecuteOptions = Readonly<{
+  /**
+   * Runs once the contract is bound and immediately before the request is emitted. Returning
+   * `false` settles the launch locally without sending anything. Only the Advisor path uses it, to
+   * confirm that its journal already holds the pending turn.
+   */
+  beforeRequest?: () => Promise<boolean>;
 }>;
 
 export type AgentLaunchDependencies = {
@@ -126,6 +197,7 @@ type ActiveRun<Value> = {
   requestId: string;
   nodeId: string;
   modules: AgentLaunchModules | undefined;
+  beforeRequest: (() => Promise<boolean>) | undefined;
   requestSent: boolean;
   started: boolean;
   settled: boolean;
@@ -148,6 +220,19 @@ function exactStrings(value: unknown, expected: readonly string[]): boolean {
     value.length === expected.length &&
     value.every((item, index) => item === expected[index])
   );
+}
+
+function isSupportedSubagentsVersion(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match = STABLE_SEMVER.exec(value);
+  if (!match || match[0] !== value) return false;
+  for (const [index, minimum] of MIN_SUBAGENTS_VERSION.entries()) {
+    const digits = match[index + 1];
+    if (digits === undefined) return false;
+    const component = BigInt(digits);
+    if (component !== minimum) return component > minimum;
+  }
+  return true;
 }
 
 function isLowerHexDigest(value: unknown): value is string {
@@ -188,8 +273,9 @@ export function createDefaultAgentLaunchLoader(
       loadModule("pi-subagents/preflight"),
       loadModule("pi-subagents/delegation"),
       loadModule("pi-subagents/child-tool-plan"),
+      loadForkTaskNormalizer(loadModule),
     ])
-      .then(([preflight, delegation, childToolPlan]) => {
+      .then(([preflight, delegation, childToolPlan, normalizeForkTask]) => {
         if (!isRecord(preflight) || !isRecord(delegation) || !isRecord(childToolPlan)) {
           return undefined;
         }
@@ -235,9 +321,31 @@ export function createDefaultAgentLaunchLoader(
           startedEvent,
           responseEvent,
           cancelEvent,
+          ...(normalizeForkTask ? { normalizeForkTask } : {}),
         };
       })
       .catch(() => undefined);
+}
+
+/**
+ * The public `wrapForkTask` export, loaded on its own: `pi-subagents` wraps a fork task before it
+ * hashes the launch binding, so the preflight needs the same wrapper to bind the same digest. A
+ * build without the export only loses fork launches, so its absence never disables the modules the
+ * fresh path uses.
+ */
+function loadForkTaskNormalizer(
+  loadModule: DynamicModuleLoader,
+): Promise<((task: string) => string) | undefined> {
+  return loadModule("pi-subagents/shared-types")
+    .then((module) => {
+      if (!isRecord(module) || typeof module.wrapForkTask !== "function") return undefined;
+      const wrapForkTask = module.wrapForkTask;
+      return (task: string): string => {
+        const wrapped: unknown = wrapForkTask(task);
+        return typeof wrapped === "string" ? wrapped : "";
+      };
+    })
+    .catch(() => undefined);
 }
 
 /**
@@ -309,13 +417,14 @@ function createPreflightInput<Request extends AgentLaunchRequest, Value>(
   host: AgentLaunchHost,
   requestId: string,
   definition: AgentLaunchDefinition<Request, Value>,
+  task: string,
 ): Record<string, unknown> {
   return {
     agent: definition.agentName,
     cwd: host.cwd,
     parentSessionId: host.sessionId,
-    task: definition.buildTask(request),
-    context: "fresh",
+    task,
+    context: launchContext(request, definition),
     model: `${request.model.provider}/${request.model.id}`,
     thinking: request.model.thinking,
     availableModels: request.availableModels,
@@ -344,7 +453,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       contract.version !== LAUNCH_CONTRACT_VERSION ||
       !isRecord(contract.protocol) ||
       contract.protocol.lifecycleArtifactVersion !== 3 ||
-      contract.protocol.packageVersion !== definition.protocolVersion ||
+      !isSupportedSubagentsVersion(contract.protocol.packageVersion) ||
       contract.runId !== active.requestId ||
       !isLowerHexDigest(contract.digest)
     )
@@ -366,7 +475,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
     const resolvedModel = modelName(request.model);
     if (
       !isLowerHexDigest(contract.launchContractDigest) ||
-      contract.context !== "fresh" ||
+      contract.context !== launchContext(request, definition) ||
       // The contract used to carry `modelCandidates`, pinned here as exactly `[resolvedModel]`.
       // `pi-subagents` 0.68.0 removed it along with `fallbackModels` and every same-launch model
       // switch ("each launch uses one resolved model instead of switching models automatically"),
@@ -405,7 +514,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       !exactStrings(contract.tools.internalTools, definition.internalTools) ||
       !exactStrings(contract.tools.effectiveMcpTools, []) ||
       !exactStrings(contract.tools.toolExtensionPaths, []) ||
-      !exactStrings(contract.tools.configuredExtensions, []) ||
+      !exactStrings(contract.tools.configuredExtensions, definition.configuredExtensions ?? []) ||
       !exactStrings(contract.tools.requiredExtensionIds, []) ||
       contract.tools.disableAmbientExtensions !== true ||
       contract.tools.fanoutAuthorized !== false ||
@@ -424,7 +533,11 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
     const admitted = modules
       .admittedRuntimeExtensionLists()
       .find((list) => exactStrings(tools.runtimeExtensions, list));
-    if (!admitted || !exactStrings(tools.extensionArgs, admitted)) return false;
+    if (
+      !admitted ||
+      !exactStrings(tools.extensionArgs, [...admitted, ...(definition.configuredExtensions ?? [])])
+    )
+      return false;
 
     if (
       !isRecord(contract.roots) ||
@@ -452,10 +565,35 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
   }
 }
 
+function launchContext<Request extends AgentLaunchRequest, Value>(
+  request: Request,
+  definition: AgentLaunchDefinition<Request, Value>,
+): "fresh" | "fork" {
+  return definition.allowFork ? (request.context ?? "fresh") : "fresh";
+}
+
+/**
+ * The wrapped task the executor hashes for a fork, or `undefined` when no usable public wrapper is
+ * loaded. The request keeps the raw task: the host wraps it again on its own side.
+ */
+function preflightForkTask(
+  task: string,
+  normalizeForkTask: ((task: string) => string) | undefined,
+): string | undefined {
+  if (!normalizeForkTask) return undefined;
+  try {
+    const normalized = normalizeForkTask(task);
+    return typeof normalized === "string" && normalized.length > 0 ? normalized : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function requestPayload<Request extends AgentLaunchRequest, Value>(
   active: ActiveRun<Value>,
   request: Request,
   definition: AgentLaunchDefinition<Request, Value>,
+  task: string,
 ): Record<string, unknown> {
   return {
     requestId: active.requestId,
@@ -463,8 +601,8 @@ function requestPayload<Request extends AgentLaunchRequest, Value>(
     nodeId: active.nodeId,
     agent: definition.agentName,
     cwd: active.host.cwd,
-    task: definition.buildTask(request),
-    context: "fresh",
+    task,
+    context: launchContext(request, definition),
     model: `${request.model.provider}/${request.model.id}`,
     thinking: request.model.thinking,
     timeoutMs: LAUNCH_TERMINAL_TIMEOUT_MS,
@@ -517,12 +655,17 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
     request: Request,
     host: AgentLaunchHost,
     signal?: AbortSignal,
+    options: AgentLaunchExecuteOptions = {},
   ): Promise<AgentLaunchResult<Value>> {
-    if (this.closed) return Promise.resolve({ kind: "unavailable" });
+    if (this.closed || (request.context === "fork" && !this.definition.allowFork))
+      return Promise.resolve({
+        kind: "unavailable",
+        reason: { code: this.closed ? "launch-closed" : "fork-not-allowed" },
+      });
     if (this.active) return Promise.resolve({ kind: "busy" });
     // Without a host session the preflight could not bind required extensions; launch nothing.
     if (typeof host.sessionId !== "string" || !host.sessionId.trim()) {
-      return Promise.resolve({ kind: "unavailable" });
+      return Promise.resolve({ kind: "unavailable", reason: { code: "host-session-missing" } });
     }
     return new Promise((resolveResult) => {
       const active: ActiveRun<Value> = {
@@ -532,6 +675,7 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
         requestId: this.createId(),
         nodeId: this.createId(),
         modules: undefined,
+        beforeRequest: options.beforeRequest,
         requestSent: false,
         started: false,
         settled: false,
@@ -551,7 +695,7 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
       };
       this.active = active;
       active.preflightTimer = this.setTimer(
-        () => active.settle({ kind: "unavailable" }),
+        () => active.settle({ kind: "unavailable", reason: { code: "preflight-timeout" } }),
         LAUNCH_PREFLIGHT_TIMEOUT_MS,
       );
       if (signal) {
@@ -604,22 +748,48 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
     }
     if (!this.isLive(active)) return;
     if (!modules) {
-      active.settle({ kind: "unavailable" });
+      active.settle({ kind: "unavailable", reason: { code: "modules-unavailable" } });
       return;
     }
     active.modules = modules;
 
+    const task = this.definition.buildTask(request);
+    let preflightTask = task;
+    if (launchContext(request, this.definition) === "fork") {
+      const normalized = preflightForkTask(task, modules.normalizeForkTask);
+      if (normalized === undefined) {
+        active.settle({
+          kind: "unavailable",
+          reason: { code: "fork-task-normalizer-unavailable" },
+        });
+        return;
+      }
+      preflightTask = normalized;
+    }
+
     let resolved: unknown;
     try {
       resolved = await modules.resolveSubagentLaunchContract(
-        createPreflightInput(request, active.host, active.requestId, this.definition),
+        createPreflightInput(
+          request,
+          active.host,
+          active.requestId,
+          this.definition,
+          preflightTask,
+        ),
       );
     } catch {
       resolved = undefined;
     }
     if (!this.isLive(active)) return;
+    // A thrown or empty preflight never described a contract; only a returned nonempty value can be
+    // rejected as a contract that failed the strict checks below.
+    if (resolved === undefined || resolved === null) {
+      active.settle({ kind: "unavailable", reason: { code: "preflight-unavailable" } });
+      return;
+    }
     if (!validateLaunchContract(resolved, request, active, this.definition, modules)) {
-      active.settle({ kind: "unavailable" });
+      active.settle({ kind: "unavailable", reason: { code: "contract-rejected" } });
       return;
     }
 
@@ -634,21 +804,36 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
         ),
       );
       if (!this.isLive(active)) return;
+      // The consumer's last chance to refuse before anything is sent: a false answer means nothing
+      // was emitted, so the launch settles locally and no child can exist.
+      if (active.beforeRequest) {
+        let confirmed = false;
+        try {
+          confirmed = await active.beforeRequest();
+        } catch {
+          confirmed = false;
+        }
+        if (!this.isLive(active)) return;
+        if (!confirmed) {
+          active.settle({ kind: "unavailable", reason: { code: "journal-unavailable" } });
+          return;
+        }
+      }
 
       active.requestSent = true;
       this.clearPreflightTimer(active);
       active.startTimer = this.setTimer(
-        () => this.cancelActive(active, "unavailable"),
+        () => this.cancelActive(active, "unavailable", { code: "request-start-timeout" }),
         LAUNCH_PREFLIGHT_TIMEOUT_MS,
       );
       active.host.events.emit(
         modules.requestEvent,
-        requestPayload(active, request, this.definition),
+        requestPayload(active, request, this.definition, task),
       );
       if (!this.isLive(active)) return;
     } catch {
       if (!active.settled) {
-        active.settle({ kind: "unavailable" });
+        active.settle({ kind: "unavailable", reason: { code: "request-emit-failed" } });
         this.emitCancel(active);
       }
     }
@@ -682,21 +867,23 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
     );
   }
 
-  private terminalMetadataMatches(
+  private terminalMetadataMismatch(
     payload: Record<string, unknown>,
     contract: AgentLaunchContract,
     request: Request,
     requireAll: boolean,
-  ): boolean {
-    const expected = {
-      agent: this.definition.agentName,
-      model: contract.model,
-      thinking: request.model.thinking,
-      launchContractDigest: contract.launchContractDigest,
-    };
-    return Object.entries(expected).every(([key, value]) =>
-      requireAll ? payload[key] === value : !(key in payload) || payload[key] === value,
-    );
+  ): AgentLaunchTerminalField | undefined {
+    const expected: ReadonlyArray<readonly [AgentLaunchTerminalField, unknown]> = [
+      ["agent", this.definition.agentName],
+      ["model", contract.model],
+      ["thinking", request.model.thinking],
+      ["launchContractDigest", contract.launchContractDigest],
+    ];
+    for (const [field, value] of expected) {
+      if (!requireAll && !(field in payload)) continue;
+      if (payload[field] !== value) return field;
+    }
+    return undefined;
   }
 
   private onResponse(
@@ -714,29 +901,50 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
 
     if (!active.started) {
       if (!earlyUnavailable) return;
+      const mismatch = this.terminalMetadataMismatch(payload, contract, request, false);
       active.settle(
-        this.terminalMetadataMatches(payload, contract, request, false)
-          ? { kind: "unavailable" }
-          : { kind: "failed" },
+        mismatch === undefined
+          ? {
+              kind:
+                status === "unavailable_context" && this.definition.allowFork
+                  ? "unavailable-context"
+                  : "unavailable",
+              reason: { code: "host-terminal-status", status },
+            }
+          : { kind: "failed", reason: { code: "terminal-metadata-mismatch", field: mismatch } },
       );
       return;
     }
 
     if (status === "completed") {
-      if (!this.terminalMetadataMatches(payload, contract, request, true)) {
-        active.settle({ kind: "failed" });
+      const mismatch = this.terminalMetadataMismatch(payload, contract, request, true);
+      if (mismatch !== undefined) {
+        active.settle({
+          kind: "failed",
+          reason: { code: "terminal-metadata-mismatch", field: mismatch },
+        });
         return;
       }
       const completed = completedValue(payload.result, this.definition.result);
+      const runId =
+        typeof payload.runId === "string" && EXECUTION_RUN_ID.test(payload.runId)
+          ? payload.runId
+          : undefined;
       active.settle(
-        completed.ok ? { kind: "completed", value: completed.value } : { kind: "failed" },
+        completed.ok
+          ? { kind: "completed", value: completed.value, ...(runId ? { runId } : {}) }
+          : { kind: "failed", reason: { code: "terminal-result-invalid" } },
       );
       return;
     }
 
     if (typeof status !== "string") return;
-    if (!this.terminalMetadataMatches(payload, contract, request, false)) {
-      active.settle({ kind: "failed" });
+    const mismatch = this.terminalMetadataMismatch(payload, contract, request, false);
+    if (mismatch !== undefined) {
+      active.settle({
+        kind: "failed",
+        reason: { code: "terminal-metadata-mismatch", field: mismatch },
+      });
       return;
     }
     if (status === "cancelled" || status === "interrupted") {
@@ -752,7 +960,13 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
       status === "invalid_request" ||
       status === "duplicate_node"
     ) {
-      active.settle({ kind: "unavailable" });
+      active.settle({
+        kind:
+          status === "unavailable_context" && this.definition.allowFork
+            ? "unavailable-context"
+            : "unavailable",
+        reason: { code: "host-terminal-status", status },
+      });
       return;
     }
     if (
@@ -762,8 +976,10 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
       status === "acceptance_failed" ||
       status === "failed"
     ) {
-      active.settle({ kind: "failed" });
+      active.settle({ kind: "failed", reason: { code: "host-terminal-status", status } });
+      return;
     }
+    active.settle({ kind: "failed", reason: { code: "host-status-unrecognized" } });
   }
 
   private emitCancel(active: ActiveRun<Value>): void {
@@ -783,9 +999,10 @@ export class AgentLaunch<Request extends AgentLaunchRequest, Value> {
   private cancelActive(
     active: ActiveRun<Value>,
     result: "cancelled" | "unavailable" | "timed-out",
+    reason?: AgentLaunchFailure,
   ): void {
     if (active.settled) return;
-    active.settle({ kind: result });
+    active.settle(reason ? { kind: result, reason } : { kind: result });
     this.emitCancel(active);
   }
 

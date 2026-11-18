@@ -11,10 +11,31 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { isThinkingLevelName, resolveDelegateState } from "./config.ts";
+import { configuredAdvisors, isThinkingLevelName, resolveDelegateState } from "./config.ts";
+import {
+  admissionFor,
+  type ProviderAdmissions,
+  RESERVED_PROVIDER,
+  sameAdmissions,
+} from "./provider-admissions.ts";
+import type { ProviderPackage } from "./provider-package.ts";
+import {
+  DEFAULT_LAUNCH_CORRECTION_MODE,
+  LAUNCH_CORRECTION_MODES,
+  type LaunchCorrectionMode,
+  type LaunchCorrectionSaveResult,
+} from "./launch-correction-mode.ts";
+import {
+  ADVISOR_REMINDER_MODES,
+  type AdvisorReminderMode,
+  type AdvisorReminderSaveResult,
+  DEFAULT_ADVISOR_REMINDER_MODE,
+} from "./advisor-reminders.ts";
 import { isAdvisorEnabled } from "./runtime.ts";
 import { buildPolicyPreview } from "./prompt.ts";
 import {
+  ADVISOR_LAUNCH_MODES,
+  type AdvisorLaunch,
   ADVISOR_MODES,
   type AdvisorMode,
   CONTEXT_SHUNT_MODES,
@@ -54,9 +75,13 @@ const FIELD_IDS = [
   "thinkingMedium",
   "thinkingLarge",
   "thinkingUiDesign",
-  "advisor",
-  "thinkingAdvisor",
   "advisorMode",
+  "advisorLaunch",
+  "advisor",
+  "advisor2",
+  "advisor3",
+  "advisorReminder",
+  "launchCorrection",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
 const THINKING_FIELDS = [
@@ -64,23 +89,33 @@ const THINKING_FIELDS = [
   "thinkingMedium",
   "thinkingLarge",
   "thinkingUiDesign",
-  "thinkingAdvisor",
 ] as const;
 type ThinkingField = (typeof THINKING_FIELDS)[number];
-const THINKING_FIELD_KEYS: Record<ThinkingField, ModelConfigKey> = {
+/** Roles with a configurable thinking policy; Advisor thinking is chosen per launch. */
+type ThinkingKey = ModelRole | "uiDesign";
+/** Advisor rows follow list order; each row also carries that entry's provider profile. */
+const ADVISOR_FIELDS = ["advisor", "advisor2", "advisor3"] as const;
+type AdvisorField = (typeof ADVISOR_FIELDS)[number];
+type ModelField = ThinkingKey | AdvisorField;
+const THINKING_FIELD_KEYS: Record<ThinkingField, ThinkingKey> = {
   thinkingSmall: "small",
   thinkingMedium: "medium",
   thinkingLarge: "large",
   thinkingUiDesign: "uiDesign",
-  thinkingAdvisor: "advisor",
 };
+function isAdvisorField(field: string): field is AdvisorField {
+  return (ADVISOR_FIELDS as readonly string[]).includes(field);
+}
+function advisorIndex(field: AdvisorField): number {
+  return ADVISOR_FIELDS.indexOf(field);
+}
 function isThinkingField(field: string): field is ThinkingField {
   return (THINKING_FIELDS as readonly string[]).includes(field);
 }
 function isDelegateField(item: string): item is DelegateField {
   return (FIELD_IDS as readonly string[]).includes(item);
 }
-type EnumField = "intensity" | "preference" | "contextShunt" | "advisorMode";
+type EnumField = "intensity" | "preference" | "contextShunt" | "advisorMode" | "advisorLaunch";
 type PanelAction = "apply" | "save-defaults" | "reset" | "cancel";
 type SettingsItem = DelegateField | PanelAction;
 const ADVANCED_FIELDS = [
@@ -116,7 +151,11 @@ function isLimitField(field: AdvancedField | EditableAdvancedField): field is Li
 type PanelMode =
   | { kind: "settings" }
   | { kind: "enum"; field: EnumField; selected: number }
-  | { kind: "model"; field: ModelConfigKey; selected: number; query: string }
+  | { kind: "correction"; selected: number }
+  | { kind: "reminder"; selected: number }
+  | { kind: "provider"; index: number; selected: number }
+  | { kind: "extension"; index: number; provider: string; selected: number }
+  | { kind: "model"; field: ModelField; selected: number; query: string }
   | { kind: "advanced"; selected: number }
   | { kind: "advanced-reader-enabled"; selected: number }
   | { kind: "advanced-reader-role"; selected: number }
@@ -129,6 +168,7 @@ type PanelMode =
       selected: number;
       minimum?: ThinkingLevelName;
     }
+  | { kind: "continuity"; selected: number }
   | { kind: "discard-confirm"; selected: number };
 
 type ThinkingAction = "inherit" | "unset" | "fixed" | "range";
@@ -168,15 +208,52 @@ export interface DelegatePanelOptions {
   onApply: (draft: SessionDelegateState) => Promise<boolean>;
   onSaveDefaults: (draft: SessionDelegateState) => Promise<SaveDefaultsOutcome>;
   onDone: (result: DelegatePanelResult) => void;
+  /** Global provider-extension admissions; Apply and Save both store a changed set. */
+  admissions?: ProviderAdmissions;
+  /** Global launch correction mode; absent means `correct`. */
+  launchCorrection?: LaunchCorrectionMode;
+  /** Stores the global mode; Apply and Save both write a changed value before their own step. */
+  onSaveLaunchCorrection?: (mode: LaunchCorrectionMode) => Promise<LaunchCorrectionSaveResult>;
+  /** Global Advisor reminder mode; absent means `remind`. */
+  advisorReminder?: AdvisorReminderMode;
+  /** The companion is unreadable or invalid, so the shown mode is a suspension, not a choice. */
+  advisorReminderInvalid?: boolean;
+  /** Stores the global reminder mode; Apply and Save both write a changed value first. */
+  onSaveAdvisorReminder?: (mode: AdvisorReminderMode) => Promise<AdvisorReminderSaveResult>;
+  /** Installed user packages that pass the identity check, offered as provider extensions. */
+  extensionCandidates?: readonly ProviderPackage[];
+  /** Providers that an extension registered in this session; only these offer the step. */
+  extensionProviders?: readonly string[];
+  onSaveAdmissions?: (admissions: ProviderAdmissions) => Promise<boolean>;
+  /** One bounded line describing this session's Advisor threads, read without a lock. */
+  continuityStatus?: () => Promise<string>;
+  /** Reconcile unresolved turns with public terminal proof; returns a message for the panel. */
+  onRecoverContinuity?: () => Promise<{ message: string; type: "info" | "error" }>;
+  /** Abandon threads, refused while any turn may still be live. */
+  onResetContinuity?: () => Promise<{ message: string; type: "info" | "error" }>;
 }
 
-const SETTINGS_ITEMS: readonly SettingsItem[] = [
-  ...FIELD_IDS,
-  "apply",
-  "save-defaults",
-  "reset",
-  "cancel",
-];
+const PANEL_ACTIONS: readonly PanelAction[] = ["apply", "save-defaults", "reset", "cancel"];
+const CONTINUITY_ACTIONS = ["status", "recover", "reset"] as const;
+type ContinuityAction = (typeof CONTINUITY_ACTIONS)[number];
+const CONTINUITY_LABELS: Record<ContinuityAction, string> = {
+  status: "Show Advisor continuity status",
+  recover: "Reconcile a possibly live turn with the host",
+  reset: "Reset Advisor threads (only when nothing may be live)",
+};
+const CONTINUITY_DESCRIPTION =
+  "Advisor continuity is private to this extension: the journal, the lock and the per-turn answer files are never edited by hand. Recover asks the host for terminal proof of each unresolved turn; reset only abandons threads when nothing may still be running.";
+const PROVIDER_CHOICES = [
+  "Standard profile (no provider extension)",
+  "Anthropic auth 3.4.3/3.4.4/3.6.0 (explicit opt-in)",
+] as const;
+const PROVIDER_DESCRIPTION =
+  "Standard uses the ordinary Advisor profile. Anthropic auth uses a separate profile that loads managed-user pi-anthropic-auth 3.4.3, 3.4.4 or 3.6.0 with its normal configuration, startup hook and account diagnostic command; no model tools are added. The model is unchanged; a missing or incompatible package disables only this Advisor.";
+
+const EXTENSION_STANDARD = "Standard profile (no provider extension)";
+function extensionDescription(provider: string): string {
+  return `An Advisor child loads no extension, so a ${provider} model that an extension supplies only works once you admit that extension here. The admitted package runs as trusted code in every ${provider} Advisor, in every session; only its installed identity is checked. The list holds every pinned user package, not only providers: one that does not register ${provider} still runs before the Advisor refuses it. Apply and Save both store this choice globally; Standard removes it.`;
+}
 
 const FIELD_LABELS: Record<DelegateField, string> = {
   intensity: "Intensity",
@@ -191,9 +268,13 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   thinkingMedium: "Medium thinking",
   thinkingLarge: "Large thinking",
   thinkingUiDesign: "Visual Design thinking",
-  advisor: "Advisor model",
+  advisor: "Advisor 1",
+  advisor2: "Advisor 2",
+  advisor3: "Advisor 3",
+  advisorLaunch: "Advisor launch",
   advisorMode: "Advisor mode",
-  thinkingAdvisor: "Advisor thinking",
+  advisorReminder: "Advisor reminder",
+  launchCorrection: "Launch correction",
 };
 
 /** One alignment column for every field value, wide enough for the longest label. */
@@ -222,10 +303,55 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
     "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
   advisorMode:
     "On works independently of delegation; off disables advice; with-delegation preserves legacy behavior. Consultations may incur cost.",
-  advisor: "Optional advice model consulted on demand; it executes no work.",
-  thinkingAdvisor:
-    "Unset, one fixed level, or an inclusive range; levels come from the role's model.",
+  advisor:
+    "First advice model; executes no work. Anthropic models also ask for the profile. Thinking is automatic. Removing it removes every advisor.",
+  advisor2:
+    "Optional model consulted alongside Advisor 1. Disable removes it; any later advisor moves up.",
+  advisor3:
+    "Optional model consulted alongside the others; each advisor adds a consultation at every checkpoint.",
+  advisorLaunch:
+    "Role asks the main agent to launch; tool uses explicit consult_advisor. Neither launches from hooks.",
+  advisorReminder:
+    "Global for every session; Apply or Save stores it. On adds one short reminder per task while an Advisor can be consulted; it launches nothing.",
+  launchCorrection:
+    "Global for every session; Apply or Save stores it. Block refuses the launches the check would correct, to measure the original behavior.",
 };
+
+const CORRECTION_DESCRIPTION =
+  "Global for every session, not a session setting: Apply or Save stores it in delegation-policy.launch-correction.json. Correct is the default; block is a measurement mode that refuses the launches the check would correct, keeping the pre-correction behavior.";
+const CORRECTION_CHOICES: Record<LaunchCorrectionMode, string> = {
+  correct: "correct — fix the launch and tell the agent what was applied",
+  block: "block — refuse those launches and measure the original behavior",
+};
+const REMINDER_DESCRIPTION =
+  "Global for every session, not a session setting: Apply or Save stores it in delegation-policy.advisor-reminders.json. On adds at most one short reminder per operative task, only while a valid Advisor and its launcher are active. It launches no consultation, forces none, and adds no authority; off adds nothing.";
+const REMINDER_CHOICES: Record<AdvisorReminderMode, string> = {
+  remind: "remind — one short reminder per task when a consultation is possible",
+  off: "off — never add the reminder",
+};
+
+/**
+ * The global steps this editor stored, named for a later message. A step is listed only after its
+ * write was confirmed, so the clause describes what is on disk and never promises a rollback.
+ */
+function savedClause(saved: readonly string[]): string {
+  if (!saved.length) return "";
+  const last = saved[saved.length - 1] ?? "";
+  const list = saved.length === 1 ? last : `${saved.slice(0, -1).join(", ")} and ${last}`;
+  return ` ${list.charAt(0).toUpperCase()}${list.slice(1)} ${saved.length === 1 ? "was" : "were"} saved.`;
+}
+
+function correctionFailureText(result: LaunchCorrectionSaveResult): string {
+  return result === "unknown-state"
+    ? "Launch correction file is unreadable or invalid; fix or remove delegation-policy.launch-correction.json, then retry."
+    : "Could not save the launch correction mode.";
+}
+
+function reminderFailureText(result: AdvisorReminderSaveResult): string {
+  return result === "unknown-state"
+    ? "Advisor reminder file is unreadable or invalid; fix or remove delegation-policy.advisor-reminders.json, then retry."
+    : "Could not save the Advisor reminder mode.";
+}
 
 const ACTION_LABELS: Record<PanelAction, string> = {
   apply: "Apply changes",
@@ -273,6 +399,8 @@ export function sameSessionState(left: SessionDelegateState, right: SessionDeleg
   return (
     left.intensity === right.intensity &&
     left.advisorMode === right.advisorMode &&
+    left.advisorLaunch === right.advisorLaunch &&
+    JSON.stringify(left.advisors) === JSON.stringify(right.advisors) &&
     left.preference === right.preference &&
     sameModel(left.small, right.small) &&
     sameModel(left.medium, right.medium) &&
@@ -367,6 +495,23 @@ export class DelegatePanel implements Component, Focusable {
   private readonly onApply: DelegatePanelOptions["onApply"];
   private readonly onSaveDefaults: DelegatePanelOptions["onSaveDefaults"];
   private readonly onDone: DelegatePanelOptions["onDone"];
+  private readonly onSaveAdmissions: DelegatePanelOptions["onSaveAdmissions"];
+  private readonly onSaveLaunchCorrection: DelegatePanelOptions["onSaveLaunchCorrection"];
+  private readonly onSaveAdvisorReminder: DelegatePanelOptions["onSaveAdvisorReminder"];
+  private readonly extensionCandidates: readonly ProviderPackage[];
+  private readonly extensionProviders: readonly string[];
+  private admissions: ProviderAdmissions;
+  private draftAdmissions: ProviderAdmissions;
+  private launchCorrection: LaunchCorrectionMode;
+  private draftLaunchCorrection: LaunchCorrectionMode;
+  private advisorReminder: AdvisorReminderMode;
+  private draftAdvisorReminder: AdvisorReminderMode;
+  private readonly advisorReminderInvalid: boolean;
+  /** Global steps already on disk from this editor, so a later failure never denies them. */
+  private readonly savedGlobals = new Map<
+    "admissions" | "launchCorrection" | "advisorReminder",
+    string
+  >();
   private readonly original: SessionDelegateState;
   private readonly searchInput = new Input();
   private readonly advancedInput = new Input();
@@ -376,6 +521,11 @@ export class DelegatePanel implements Component, Focusable {
   private settingsIndex = 0;
   private working: string | undefined;
   private message: { kind: "info" | "error"; text: string } | undefined;
+  private readonly continuityStatus?: () => Promise<string>;
+  private readonly onRecoverContinuity?: () => Promise<{ message: string; type: "info" | "error" }>;
+  private readonly onResetContinuity?: () => Promise<{ message: string; type: "info" | "error" }>;
+  private continuityText: string | undefined;
+  private continuityBusy = false;
   private renderWidth = 80;
   private _focused = false;
 
@@ -388,10 +538,25 @@ export class DelegatePanel implements Component, Focusable {
     this.candidates = sortedModels(options.candidates);
     this.diagnostics = [...options.diagnostics];
     this.hasRuntimeError = options.hasRuntimeError;
+    this.continuityStatus = options.continuityStatus;
+    this.onRecoverContinuity = options.onRecoverContinuity;
+    this.onResetContinuity = options.onResetContinuity;
     this.hasAdvisorError = options.hasAdvisorError ?? false;
     this.onApply = options.onApply;
     this.onSaveDefaults = options.onSaveDefaults;
     this.onDone = options.onDone;
+    this.onSaveAdmissions = options.onSaveAdmissions;
+    this.onSaveLaunchCorrection = options.onSaveLaunchCorrection;
+    this.extensionCandidates = options.extensionCandidates ?? [];
+    this.extensionProviders = options.extensionProviders ?? [];
+    this.admissions = structuredClone(options.admissions ?? {});
+    this.draftAdmissions = structuredClone(options.admissions ?? {});
+    this.launchCorrection = options.launchCorrection ?? DEFAULT_LAUNCH_CORRECTION_MODE;
+    this.draftLaunchCorrection = this.launchCorrection;
+    this.onSaveAdvisorReminder = options.onSaveAdvisorReminder;
+    this.advisorReminder = options.advisorReminder ?? DEFAULT_ADVISOR_REMINDER_MODE;
+    this.draftAdvisorReminder = this.advisorReminder;
+    this.advisorReminderInvalid = options.advisorReminderInvalid ?? false;
   }
 
   get focused(): boolean {
@@ -407,14 +572,58 @@ export class DelegatePanel implements Component, Focusable {
     return cloneSession(this.draft);
   }
 
+  getDraftAdmissions(): ProviderAdmissions {
+    return structuredClone(this.draftAdmissions);
+  }
+
   isDirty(): boolean {
-    return !sameSessionState(this.original, this.draft);
+    return !sameSessionState(this.original, this.draft) || this.globalsDirty();
+  }
+
+  private admissionsDirty(): boolean {
+    return !sameAdmissions(this.admissions, this.draftAdmissions);
+  }
+
+  private launchCorrectionDirty(): boolean {
+    return this.launchCorrection !== this.draftLaunchCorrection;
+  }
+
+  private advisorReminderDirty(): boolean {
+    return this.advisorReminder !== this.draftAdvisorReminder;
+  }
+
+  private globalsDirty(): boolean {
+    return this.admissionsDirty() || this.launchCorrectionDirty() || this.advisorReminderDirty();
+  }
+
+  /**
+   * Settings rows in order. Advisor N+1 appears only once Advisor N exists, so an unused slot costs
+   * no row and the list never offers a gap.
+   */
+  private settingsItems(): SettingsItem[] {
+    const configured = resolveDelegateState(this.global, this.draft).advisors.length;
+    return [
+      ...FIELD_IDS.filter((field) => !isAdvisorField(field) || advisorIndex(field) <= configured),
+      ...PANEL_ACTIONS,
+    ];
   }
 
   handleInput(data: string): void {
     if (this.working) return;
     this.message = undefined;
+    // Keep the focus on the same row when an edit shows or hides Advisor rows. Navigation moves the
+    // index within the previous list and edits change the list, never both, so the row is resolved
+    // against the list that existed before this input.
+    const previousItems = this.settingsItems();
+    this.dispatchInput(data);
+    const focusedItem = previousItems[this.settingsIndex];
+    const items = this.settingsItems();
+    const focusedIndex = focusedItem ? items.indexOf(focusedItem) : -1;
+    this.settingsIndex =
+      focusedIndex >= 0 ? focusedIndex : Math.min(this.settingsIndex, items.length - 1);
+  }
 
+  private dispatchInput(data: string): void {
     if (this.isCompact()) {
       this.handleCompactInput(data);
       this.tui.requestRender();
@@ -423,6 +632,10 @@ export class DelegatePanel implements Component, Focusable {
 
     if (this.mode.kind === "settings") this.handleSettingsInput(data);
     else if (this.mode.kind === "enum") this.handleEnumInput(data);
+    else if (this.mode.kind === "correction") this.handleCorrectionInput(data);
+    else if (this.mode.kind === "reminder") this.handleReminderInput(data);
+    else if (this.mode.kind === "provider") this.handleProviderInput(data);
+    else if (this.mode.kind === "extension") this.handleExtensionInput(data);
     else if (this.mode.kind === "model") this.handleModelInput(data);
     else if (this.mode.kind === "advanced") this.handleAdvancedInput(data);
     else if (this.mode.kind === "advanced-reader-enabled")
@@ -431,6 +644,7 @@ export class DelegatePanel implements Component, Focusable {
     else if (this.mode.kind === "advanced-input") this.handleAdvancedValueInput(data);
     else if (this.mode.kind === "thinking") this.handleThinkingInput(data);
     else if (this.mode.kind === "thinking-level") this.handleThinkingLevelInput(data);
+    else if (this.mode.kind === "continuity") this.handleContinuityInput(data);
     else this.handleDiscardInput(data);
 
     this.syncInputFocus();
@@ -454,6 +668,10 @@ export class DelegatePanel implements Component, Focusable {
     const mode = this.mode;
     if (mode.kind === "settings") return this.renderSettings(width, budget);
     if (mode.kind === "enum") return this.renderEnum(width, budget, mode);
+    if (mode.kind === "correction") return this.renderCorrection(width, budget, mode);
+    if (mode.kind === "reminder") return this.renderReminder(width, budget, mode);
+    if (mode.kind === "provider") return this.renderProvider(width, budget, mode);
+    if (mode.kind === "extension") return this.renderExtension(width, budget, mode);
     if (mode.kind === "model") return this.renderModel(width, budget, mode);
     if (mode.kind === "advanced") return this.renderAdvanced(width, budget, mode);
     if (mode.kind === "advanced-reader-enabled")
@@ -463,6 +681,7 @@ export class DelegatePanel implements Component, Focusable {
     if (mode.kind === "advanced-input") return this.renderAdvancedInput(width, budget, mode);
     if (mode.kind === "thinking") return this.renderThinking(width, budget, mode);
     if (mode.kind === "thinking-level") return this.renderThinkingLevel(width, budget, mode);
+    if (mode.kind === "continuity") return this.renderContinuity(width, budget, mode);
     return this.renderDiscard(width, budget);
   }
 
@@ -533,12 +752,22 @@ export class DelegatePanel implements Component, Focusable {
     const modeLabel =
       this.mode.kind === "settings" || this.mode.kind === "discard-confirm"
         ? "Delegation policy"
-        : this.mode.kind === "advanced" ||
-            this.mode.kind === "advanced-reader-enabled" ||
-            this.mode.kind === "advanced-reader-role" ||
-            this.mode.kind === "advanced-input"
-          ? "Delegation policy / Context advanced"
-          : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
+        : this.mode.kind === "continuity"
+          ? "Delegation policy / Advisor continuity"
+          : this.mode.kind === "correction"
+            ? "Delegation policy / Launch correction (global)"
+            : this.mode.kind === "reminder"
+              ? "Delegation policy / Advisor reminder (global)"
+              : this.mode.kind === "advanced" ||
+                  this.mode.kind === "advanced-reader-enabled" ||
+                  this.mode.kind === "advanced-reader-role" ||
+                  this.mode.kind === "advanced-input"
+                ? "Delegation policy / Context advanced"
+                : this.mode.kind === "provider"
+                  ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
+                  : this.mode.kind === "extension"
+                    ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
+                    : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
     const status = this.working ?? (this.isDirty() ? "Modified" : "");
     const gap = Math.max(1, width - visibleWidth(modeLabel) - visibleWidth(status));
     const statusText = this.theme.fg("warning", status);
@@ -568,7 +797,7 @@ export class DelegatePanel implements Component, Focusable {
   private renderFooter(width: number): string[] {
     const hint =
       this.mode.kind === "settings"
-        ? "↑↓ move · Enter edit · A apply · Esc close"
+        ? "↑↓ move · Enter edit · A apply · C continuity · Esc close"
         : this.mode.kind === "model"
           ? "Type search · ↑↓ move · PgUp/PgDn · Enter choose · Esc back"
           : this.mode.kind === "advanced"
@@ -589,7 +818,8 @@ export class DelegatePanel implements Component, Focusable {
     const preview = this.renderPolicyPreview(width, budget, effective);
     const hintRows = this.settingsHintRows(width, budget - preview.length);
     const settingsBudget = Math.max(1, budget - preview.length - hintRows);
-    const blocks = SETTINGS_ITEMS.map((item, index) => {
+    const items = this.settingsItems();
+    const blocks = items.map((item, index) => {
       const selected = index === this.settingsIndex;
       if (isDelegateField(item)) {
         const row = this.settingsRow(item, this.settingsValue(item, effective), width);
@@ -600,7 +830,7 @@ export class DelegatePanel implements Component, Focusable {
       const line = selectedLine(this.theme, label, width, selected);
       return [disabled ? this.theme.fg("dim", line) : line];
     });
-    const focused = SETTINGS_ITEMS[this.settingsIndex];
+    const focused = items[this.settingsIndex];
     const hint = focused && isDelegateField(focused) ? this.settingsHint(focused, width) : [];
 
     return [
@@ -623,7 +853,19 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string {
     if (isThinkingField(field)) return this.thinkingValue(field);
-    if (field === "intensity" || field === "preference" || field === "advisorMode")
+    if (isAdvisorField(field)) {
+      const entry = effective.advisors[advisorIndex(field)];
+      if (!entry) return field === "advisor" ? "disabled" : "not configured";
+      if (entry.providerExtension) return `${modelText(entry)} · Anthropic auth`;
+      const admitted = admissionFor(this.draftAdmissions, entry.provider);
+      return `${modelText(entry)}${admitted ? ` · ${admitted.package} ${admitted.version}` : ""}`;
+    }
+    if (
+      field === "intensity" ||
+      field === "preference" ||
+      field === "advisorMode" ||
+      field === "advisorLaunch"
+    )
       return effective[field];
     if (field === "contextShunt")
       return effective.contextShunt.suspended
@@ -631,8 +873,18 @@ export class DelegatePanel implements Component, Focusable {
         : effective.contextShunt.mode;
     if (field === "contextAdvanced")
       return `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`;
-    if (field === "uiDesign" || field === "advisor")
-      return effective[field] ? modelText(effective[field]) : "disabled";
+    // An unreadable companion suspends the reminder; it is not a choice the user made, so the row
+    // says so until a different value is staged for the file that would replace it.
+    if (field === "advisorReminder")
+      return this.advisorReminderInvalid && !this.advisorReminderDirty()
+        ? "Unavailable/Suspended · global"
+        : `${this.draftAdvisorReminder} · global`;
+    if (field === "launchCorrection")
+      return this.draftLaunchCorrection === "block"
+        ? "block · global · measurement"
+        : "correct · global";
+    if (field === "uiDesign")
+      return effective.uiDesign ? modelText(effective.uiDesign) : "disabled";
     return rawModelText(effective[field], "not configured");
   }
 
@@ -665,8 +917,13 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string[] {
     const delegationError = this.hasRuntimeError && effective.intensity !== "off";
+    const validAdvisorCount = effective.advisors.filter((setting) =>
+      this.candidates.some(
+        (candidate) => candidate.provider === setting.provider && candidate.id === setting.model,
+      ),
+    ).length;
     const lines = this.isDirty()
-      ? buildPolicyPreview(effective)
+      ? buildPolicyPreview(effective, validAdvisorCount)
       : [
           ...(delegationError
             ? ["D:ERR · delegation unavailable; fix the reported role diagnostics"]
@@ -680,6 +937,7 @@ export class DelegatePanel implements Component, Focusable {
               : []
             : buildPolicyPreview(
                 this.hasAdvisorError ? { ...effective, advisorMode: "off" } : effective,
+                validAdvisorCount,
               )),
         ];
     const maximum =
@@ -689,15 +947,27 @@ export class DelegatePanel implements Component, Focusable {
       .map((line) => truncateToWidth(this.theme.fg("dim", line), width, "…"));
   }
 
+  private modelSetting(
+    state: GlobalDefaults | SessionDelegateState,
+    field: ModelField,
+  ): ModelRef | null | undefined {
+    if (!isAdvisorField(field)) return state[field];
+    const advisors = configuredAdvisors(state);
+    return advisors === null ? null : advisors?.[advisorIndex(field)];
+  }
+
+  private thinkingSetting(
+    state: GlobalDefaults | SessionDelegateState,
+    key: ThinkingKey,
+  ): ThinkingPolicy | null | undefined {
+    return state.thinking?.[key];
+  }
+
   private thinkingValue(field: ThinkingField): string {
     const key = THINKING_FIELD_KEYS[field];
-    const local = this.draft.thinking;
-    if (local && Object.hasOwn(local, key)) {
-      const policy = local[key];
-      return policy ? thinkingSummary(policy) : "unset";
-    }
-    const global = this.global.thinking?.[key];
-    return global ? thinkingSummary(global) : "unset";
+    const local = this.thinkingSetting(this.draft, key);
+    const policy = local === undefined ? this.thinkingSetting(this.global, key) : local;
+    return policy ? thinkingSummary(policy) : "unset";
   }
 
   /** The selectable thinking levels come from the role's resolved model only. */
@@ -706,15 +976,19 @@ export class DelegatePanel implements Component, Focusable {
   ): { levels: ThinkingLevelName[] } | { reason: string } {
     const key = THINKING_FIELD_KEYS[field];
     const state = resolveDelegateState(this.global, this.draft);
-    if ((key === "uiDesign" || key === "advisor") && this.draft[key] === null)
+    if (this.modelSetting(this.draft, key) === null)
       return {
         reason: `${ROLE_LABELS[key]} is disabled for this session; levels cannot be listed.`,
       };
-    const reference = key === "uiDesign" ? state.uiDesign : state[key];
+    const reference = state[key];
     if (reference === null)
-      return { reason: `${ROLE_LABELS[key]} is disabled; levels cannot be listed.` };
+      return {
+        reason: `${ROLE_LABELS[key]} is disabled; levels cannot be listed.`,
+      };
     if (reference === undefined)
-      return { reason: `${ROLE_LABELS[key]} is not configured; levels cannot be listed.` };
+      return {
+        reason: `${ROLE_LABELS[key]} is not configured; levels cannot be listed.`,
+      };
     const model = this.candidates.find(
       (candidate) => candidate.provider === reference.provider && candidate.id === reference.model,
     );
@@ -729,7 +1003,7 @@ export class DelegatePanel implements Component, Focusable {
 
   private thinkingChoices(field: ThinkingField): ThinkingChoice[] {
     const key = THINKING_FIELD_KEYS[field];
-    const global = this.global.thinking?.[key];
+    const global = this.thinkingSetting(this.global, key);
     const availability = this.thinkingAvailability(field);
     return [
       {
@@ -876,6 +1150,12 @@ export class DelegatePanel implements Component, Focusable {
         `patterns ${context.exceptionPatterns.length} exempt, ${context.delegationHintPatterns.length} hint`,
       ];
     }
+    if (field === "advisorLaunch")
+      return [
+        "built-in role",
+        `global ${this.global.advisorLaunch ?? "—"}`,
+        `session ${this.draft.advisorLaunch ?? "inherit"}`,
+      ];
     if (field === "advisorMode") {
       return [
         "built-in with-delegation",
@@ -890,33 +1170,219 @@ export class DelegatePanel implements Component, Focusable {
         `session ${this.draft.preference ?? "inherit"}`,
       ];
     }
-    if (field === "uiDesign" || field === "advisor") {
+    if (field === "advisorReminder")
+      return [
+        `built-in ${DEFAULT_ADVISOR_REMINDER_MODE}`,
+        `global ${this.advisorReminderInvalid ? "unreadable or invalid" : this.advisorReminder}`,
+        "not a session setting",
+      ];
+    if (field === "launchCorrection")
+      return [
+        `built-in ${DEFAULT_LAUNCH_CORRECTION_MODE}`,
+        `global ${this.launchCorrection}`,
+        "not a session setting",
+      ];
+    if (field === "uiDesign" || isAdvisorField(field)) {
       return [
         "built-in disabled",
-        `global ${rawModelText(this.global[field], "—")}`,
-        `session ${rawModelText(this.draft[field], "inherit")}`,
+        `global ${rawModelText(this.modelSetting(this.global, field), "—")}`,
+        `session ${rawModelText(this.modelSetting(this.draft, field), "inherit")}`,
       ];
     }
     if (isThinkingField(field)) {
       const key = THINKING_FIELD_KEYS[field];
-      const global = this.global.thinking?.[key];
-      const local = this.draft.thinking;
+      const global = this.thinkingSetting(this.global, key);
+      const local = this.thinkingSetting(this.draft, key);
       return [
         "built-in unset",
         `global ${global ? thinkingSummary(global) : "—"}`,
-        `session ${
-          local && Object.hasOwn(local, key)
-            ? local[key]
-              ? thinkingSummary(local[key])
-              : "unset"
-            : "inherit"
-        }`,
+        `session ${local !== undefined ? (local ? thinkingSummary(local) : "unset") : "inherit"}`,
       ];
     }
     return [
       "built-in not configured",
-      `global ${rawModelText(this.global[field], "—")}`,
-      `session ${rawModelText(this.draft[field], "inherit")}`,
+      `global ${rawModelText(this.modelSetting(this.global, field), "—")}`,
+      `session ${rawModelText(this.modelSetting(this.draft, field), "inherit")}`,
+    ];
+  }
+
+  private renderProvider(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "provider" }>,
+  ): string[] {
+    const blocks = PROVIDER_CHOICES.map((label, index) => [
+      selectedLine(this.theme, label, width, index === mode.selected),
+    ]);
+    // Reserve the choices first. A wrapped explanation must never hide the selection
+    // while Enter can still confirm it, including in a short, narrow terminal.
+    const description = wrapTextWithAnsi(PROVIDER_DESCRIPTION, width).slice(
+      0,
+      Math.max(0, budget - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
+  }
+
+  /**
+   * Standard first, then every candidate. A current admission that no longer passes the identity
+   * check stays listed so it can be seen and replaced, never silently kept.
+   */
+  private extensionChoices(provider: string): Array<ProviderPackage | undefined> {
+    const current = admissionFor(this.draftAdmissions, provider);
+    const listed = (pkg: ProviderPackage) =>
+      this.extensionCandidates.some(
+        (candidate) => candidate.package === pkg.package && candidate.version === pkg.version,
+      );
+    return [
+      undefined,
+      ...this.extensionCandidates,
+      ...(current && !listed(current) ? [current] : []),
+    ];
+  }
+
+  private offersExtension(provider: string): boolean {
+    return (
+      provider !== RESERVED_PROVIDER &&
+      (admissionFor(this.draftAdmissions, provider) !== undefined ||
+        (this.extensionCandidates.length > 0 && this.extensionProviders.includes(provider)))
+    );
+  }
+
+  private renderExtension(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "extension" }>,
+  ): string[] {
+    const blocks = this.extensionChoices(mode.provider).map((pkg, index) => [
+      selectedLine(
+        this.theme,
+        !pkg
+          ? EXTENSION_STANDARD
+          : this.extensionCandidates.includes(pkg)
+            ? `${pkg.package} ${pkg.version} · trusted extension, identity only`
+            : `${pkg.package} ${pkg.version} · no longer installed as admitted`,
+        width,
+        index === mode.selected,
+      ),
+    ]);
+    // Same reservation as the profile step: the choices stay visible before the explanation.
+    const description = wrapTextWithAnsi(extensionDescription(mode.provider), width).slice(
+      0,
+      Math.max(0, budget - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
+  }
+
+  private handleExtensionInput(data: string): void {
+    if (this.mode.kind !== "extension") return;
+    const choices = this.extensionChoices(this.mode.provider);
+    const count = choices.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    // Escape keeps the model just chosen with the admission its provider already had.
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      const pkg = choices[this.mode.selected];
+      const admissions = { ...this.draftAdmissions };
+      delete admissions[this.mode.provider];
+      if (pkg) admissions[this.mode.provider] = { ...pkg };
+      this.draftAdmissions = admissions;
+      this.mode = { kind: "settings" };
+    }
+  }
+
+  private handleCorrectionInput(data: string): void {
+    if (this.mode.kind !== "correction") return;
+    const count = LAUNCH_CORRECTION_MODES.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      this.draftLaunchCorrection =
+        LAUNCH_CORRECTION_MODES[this.mode.selected] ?? this.draftLaunchCorrection;
+      this.mode = { kind: "settings" };
+    }
+  }
+
+  private handleReminderInput(data: string): void {
+    if (this.mode.kind !== "reminder") return;
+    const count = ADVISOR_REMINDER_MODES.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      this.draftAdvisorReminder =
+        ADVISOR_REMINDER_MODES[this.mode.selected] ?? this.draftAdvisorReminder;
+      this.mode = { kind: "settings" };
+    }
+  }
+
+  private handleProviderInput(data: string): void {
+    if (this.mode.kind !== "provider") return;
+    const count = PROVIDER_CHOICES.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    // Escape keeps the model just chosen with the profile it already had.
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
+      const entry = entries[this.mode.index];
+      if (!entry) {
+        this.mode = { kind: "settings" };
+        return;
+      }
+      if (this.mode.selected === 1) entry.providerExtension = "anthropic-auth";
+      else delete entry.providerExtension;
+      this.replaceAdvisors(entries);
+      this.mode = { kind: "settings" };
+    }
+  }
+
+  private renderCorrection(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "correction" }>,
+  ): string[] {
+    const blocks = LAUNCH_CORRECTION_MODES.map((value, index) => [
+      selectedLine(this.theme, CORRECTION_CHOICES[value], width, index === mode.selected),
+    ]);
+    // Reserve the choices first, so a wrapped explanation never hides the selection.
+    const description = wrapTextWithAnsi(CORRECTION_DESCRIPTION, width).slice(
+      0,
+      Math.max(0, budget - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
+  }
+
+  private renderReminder(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "reminder" }>,
+  ): string[] {
+    const blocks = ADVISOR_REMINDER_MODES.map((value, index) => [
+      selectedLine(this.theme, REMINDER_CHOICES[value], width, index === mode.selected),
+    ]);
+    // Reserve the choices first, so a wrapped explanation never hides the selection.
+    const description = wrapTextWithAnsi(REMINDER_DESCRIPTION, width).slice(
+      0,
+      Math.max(0, budget - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
     ];
   }
 
@@ -930,9 +1396,11 @@ export class DelegatePanel implements Component, Focusable {
         ? INTENSITIES
         : mode.field === "preference"
           ? PREFERENCES
-          : mode.field === "advisorMode"
-            ? ADVISOR_MODES
-            : CONTEXT_SHUNT_MODES;
+          : mode.field === "advisorLaunch"
+            ? ADVISOR_LAUNCH_MODES
+            : mode.field === "advisorMode"
+              ? ADVISOR_MODES
+              : CONTEXT_SHUNT_MODES;
     const descriptions =
       mode.field === "intensity"
         ? {
@@ -947,27 +1415,34 @@ export class DelegatePanel implements Component, Focusable {
               standard: "No extra Small or Medium bias.",
               intensive: "Tie-break comparable fits toward Medium.",
             }
-          : mode.field === "advisorMode"
+          : mode.field === "advisorLaunch"
             ? {
-                off: "No Advisor guidance; keep the saved model.",
-                on: "Consult even with delegation off. Sends briefs to another model and may incur cost.",
-                "with-delegation":
-                  "Consult only while delegation is active; preserves existing behavior.",
+                role: "Main agent launches all advisors in one background call.",
+                tool: "Explicit consult_advisor launches through the host executor, never from hooks.",
               }
-            : {
-                off: "No classification, metrics, archive, or interception.",
-                observe: "Record would-block decisions without changing calls or results.",
-                enforce: "Block only declared excess and protect known textual results.",
-              };
+            : mode.field === "advisorMode"
+              ? {
+                  off: "No Advisor guidance; keep the saved model.",
+                  on: "Consult even with delegation off. Sends briefs to another model and may incur cost.",
+                  "with-delegation":
+                    "Consult only while delegation is active; preserves existing behavior.",
+                }
+              : {
+                  off: "No classification, metrics, archive, or interception.",
+                  observe: "Record would-block decisions without changing calls or results.",
+                  enforce: "Block only declared excess and protect known textual results.",
+                };
     const globalValue =
       mode.field === "contextShunt"
         ? (this.global.contextShunt?.mode ?? "off")
         : (this.global[mode.field] ??
           (mode.field === "intensity"
             ? "off"
-            : mode.field === "advisorMode"
-              ? "with-delegation"
-              : "standard"));
+            : mode.field === "advisorLaunch"
+              ? "role"
+              : mode.field === "advisorMode"
+                ? "with-delegation"
+                : "standard"));
     const options = [
       {
         label: `${USE_GLOBAL_DEFAULT} (${globalValue})`,
@@ -1203,6 +1678,102 @@ export class DelegatePanel implements Component, Focusable {
     ].slice(0, budget);
   }
 
+  /**
+   * Advisor continuity is observable and repairable from here, never by editing the private
+   * journal. The status line is read without taking the journal lock, and both actions report the
+   * outcome in the panel's own message row.
+   */
+  private async loadContinuity(): Promise<void> {
+    if (!this.continuityStatus) return;
+    this.continuityBusy = true;
+    this.tui.requestRender();
+    try {
+      this.continuityText = await this.continuityStatus();
+    } catch {
+      this.continuityText = "Advisor continuity status is unavailable.";
+    } finally {
+      this.continuityBusy = false;
+      this.tui.requestRender();
+    }
+  }
+
+  private handleContinuityInput(data: string): void {
+    if (this.mode.kind !== "continuity") return;
+    const count = CONTINUITY_ACTIONS.length + 1;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    else if (matchesKey(data, "home")) this.mode.selected = 0;
+    else if (matchesKey(data, "end")) this.mode.selected = count - 1;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      const action = CONTINUITY_ACTIONS[this.mode.selected];
+      if (!action) {
+        this.mode = { kind: "settings" };
+        return;
+      }
+      if (action === "status") {
+        void this.loadContinuity();
+        return;
+      }
+      const run = action === "recover" ? this.onRecoverContinuity : this.onResetContinuity;
+      if (!run) {
+        this.message = {
+          kind: "error",
+          text: "Advisor continuity is not available in this session.",
+        };
+        return;
+      }
+      this.continuityBusy = true;
+      void run().then(
+        (outcome) => {
+          this.message = { kind: outcome.type, text: outcome.message };
+          this.continuityBusy = false;
+          void this.loadContinuity();
+        },
+        () => {
+          this.message = { kind: "error", text: "Advisor continuity action failed." };
+          this.continuityBusy = false;
+          this.tui.requestRender();
+        },
+      );
+    }
+  }
+
+  private renderContinuity(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "continuity" }>,
+  ): string[] {
+    const blocks = [
+      ...CONTINUITY_ACTIONS.map((action, index) => [
+        selectedLine(this.theme, CONTINUITY_LABELS[action], width, index === mode.selected),
+      ]),
+      [selectedLine(this.theme, "Back", width, mode.selected === CONTINUITY_ACTIONS.length)],
+    ];
+    const description = wrapTextWithAnsi(CONTINUITY_DESCRIPTION, width).slice(
+      0,
+      Math.max(0, Math.floor(budget / 2)),
+    );
+    const status = this.continuityBusy
+      ? ["Reading Advisor continuity…"]
+      : wrapTextWithAnsi(this.continuityText ?? "No continuity state was read yet.", width);
+    const statusRows = status.slice(
+      0,
+      Math.max(0, budget - description.length - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...statusRows.map((line) => this.theme.fg("dim", line)),
+      ...this.renderBlockViewport(
+        blocks,
+        mode.selected,
+        width,
+        Math.max(1, budget - description.length - statusRows.length),
+      ),
+    ];
+  }
+
   private renderDiscard(width: number, budget: number): string[] {
     const options = ["Keep editing", "Discard changes"];
     const selected = this.mode.kind === "discard-confirm" ? this.mode.selected : 0;
@@ -1244,19 +1815,24 @@ export class DelegatePanel implements Component, Focusable {
     if (matchesKey(data, "up")) this.moveSettings(-1);
     else if (matchesKey(data, "down")) this.moveSettings(1);
     else if (matchesKey(data, "home")) this.settingsIndex = 0;
-    else if (matchesKey(data, "end")) this.settingsIndex = SETTINGS_ITEMS.length - 1;
+    else if (matchesKey(data, "end")) this.settingsIndex = this.settingsItems().length - 1;
     else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.requestClose();
     else if (matchesKey(data, "enter") || matchesKey(data, "space")) this.activateSettingsItem();
     else if (data.toLowerCase() === "a") void this.applyDraft();
+    // Advisor continuity is one extra row of the same panel, not a second interface.
+    else if (data.toLowerCase() === "c") {
+      this.mode = { kind: "continuity", selected: 0 };
+      void this.loadContinuity();
+    }
   }
 
   private moveSettings(delta: number): void {
-    this.settingsIndex =
-      (this.settingsIndex + delta + SETTINGS_ITEMS.length) % SETTINGS_ITEMS.length;
+    const count = this.settingsItems().length;
+    this.settingsIndex = (this.settingsIndex + delta + count) % count;
   }
 
   private activateSettingsItem(): void {
-    const item = SETTINGS_ITEMS[this.settingsIndex];
+    const item = this.settingsItems()[this.settingsIndex];
     if (!item) return;
     if (item === "contextAdvanced") {
       this.mode = { kind: "advanced", selected: 0 };
@@ -1266,16 +1842,19 @@ export class DelegatePanel implements Component, Focusable {
       item === "intensity" ||
       item === "preference" ||
       item === "contextShunt" ||
-      item === "advisorMode"
+      item === "advisorMode" ||
+      item === "advisorLaunch"
     ) {
       const values =
         item === "intensity"
           ? INTENSITIES
           : item === "preference"
             ? PREFERENCES
-            : item === "advisorMode"
-              ? ADVISOR_MODES
-              : CONTEXT_SHUNT_MODES;
+            : item === "advisorLaunch"
+              ? ADVISOR_LAUNCH_MODES
+              : item === "advisorMode"
+                ? ADVISOR_MODES
+                : CONTEXT_SHUNT_MODES;
       const current = item === "contextShunt" ? this.draft.contextShunt?.mode : this.draft[item];
       this.mode = {
         kind: "enum",
@@ -1289,13 +1868,27 @@ export class DelegatePanel implements Component, Focusable {
       item === "medium" ||
       item === "large" ||
       item === "uiDesign" ||
-      item === "advisor"
+      isAdvisorField(item)
     ) {
       this.openModelSelector(item);
       return;
     }
     if (isThinkingField(item)) {
       this.mode = { kind: "thinking", field: item, selected: this.thinkingSelection(item) };
+      return;
+    }
+    if (item === "advisorReminder") {
+      this.mode = {
+        kind: "reminder",
+        selected: ADVISOR_REMINDER_MODES.indexOf(this.draftAdvisorReminder),
+      };
+      return;
+    }
+    if (item === "launchCorrection") {
+      this.mode = {
+        kind: "correction",
+        selected: LAUNCH_CORRECTION_MODES.indexOf(this.draftLaunchCorrection),
+      };
       return;
     }
     if (item === "apply") void this.applyDraft();
@@ -1312,9 +1905,11 @@ export class DelegatePanel implements Component, Focusable {
         ? INTENSITIES
         : this.mode.field === "preference"
           ? PREFERENCES
-          : this.mode.field === "advisorMode"
-            ? ADVISOR_MODES
-            : CONTEXT_SHUNT_MODES;
+          : this.mode.field === "advisorLaunch"
+            ? ADVISOR_LAUNCH_MODES
+            : this.mode.field === "advisorMode"
+              ? ADVISOR_MODES
+              : CONTEXT_SHUNT_MODES;
     const count = values.length + 1;
     if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
     else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
@@ -1333,6 +1928,8 @@ export class DelegatePanel implements Component, Focusable {
         } else delete this.draft[field];
       } else if (field === "intensity") this.draft.intensity = values[selected - 1] as Intensity;
       else if (field === "preference") this.draft.preference = values[selected - 1] as Preference;
+      else if (field === "advisorLaunch")
+        this.draft.advisorLaunch = values[selected - 1] as AdvisorLaunch;
       else if (field === "advisorMode")
         this.draft.advisorMode = values[selected - 1] as AdvisorMode;
       else
@@ -1346,9 +1943,8 @@ export class DelegatePanel implements Component, Focusable {
 
   private thinkingSelection(field: ThinkingField): number {
     const key = THINKING_FIELD_KEYS[field];
-    const local = this.draft.thinking;
-    if (!local || !Object.hasOwn(local, key)) return 0;
-    const policy = local[key];
+    const policy = this.thinkingSetting(this.draft, key);
+    if (policy === undefined) return 0;
     if (!policy) return 1;
     const choices = this.thinkingChoices(field);
     const wanted: ThinkingAction = "level" in policy ? "fixed" : "range";
@@ -1397,7 +1993,7 @@ export class DelegatePanel implements Component, Focusable {
     minimum?: ThinkingLevelName,
   ): number {
     const key = THINKING_FIELD_KEYS[field];
-    const policy = this.draft.thinking?.[key] ?? this.global.thinking?.[key];
+    const policy = this.thinkingSetting(this.draft, key) ?? this.thinkingSetting(this.global, key);
     const levels = this.availableThinkingLevels({
       kind: "thinking-level",
       field,
@@ -1672,10 +2268,10 @@ export class DelegatePanel implements Component, Focusable {
     else delete this.draft.contextShunt;
   }
 
-  private openModelSelector(field: ModelConfigKey): void {
+  private openModelSelector(field: ModelField): void {
     this.searchInput.setValue("");
     const choices = this.modelChoices(field, "");
-    const current = this.draft[field];
+    const current = this.modelSetting(this.draft, field);
     let selected = 0;
     if (current === null) selected = choices.findIndex((choice) => choice.kind === "disabled");
     else if (current) selected = choices.findIndex((choice) => choice.key === modelKey(current));
@@ -1726,18 +2322,74 @@ export class DelegatePanel implements Component, Focusable {
   private chooseModel(choice: ModelChoice | undefined): void {
     if (!choice || this.mode.kind !== "model") return;
     const field = this.mode.field;
+    if (isAdvisorField(field)) {
+      const index = advisorIndex(field);
+      const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
+      const previous = entries[index];
+      const global =
+        choice.kind === "global" ? configuredAdvisors(this.global)?.[index] : undefined;
+      const reference = choice.kind === "model" ? choice.reference : global;
+      if (index > entries.length && reference) {
+        this.message = {
+          kind: "error",
+          text: `Configure Advisor ${index} before adding Advisor ${index + 1}.`,
+        };
+        return;
+      }
+      if (!reference) {
+        // Advisor 1 anchors the list; removing a later entry moves the next one up.
+        if (index === 0) entries.length = 0;
+        else entries.splice(index, 1);
+      } else if (choice.kind === "global") entries[index] = structuredClone(reference);
+      else
+        entries[index] = {
+          ...reference,
+          // The Anthropic profile only applies to Anthropic models; it follows a model change there.
+          ...(previous?.providerExtension && reference.provider === "anthropic"
+            ? { providerExtension: previous.providerExtension }
+            : {}),
+        };
+      if (choice.kind === "global" && index === 0) {
+        delete this.draft.advisors;
+        delete this.draft.advisor;
+        if (this.draft.thinking) delete this.draft.thinking.advisor;
+      } else this.replaceAdvisors(entries);
+      if (!entries.length && choice.kind === "disabled") this.draft.advisorMode = "off";
+      if (choice.kind === "model" && choice.reference.provider === RESERVED_PROVIDER)
+        this.mode = {
+          kind: "provider",
+          index,
+          selected: entries[index]?.providerExtension ? 1 : 0,
+        };
+      else if (choice.kind === "model" && this.offersExtension(choice.reference.provider)) {
+        const provider = choice.reference.provider;
+        const current = admissionFor(this.draftAdmissions, provider);
+        const selected = current
+          ? this.extensionChoices(provider).findIndex(
+              (pkg) => pkg?.package === current.package && pkg.version === current.version,
+            )
+          : 0;
+        this.mode = { kind: "extension", index, provider, selected: Math.max(0, selected) };
+      } else this.mode = { kind: "settings" };
+      return;
+    }
     if (choice.kind === "global") delete this.draft[field];
     else if (choice.kind === "disabled") {
       this.draft[field] = null;
-      if (field === "advisor") this.draft.advisorMode = "off";
     } else if (choice.kind === "model") this.draft[field] = { ...choice.reference };
     this.mode = { kind: "settings" };
   }
 
-  private modelChoices(field: ModelConfigKey, query: string): ModelChoice[] {
-    const global = this.global[field];
+  private replaceAdvisors(entries: NonNullable<GlobalDefaults["advisors"]>): void {
+    delete this.draft.advisor;
+    if (this.draft.thinking) delete this.draft.thinking.advisor;
+    this.draft.advisors = entries.length ? entries : null;
+  }
+
+  private modelChoices(field: ModelField, query: string): ModelChoice[] {
+    const global = this.modelSetting(this.global, field);
     const globalDescription =
-      field === "uiDesign" || field === "advisor"
+      field === "uiDesign" || isAdvisorField(field)
         ? global
           ? modelText(global)
           : "disabled"
@@ -1794,18 +2446,20 @@ export class DelegatePanel implements Component, Focusable {
     this.working = "Applying changes…";
     this.tui.requestRender();
     try {
+      // Without a global change the session step starts in this same input, as before.
+      if (this.globalsDirty() && !(await this.saveGlobalSteps())) return;
       if (await this.onApply(cloneSession(this.draft))) {
         this.onDone("applied");
         return;
       }
       this.message = {
         kind: "error",
-        text: "Could not apply session settings. Try again.",
+        text: `Could not apply session settings. Try again.${savedClause(this.savedGlobalsList())}`,
       };
     } catch {
       this.message = {
         kind: "error",
-        text: "Could not apply session settings. Try again.",
+        text: `Could not apply session settings. Try again.${savedClause(this.savedGlobalsList())}`,
       };
     } finally {
       this.working = undefined;
@@ -1817,13 +2471,15 @@ export class DelegatePanel implements Component, Focusable {
     this.working = "Saving defaults…";
     this.tui.requestRender();
     try {
+      if (this.globalsDirty() && !(await this.saveGlobalSteps())) return;
+      const kept = savedClause(this.savedGlobalsList());
       const outcome = await this.onSaveDefaults(cloneSession(this.draft));
       if (outcome.kind === "saved") {
         this.global = structuredClone(outcome.defaults);
         this.diagnostics.length = 0;
         this.message = {
           kind: "info",
-          text: "Saved effective delegation settings as global defaults.",
+          text: `Saved effective delegation settings as global defaults.${kept}`,
         };
       } else if (outcome.kind === "partial") {
         if (outcome.defaults) this.global = structuredClone(outcome.defaults);
@@ -1831,23 +2487,125 @@ export class DelegatePanel implements Component, Focusable {
           this.diagnostics.splice(0, this.diagnostics.length, ...outcome.diagnostics);
         this.message = {
           kind: "error",
-          text: "Partially saved: the delegation file and the Advisor companion may disagree.",
+          text: `Partially saved: the delegation file and the Advisor companion may disagree.${kept}`,
         };
       } else {
+        // The defaults step did not commit. A global step that did is named instead of denied.
         this.message = {
           kind: "error",
-          text: "Could not save global defaults. Nothing was changed on disk.",
+          text: kept
+            ? `Could not save global defaults.${kept}`
+            : "Could not save global defaults. Nothing was changed on disk.",
         };
       }
     } catch {
       this.message = {
         kind: "error",
-        text: "Could not save global defaults. Check /delegate status before retrying.",
+        text: `Could not save global defaults. Check /delegate status before retrying.${savedClause(this.savedGlobalsList())}`,
       };
     } finally {
       this.working = undefined;
       this.tui.requestRender();
     }
+  }
+
+  /**
+   * Admissions are global, so Apply and Save both store a changed set before their own step. A
+   * failure stops that step and leaves the session and defaults untouched.
+   */
+  private async saveAdmissions(): Promise<boolean> {
+    let saved: boolean;
+    try {
+      saved = (await this.onSaveAdmissions?.(structuredClone(this.draftAdmissions))) ?? false;
+    } catch {
+      saved = false;
+    }
+    if (saved) {
+      this.admissions = structuredClone(this.draftAdmissions);
+      this.savedGlobals.set("admissions", "the provider extension admission");
+    } else
+      this.message = {
+        kind: "error",
+        text: "Could not save provider extensions. Nothing else was changed.",
+      };
+    return saved;
+  }
+
+  /**
+   * The correction mode is global, so Apply and Save both write a changed value before their own
+   * step. A failure stops that step: an unreadable file is reported instead of overwritten, and no
+   * later write can report success for it.
+   */
+  private async saveLaunchCorrection(): Promise<LaunchCorrectionSaveResult> {
+    let result: LaunchCorrectionSaveResult;
+    try {
+      result = (await this.onSaveLaunchCorrection?.(this.draftLaunchCorrection)) ?? "failed";
+    } catch {
+      result = "failed";
+    }
+    if (result === "saved" || result === "unchanged") {
+      this.launchCorrection = this.draftLaunchCorrection;
+      this.savedGlobals.set(
+        "launchCorrection",
+        `the launch correction mode (${this.draftLaunchCorrection})`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * The reminder mode is global, so Apply and Save both write a changed value before their own
+   * step. A failure stops that step: an unreadable file is reported instead of overwritten.
+   */
+  private async saveAdvisorReminder(): Promise<AdvisorReminderSaveResult> {
+    let result: AdvisorReminderSaveResult;
+    try {
+      result = (await this.onSaveAdvisorReminder?.(this.draftAdvisorReminder)) ?? "failed";
+    } catch {
+      result = "failed";
+    }
+    if (result === "saved" || result === "unchanged") {
+      this.advisorReminder = this.draftAdvisorReminder;
+      this.savedGlobals.set(
+        "advisorReminder",
+        `the Advisor reminder mode (${this.draftAdvisorReminder})`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Store the global steps this attempt needs, in order, and stop at the first failure. A step that
+   * already committed stays on disk and is named by the failure message; nothing is rolled back.
+   */
+  private async saveGlobalSteps(): Promise<boolean> {
+    if (this.admissionsDirty() && !(await this.saveAdmissions())) return false;
+    if (this.advisorReminderDirty()) {
+      const result = await this.saveAdvisorReminder();
+      if (result !== "saved" && result !== "unchanged") {
+        this.message = {
+          kind: "error",
+          text: `${reminderFailureText(result)}${
+            savedClause(this.savedGlobalsList()) || " Nothing else was changed."
+          }`,
+        };
+        return false;
+      }
+    }
+    if (!this.launchCorrectionDirty()) return true;
+    const result = await this.saveLaunchCorrection();
+    if (result === "saved" || result === "unchanged") return true;
+    this.message = {
+      kind: "error",
+      text: `${correctionFailureText(result)}${
+        savedClause(this.savedGlobalsList()) || " Nothing else was changed."
+      }`,
+    };
+    return false;
+  }
+
+  private savedGlobalsList(): string[] {
+    return [...this.savedGlobals.values()];
   }
 
   private syncInputFocus(): void {

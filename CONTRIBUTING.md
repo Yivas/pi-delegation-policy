@@ -18,7 +18,7 @@ Pull requests should:
 - keep the public package English-only;
 - use fictional examples and provider-agnostic documentation;
 - preserve exact role references and the absence of model fallbacks;
-- preserve the boundary: this package performs no delegated work of its own and never starts a worker from a hook; its only launch belongs to the explicit `context_shunt_delegate` tool, which asks the host-authorized external executor for one bounded answer about a preserved artifact, and the optional advisor is a role the main agent launches as a subagent rather than a launch of this package;
+- preserve the boundary: no delegated work or child launches from hooks. Only explicit tools may launch through the host-authorized external executor: `context_shunt_delegate` for a bounded preserved-artifact answer, and `consult_advisor` when `advisorLaunch` is `tool` for configured Advisor consultations. Role mode leaves Advisor launches to the main agent. The local log records content-free policy and consultation metadata only; no network telemetry;
 - preserve ContextShunt defaults and controls: `off` performs no classification, metrics, I/O, or interception; declared preflight limits count lines, post-result limits use returned UTF-8 bytes and lines, and rejected requests do not consume the admitted-request window;
 - preserve originals when an artifact, permission, or recognized contract is unavailable; keep one-time exceptions user-authorized, short-lived, and bound to the exact tool call and input, with byte limits checked against the returned result;
 - avoid project configuration, credential handling, telemetry, and network requests;

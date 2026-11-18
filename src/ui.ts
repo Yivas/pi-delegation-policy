@@ -7,7 +7,12 @@ import {
   resolveDelegateState,
   writeConfig,
 } from "./config.ts";
+import { ANTHROPIC_PROVIDER_PACKAGE } from "./advisor-anthropic-provider.ts";
 import { DelegatePanel, type DelegatePanelResult } from "./delegate-panel.ts";
+import { getProviderAdmissionsPath, writeProviderAdmissions } from "./provider-admissions.ts";
+import { getLaunchCorrectionPath, writeLaunchCorrectionMode } from "./launch-correction-mode.ts";
+import { getAdvisorRemindersPath, writeAdvisorReminderMode } from "./advisor-reminders.ts";
+import { listProviderExtensionCandidates } from "./provider-package.ts";
 import {
   hasRuntimeError,
   hasAdvisorError,
@@ -16,7 +21,21 @@ import {
   modelCandidates,
 } from "./runtime.ts";
 
-export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
+/**
+ * Advisor continuity as the panel sees it: a status line and two explicit actions. The journal
+ * itself stays private, so an operator never edits it by hand.
+ */
+export type ContinuityActions = {
+  status: () => Promise<string>;
+  recover: () => Promise<{ message: string; type: "info" | "error" }>;
+  reset: () => Promise<{ message: string; type: "info" | "error" }>;
+};
+
+export async function openDelegateEditor(
+  ctx: ExtensionContext,
+  pi: ExtensionAPI,
+  continuity?: ContinuityActions,
+): Promise<void> {
   if (!ctx.hasUI) return;
   if (ctx.mode !== "tui") {
     ctx.ui.notify(
@@ -28,6 +47,14 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
 
   const state = await loadRuntime(ctx);
   const candidates = modelCandidates(ctx);
+  // Never offered: this package, Anthropic's (it keeps its own opt-in) and the permission
+  // runtime, which the host already adds to every child.
+  const extensionCandidates = listProviderExtensionCandidates(ctx.cwd, [
+    "pi-delegation-policy",
+    ANTHROPIC_PROVIDER_PACKAGE,
+    "@gotgenes/pi-permission-system",
+  ]);
+  const extensionProviders = ctx.modelRegistry?.getRegisteredProviderIds?.() ?? [];
   // A diagnostic that no error list reports yet stays informative in the panel instead of being
   // dropped, and it never becomes an Advisor error: an Advisor-scope diagnostic is already an error
   // while Advisor is on, and an ordinary one is already an error while delegation is active.
@@ -49,9 +76,51 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
             ? state.diagnostics
                 .filter(({ reportWhenOff }) => reportWhenOff)
                 .map(({ message }) => message)
-            : [...state.runtimeErrors, ...(state.advisorErrors ?? []), ...advisorNotices],
+            : [
+                ...state.runtimeErrors,
+                ...(state.advisorErrors ?? []),
+                ...(state.advisorWarnings ?? []),
+                ...advisorNotices,
+              ],
         hasRuntimeError: hasRuntimeError(state),
         hasAdvisorError: hasAdvisorError(state),
+        admissions: state.admissions ?? {},
+        launchCorrection: state.launchCorrection,
+        advisorReminder: state.advisorReminder,
+        advisorReminderInvalid: state.advisorReminderInvalid,
+        extensionCandidates,
+        extensionProviders,
+        ...(continuity
+          ? {
+              continuityStatus: continuity.status,
+              onRecoverContinuity: continuity.recover,
+              onResetContinuity: continuity.reset,
+            }
+          : {}),
+        onSaveAdmissions: async (admissions) => {
+          await writeProviderAdmissions(
+            admissions,
+            getProviderAdmissionsPath(getGlobalConfigPath()),
+          );
+          state.admissions = admissions;
+          return true;
+        },
+        onSaveLaunchCorrection: async (mode) => {
+          const result = await writeLaunchCorrectionMode(
+            mode,
+            getLaunchCorrectionPath(getGlobalConfigPath()),
+          );
+          if (result === "saved" || result === "unchanged") state.launchCorrection = mode;
+          return result;
+        },
+        onSaveAdvisorReminder: async (mode) => {
+          const result = await writeAdvisorReminderMode(
+            mode,
+            getAdvisorRemindersPath(getGlobalConfigPath()),
+          );
+          if (result === "saved" || result === "unchanged") state.advisorReminder = mode;
+          return result;
+        },
         onApply: async (draft) => {
           const result = appendGuardedSessionState(pi, structuredClone(draft));
           const refreshed = await loadRuntime(ctx);
@@ -62,6 +131,12 @@ export async function openDelegateEditor(ctx: ExtensionContext, pi: ExtensionAPI
           state.modelStatuses = refreshed.modelStatuses;
           state.runtimeErrors = refreshed.runtimeErrors;
           state.advisorErrors = refreshed.advisorErrors;
+          state.advisorWarnings = refreshed.advisorWarnings;
+          state.advisorEntries = refreshed.advisorEntries;
+          state.admissions = refreshed.admissions;
+          state.launchCorrection = refreshed.launchCorrection;
+          state.advisorReminder = refreshed.advisorReminder;
+          state.advisorReminderInvalid = refreshed.advisorReminderInvalid;
           return result === "success";
         },
         onSaveDefaults: async (draft) => {

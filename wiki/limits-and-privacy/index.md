@@ -17,19 +17,109 @@ The final provider request re-applies the current marked block inside the recogn
 fields of the outgoing payload, so a host or another extension that replaces the system prompt
 afterwards cannot drop it; a payload whose shape is not recognized is left untouched. Turning
 delegation and Advisor off removes only that block. The host system message, tools, context, other
-extension sections, and conversation are preserved.
+extension sections, and stored conversation are preserved.
 
-The extension does not route, supervise, or collect delegated work, and it never launches anything
-from a hook. Its only launch belongs to one explicit tool, `context_shunt_delegate`, which asks the
-host-authorized external executor for one bounded answer about an already-preserved text artifact.
-The optional Advisor is a role the main agent launches as a subagent, not a launch of this extension.
-Neither replaces delegation, the launcher, tool permissions, or a remote backend, and neither changes
-Pi's main model or thinking level.
+The extension never launches children from hooks. Only explicit tools launch through the authorized
+external executor: `context_shunt_delegate` for a preserved artifact, and `consult_advisor` in tool
+mode. Default role mode leaves Advisor launches to the main agent. Neither replaces permissions,
+backends, delegation, or Pi's main model or thinking. There is no network telemetry or direct network
+client; the executor performs model calls. A content-free local log is described below.
 
-It has no presets, project configuration, external skill loading, telemetry, credential storage, or
-network request of its own; the external executor performs the reader call, and the host's subagent
-mechanism performs the Advisor launch. The extension cannot make another system follow a configured
-role or thinking choice.
+### Launch check
+
+From 0.26.0, while delegation is active, the extension checks a `subagent` call before anything
+launches. From 0.28.0 it corrects the three cases that are unambiguous instead of refusing them by default
+(the global row can still be set to `block`, which refuses every call it would otherwise correct):
+
+- a role name in place of a model (`small`, `medium`, `large`, `visual-design`, `ui-design`,
+  `uidesign`, `advisor`, `advisor-1` to `advisor-3`, case-insensitive) becomes that role's exact
+  provider/model with a level;
+- a role's exact model with no `:LEVEL` gains one: the role's fixed level, the lowest supported level
+  inside its range, or `medium` clamped to what the model supports when it has no policy;
+- a child whose model is exactly one configured Advisor's runs with that Advisor's profile, whatever
+  profile it named or omitted.
+
+The correction is written into the call the host already validated, so it changes what executes; the
+stored transcript keeps what the model sent. The extension then appends a note to that call's tool
+result saying what it applied, so the agent sees the difference. Corrections apply per child and to a
+shared top-level `model` once; a call whose children would resolve differently, or whose model fits
+more than one role or Advisor, is refused instead of guessed.
+
+Everything else is refused as before: a child with no model, a model that is not the exact model of
+an enabled role, a thinking level or Advisor profile it cannot settle, or an Advisor profile with a
+model that is not that Advisor's. Parallel tasks and chain steps are checked one by one, and one
+invalid child refuses the whole call; a top-level `model` applies to children that state none.
+Workflow scripts, inline, by path, by name or through `options.script`, are refused because their
+models live in code the extension cannot read: launch one child, use `tasks` or `chain`, or
+`workflow: "parallel"` with every model stated. Calls with `action` are management or control and
+pass; `resume` keeps the child's original model. A child that will run with an Advisor profile is
+refused if the call asks for `context: "fork"`, because an Advisor answers from the brief the
+extension writes and never from your conversation. With delegation off and Advisor on, only Advisor
+profile launches are checked, and scripts are not.
+
+The refusal lists the accepted launches. The check applies to every `subagent` tool call in the
+session, including ones other skills request: council mode, which uses a workflow script, is refused
+while delegation is active. Slash commands, RPC and schedules created earlier do not pass through
+this tool call and are not checked. The check sees only the call: it cannot decide whether work
+should have been delegated. An invalid delegation configuration refuses new ordinary launches until
+it is fixed; valid Advisors keep working.
+
+A test mode refuses every corrected case instead, keeping the pre-correction behaviour for
+measurement. It is the global **Launch correction** row in `/delegate`, stored in
+`delegation-policy.launch-correction.json` next to the global defaults and described in the
+[configuration reference](/configuration/#launch-correction-mode).
+
+## Configuration change notice
+
+From `0.22.0`, an effective configuration change can add an ephemeral notice to the next user turn's
+request context, in addition to the current policy. Turning both delegation and Advisor off has a
+single exception to zero injection: one notice says they were disabled **by this policy**; subsequent
+turns inject nothing while both stay off. This does not revoke authority from the user, host, or
+another extension and does not itself cancel children or initiate a turn.
+
+Pi converts the custom message to user-role text and drops its custom metadata. Its text identifies
+it as an extension notice, not something the user wrote. The extension does not write notice text to
+session history or its local log, so stored summaries and branches cannot inherit the notice. This
+is not a promise about request retention by providers or other authorized host components.
+
+The presented revision is consumed at final settlement when the last recorded assistant response
+completed; a failed attempt followed by a successful retry counts as completed. A final reported
+error, abort, or unknown outcome preserves the change for another user turn. Pi has no public signal
+for an abort or exception after the last successful response and before final settlement: that
+accepted window can still consume a notice. A newer, unpresented configuration change is not consumed
+by the earlier response.
+
+The Pi peer remains `>=0.87.1`. Notice hooks and conversion were verified against `0.87.1` public APIs
+and a synthetic registered-hook harness, not a full host process or later hosts. The harness encodes
+that host's `input` then `before_agent_start` order. No real-provider notice test, model-obedience
+measurement or provider-cache measurement is claimed. [Configuration](/configuration/#configuration-change-notice)
+lists the tracked settings.
+
+## Advisor reminder
+
+An automatic reminder, on by default, adds one short extension-owned line to the request context at
+most once per operative task of each instance. It is armed by one successful builtin orientation
+result (`read`, `find`, `grep`, `ls`) or by the same builtin tool failing in two different rounds, and
+it is presented only while a valid Advisor is active, the task is live and the configured launch mode
+has its launcher among the active tools. An attempted consultation ends it for that task even when it
+fails; a control action that only names an Advisor is not a consultation.
+
+The line lives in the request copy after the policy block and the configuration notice, never in the
+conversation, and it starts no turn, child or consultation. It adds no authority and revokes no
+instruction. It is sent to the provider, so it is not a promise about cost or retention, and it is
+not a guarantee that a consultation happens: a presentation is not evidence of obedience, and it can
+arrive after the first edit. It reacts only to the builtin tools above, never to shell text, stdout,
+the user's words or a model's intent, and it is not a classifier of task complexity. Only the
+documented `pi-subagents` process markers (`PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_RUNNER_PID`) exclude a
+child; a `/fork` or `/clone` of a human session keeps the reminder, and a missing marker proves
+nothing, so the approved scope also covers foreground children that load this policy and can consult.
+
+The mode is stored in `delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`off` or
+`remind`). A missing file means `remind`; an unreadable or invalid one suspends only the reminder with
+a diagnostic and never changes the delegation or Advisor axis, and the panel row then reads
+`Unavailable/Suspended · global` instead of presenting the suspension as a choice. The extension writes no reminder text
+to session history or its local log. [Configuration](/configuration/#advisor-reminder) describes the
+row and the file.
 
 ## Fail-closed behavior
 
@@ -40,8 +130,9 @@ scope, or unauthenticated, or no enabled ordinary role at all. A configured Visu
 validated too. When one of these is wrong, the ordinary-role minimum is not met and delegation fails
 closed; the ContextShunt reader is unauthorized until the configuration is corrected.
 
-Delegation and Advisor are validated separately. An enabled Advisor whose model, scope,
-authentication, or thinking level is wrong produces `A:ERR` and removes only consultation, leaving
+Delegation and Advisor are validated separately. An enabled Advisor whose model, scope or
+authentication is wrong produces `A:ERR` when none is valid (`A:PART` when only some are valid),
+leaving
 valid delegation and an otherwise authorized reader available; invalid delegation does not suppress a
 valid enabled Advisor. With Advisor off, an unusable Advisor state is reported as a diagnostic while
 the footer keeps `A:OFF`. See
@@ -56,7 +147,8 @@ is stored and inert and adds no error.
 
 If the latest stored session entry is malformed or from a newer schema, restoration forces both
 delegation and Advisor off and keeps only a sanitized warning. Changes affect the next LLM request,
-not one already in progress, and never cancel a subagent the host already launched.
+not one already in progress. Role subagents remain host-owned; detected tool authorization changes
+cancel the extension-owned group.
 
 ## Local data and privacy
 
@@ -72,34 +164,107 @@ files, and unredacted logs from anything you publish.
 
 ## Advisor role
 
-The Advisor is a role, not a tool. It is off by default, and the extension registers nothing for it:
-no tool, no executor, no in-flight counter, no lifecycle cleanup. When the role is enabled, configured
-and valid, the injected policy favors a brief consultation while the main agent shapes or reconsiders
-a substantive choice and tells it to launch `pi-delegation-policy.advisor`, the profile that ships in
-this package, as a normal subagent through Pi's subagent mechanism, with the exact configured model
-and its `thinking.advisor` policy. That launch belongs to the host, not to this extension.
+Advisor is optional, off by default, and outside the ordinary-role minimum. Configure **Advisor 1**
+and optional **Advisor 2** and **Advisor 3**, each with an exact model. Advisor thinking is not a
+setting: role launch lets the main agent choose it per run, and tool launch picks it automatically.
+Every valid advisor gets the same question, so each extra advisor adds a consultation, and its cost,
+at every checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
+`pi-delegation-policy.advisor` profile advises and executes nothing.
 
-The profile declares no tools and no extensions. It cannot read files, run commands, delegate, or
-reach the network; it sees the task text that arrives with it and returns plain text. Because it sees
-nothing else, the brief has to be self-sufficient: it puts the objective, the constraints, the facts,
-and the open choice first, with the agent's proposal and reasons after if there is one. The agent asks
-for an approach, criteria, or critical assumptions rather than approval or a forced list of defects.
-The advisor is a conversation rather than a single answer, and continuing the thread through the
-host's resume mechanism is what lets the main agent clarify, challenge, or go deeper. The advice is
-reused while the decision holds instead of reopening on every turn.
+**Advisor launch** inherits globally or per branch, defaulting to `role`:
 
-Consulting the advisor is a deliberate exception to what stays local. What travels to the advisor's
-model is what the main agent writes into the task, through the host-authorized external executor. The
-extension assembles no conversation window and sends nothing on its own initiative; nothing in the
-policy bounds that text, and there is no aggregate cap and no exclusion list. The extension keeps no
-advisor thread: the subagent session belongs to the host, and the advisor's provider is the executor's
-provider.
+- `role`: the main agent launches every valid advisor in one background subagent call, with exact
+  models and a thinking level it chooses per run. The extension observes matching attempts but does
+  not launch them.
+- `tool`: the always-registered `consult_advisor({ question, brief?, evidence? })` launches one child per valid
+  advisor in parallel through the public `pi-subagents` delegation API. It requires stable SemVer
+  `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every launch must
+  still pass the strict contract and terminal-binding checks. Otherwise it returns unavailable text.
+  No model, provider or executor fallback is added.
+
+Both modes ask for consultation after orientation before substantive work, when stuck, before changing
+approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
+reactive steps and mechanics in a settled approach need no new call.
+
+Every consultation runs in fresh context: the request carries the question and a short self-contained
+`brief` — objective and constraints, relevant facts, options and proposal, uncertainty — and the
+extension never adds the conversation. A first consultation in a thread requires that brief; a later
+call in the same task sends only the new question and evidence. A call that asks for
+`context: "fork"` — on the child, in the call's `options` or at the top level — is refused when an
+Advisor is involved. One residual stays outside the extension's reach: a default such as
+`defaultSubagentContext: "fork"` lives in the `pi-subagents` configuration, which the extension does
+not read, so check it if this matters to you. The Advisor therefore sees only what you write in the
+brief, so a thin brief weakens the advice. The tool launches each advisor at the highest level its model supports
+among `high`, `medium`, `low`, `minimal` and `off`, in that order. A level above `high` is used only by
+a model that supports none of them.
+
+One pending call per tool: an advisor group launches one child per configured valid advisor, while the
+independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
+detected authorization changes cancel the tool group. Partial results preserve a successful answer.
+Local timeouts and cancellation do not cap external generation, retries or cost.
+
+### Optional provider extension
+
+The separate `pi-delegation-policy.advisor-anthropic-auth` profile can load the exact managed-user
+`@gotgenes/pi-anthropic-auth` 3.4.3, 3.4.4 or 3.6.0 installation after a per-Advisor opt-in. It preserves that
+extension's normal configuration, startup hook, provider aliases and account diagnostic command;
+trusted host code can access its normal authentication and files even though the model has no tools.
+The diagnostic can query account information only when explicitly invoked and is never run by
+initialization or availability probes. This is not a sandbox or a metadata-only extension.
+
+Only the verified absolute entry is loaded; other configured extensions are not inherited. Missing
+APIs, package/entry mismatches or initialization errors leave the dispatch guard closed, without
+choosing builtin transport. The check does not sign code or eliminate a resolution-to-load race.
+ContextShunt and the original Advisor profile stay unchanged. See
+[configuration](/configuration/#provider-extension) for supported installations and
+why downgrade to 0.22.2 silences all Advisors when an opt-in is saved. One bounded fresh/background
+real-provider consultation completed on Pi 1.4.0 with pi-subagents 0.83.1; launch metadata showed the
+prompt runtime and provider bridge, no required extensions and no observed tool calls. This does not
+validate `consult_advisor`, other builds, or a sole cause of an earlier failure.
+
+An [admitted provider extension](/configuration/#admitted-provider-extensions) works the same way for
+any other provider, with a weaker check: only its installed identity and listed user source are
+verified before it runs, not its exact surface. Once loaded it is trusted host code with your files,
+network and its own accounts. Withdrawing its provider after a failed check does not undo its side
+effects, and the admission applies to every session.
+
+### Local content-free log
+
+Records are written only while a policy block is active; both delegation and Advisor off produce no
+events, except records written in the short window before the next request notices that the policy
+is off. Content-free events go to `~/.pi/agent/delegation-policy.events.jsonl` (or Pi's configured
+agent dir): time, extension version, SHA-256 policy-block hash when it changes, intensity, Advisor
+modes, context and count; consultation model IDs, status, context and duration; one `task` summary
+per main-agent task from a user prompt to the next settle (duration, tool calls, edits, the position
+of the first edit and of the first consult, whether the consult came before the first edit, subagent
+launches and refusals); one `launch` record per subagent call that launches children (allowed or
+refused, a closed refusal code, child count, one role code per child, and the closed kinds of
+correction applied); an allowed record with no
+children appears only in that off window and still counts as a launch, while a refusal (for example
+a workflow script or a parallel call without tasks) can also carry no children. Consultation, `task`
+and `launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a
+`consult_advisor` call counts whether or not it reached a model, and its real outcome is the
+`consultation` event. `subagentLaunches` counts allowed calls that launch a child other than an
+Advisor: a call that launches only Advisors counts as a consult, a mixed call counts as both, and a
+refused call counts only as a refusal. Role observations are attempts, not proof of completion;
+duration zero means unknown. Questions, briefs, answers, conversations, project paths and raw errors
+are excluded. Writes are serialized, rotate at 256 KiB to one `.1` backup, and failures never break
+a request. Shutdown drains queued writes for at most five seconds, then drops remaining work. An
+in-flight filesystem operation may finish later, but starts no further operation.
+No network telemetry is sent; model identifiers can still be sensitive.
+
+The writer serializes within one process, not across processes; concurrent sessions share no lock.
+Role observations cover exact packaged agent targets, including tasks arrays, not arbitrary workflows.
+Preflight binds the tool session identity; the public request API cannot prove that the live executor
+uses the same session. Terminal mismatch can reject an answer only after context exposure. This
+check validates a declared contract, not a sandbox or an executor signature.
 
 ### Retention
 
-The task text and the reply may persist in the executor's argv, temporary files, sessions, and
-lifecycle records, and at the model provider. The project promises no deletion, no external TTL, and
-no absence of cost. Consultations can add latency and cost even with delegation off.
+Questions, briefs and replies can persist in executor argv, temporary files,
+sessions, lifecycle records and at each provider. No deletion, external TTL or absence of cost is
+promised. Turn Advisor off when session content must not reach those providers. Local log rotation
+is not an external retention policy.
 
 ## ContextShunt limits
 
@@ -181,7 +346,7 @@ Failures use bounded codes that carry no paths, content, or secrets:
 | `evidence-expired`   | The preserved source is gone, so no answer is returned without recoverable evidence.                                              |
 | `invalid-answer`     | The reader result failed the approved contract, the source ID, the line ranges, or the citation cardinality.                      |
 | `output-unavailable` | The call is not authorized, or the validated answer cannot be preserved within the cap.                                           |
-| `reader-unavailable` | The external executor is absent, or its build does not match the pinned protocol.                                                 |
+| `reader-unavailable` | The external executor is absent, below the stable SemVer minimum, or contract-incompatible.                                       |
 | `reader-busy`        | Another `context_shunt_delegate` call is in flight.                                                                               |
 | `reader-cancelled`   | The request was revoked by a branch change, by applying or discarding a panel draft, by `off` or `reset`, or by session shutdown. |
 | `reader-timed-out`   | The request used its whole local time budget.                                                                                     |
@@ -201,10 +366,12 @@ launch contract as well, before any launch.
 Both the snapshot and the answer are untrusted data rather than instructions. The extension never
 follows text inside them and never executes it.
 
-The reader needs a compatible external executor. The only verified one is `pi-subagents` `0.76.1` on Pi
-`1.1.0`; Pi `0.87.1`, the declared minimum, is not verified for the reader. A different executor build,
-including `0.69.0`, fails the contract check and returns `reader-unavailable`, with no answer and no
-fallback model, provider, or retry.
+The reader requires stable `pi-subagents` SemVer `>=0.76.1`, with no upper bound. Prereleases,
+invalid versions and older builds, including `0.69.0`, return `reader-unavailable` before REQUEST.
+Every launch must still pass the unchanged strict contract checks: the version floor does not
+promise future-build compatibility. The reader was verified with `0.76.1` on Pi `1.1.0`;
+Pi `0.87.1`, the declared minimum, is not verified for the reader. There is no fallback model,
+provider, or retry.
 
 From `0.19.0`, the reader also accepts the host's permission runtime described below. Version
 `0.18.0` and earlier reject any extra runtime, so with host permission rules their reader returns
