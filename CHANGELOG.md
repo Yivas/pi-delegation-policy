@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.28.1 - 2026-11-18
+
+### Fixed
+
+- A stored state file whose path cannot exist, because one of its parent components is a regular
+  file, is now read as absent instead of unreadable. Linux reports that case as `ENOTDIR` and Windows
+  as `ENOENT`, so on Linux the Advisor reminder's stored mode and its save step, the launch check's
+  mode and save step, and the provider admissions read could report an unknown or invalid state
+  where the file simply was not there. The same check now covers the stored global configuration,
+  its Advisor companion and the copy compared before a save: eight reads in all. The Advisor thread
+  bookkeeping keeps its current, fail-closed handling. No other result code, message or panel
+  behaviour changed.
+
 ## 0.28.0 - 2026-11-18
 
 ### Added
