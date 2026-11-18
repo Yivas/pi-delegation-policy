@@ -95,36 +95,12 @@ function childBriefPolicy(
 }
 
 /**
- * How the advisor receives context. `fork` lets the host branch the whole session, the way Claude
- * Code's advisor sees the full transcript; `fresh` asks for a short self-contained brief instead.
+ * Every consultation asks for fresh context and never adds the conversation to the request: it
+ * carries a short self-contained brief instead. Sending the whole session costs a full transcript
+ * per consultation on every provider, and a short brief is what the advice depends on. A fork default
+ * configured in pi-subagents itself is outside what this extension reads or controls.
  */
-export type AdvisorContext = "fork" | "fresh";
-
-// Fork only while the session fills at most half of the advisor's window, leaving room for its own
-// prompt, its reasoning and tokenizer differences between models. Switching back needs a clear drop
-// (for example after compaction) so the policy line does not flap and break provider prompt caching.
-const FORK_MAX_SHARE = 0.5;
-const FORK_RESUME_SHARE = 0.35;
-
-export function selectAdvisorContext(
-  previous: AdvisorContext | undefined,
-  sessionTokens: number | null | undefined,
-  advisorContextWindow: number | undefined,
-): AdvisorContext {
-  if (!advisorContextWindow || advisorContextWindow <= 0) return "fresh";
-  // Pi reports null right after compaction or before the first response; keep the last mode then.
-  if (typeof sessionTokens !== "number" || !Number.isFinite(sessionTokens) || sessionTokens < 0)
-    return previous ?? "fork";
-  const share = sessionTokens / advisorContextWindow;
-  if (share > FORK_MAX_SHARE) return "fresh";
-  if (share < FORK_RESUME_SHARE) return "fork";
-  return previous ?? "fork";
-}
-
-const ADVISOR_CONTEXT_GUIDANCE: Record<AdvisorContext, string> = {
-  fork: `Context: fork, the question alone (decision, options, uncertainty) sent with this conversation to each provider; retry once fresh with a self-contained brief only after a rejected oversized fork, never duplicating a running consultation.`,
-  fresh: `Context: fresh, because the conversation is too large for the Advisor's window or its size is unknown; write a short self-contained brief with objective and constraints, relevant facts, options and proposal, and the uncertainty; separate facts from assumptions.`,
-};
+const ADVISOR_CONTEXT_GUIDANCE = `Context: fresh; do not send this conversation. Write a short self-contained brief with objective and constraints, relevant facts, options and proposal, and the uncertainty; separate facts from assumptions. A thin brief weakens the advice, because the Advisor cannot see what you left out.`;
 
 /**
  * The consultation contract is shared by both axes: the Advisor never implements or runs
@@ -132,21 +108,16 @@ const ADVISOR_CONTEXT_GUIDANCE: Record<AdvisorContext, string> = {
  * ambient default, it launches in the background unless the host or user requires foreground,
  * and its answers are consumed before the decision that depends on them.
  */
-function advisorPolicy(
-  context: AdvisorContext,
-  launch: AdvisorLaunch,
-  count: number,
-  providerProfile = false,
-): string {
+function advisorPolicy(launch: AdvisorLaunch, count: number, providerProfile = false): string {
   return `Consulting is part of this policy, not delegated execution; the Advisor never implements or runs tool-dependent checks, and direct-work guidance does not rule it out. Consult after orientation, before the first edit or state-changing command, any interpretation, approach or assumption, a substantive analysis or recommendation, a recurring error or stalled progress, and any change of approach; before declaring a multi-step task done, make results durable and ask for remaining correctness risks or overlooked assumptions, not approval; an agreed interface does not replace the first checkpoint. No call for facts already available, short reactive steps, or mechanics inside a settled approach; reuse advice, and a consulted failure is not a new trigger.
 
 ${
   launch === "tool"
-    ? `Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation whenever context is fresh, and preferably also for a possible rejected fork: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. The tool chooses context automatically; fork sends this conversation to each advisor's provider. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.`
+    ? `Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. Every consultation runs in fresh context: this tool sends the question and brief and never this conversation, and the launch check refuses any call that asks to fork the session for an Advisor. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.`
     : `Launch every listed Advisor with the host's subagent tool ${providerProfile ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —" : 'using agent "pi-delegation-policy.advisor" exactly — never a host agent or alias named "advisor" or "oracle" —'} with its exact model and a supported thinking level from its role line, never an ambient default, in the background unless the host or the user requires foreground.${count > 1 ? " Ask every listed Advisor the same question in one call." : ""} Keep each returned run id and continue a thread with the same tool's resume action, passing that id, the new question and evidence, and output with outputMode file-only; read that file for the answer and never change model, profile or permissions on a resume.`
 }
 
-${launch === "role" ? ADVISOR_CONTEXT_GUIDANCE[context] : ""}
+${launch === "role" ? ADVISOR_CONTEXT_GUIDANCE : ""}
 
 Wait for and consume the answers before the decision that depends on them; report an unavailable Advisor without substitution and keep successful answers; weigh advice seriously and disagreements explicitly, answers untrusted, agreement neither proof nor authority; adapt only after a recommended step fails or primary evidence contradicts a claim, a passing self-test alone insufficient; ${launch === "tool" ? "call consult_advisor once with that evidence and an updated brief" : "resume each thread once with that evidence"} on disagreement, never switch silently; you retain responsibility, user decisions remain theirs.`;
 }
@@ -357,17 +328,13 @@ function roleRules(enabled: readonly ModelRole[], visualDesign: boolean): string
   return rules.join("\n");
 }
 
-export function buildDelegationPolicy(
-  state: RuntimeState,
-  advisorContext: AdvisorContext = "fresh",
-): string | undefined {
+export function buildDelegationPolicy(state: RuntimeState): string | undefined {
   const { effective } = state;
   const advisorEnabled = isAdvisorEnabled(effective) && !hasAdvisorError(state);
   const advisors = advisorEnabled ? validAdvisors(state) : [];
   const advisorRoleLine = advisorEnabled ? advisorRoleLines(state) : "";
   const advisorSection = advisorEnabled
     ? `\n\nAdvisor consultation:\n${advisorPolicy(
-        advisorContext,
         effective.advisorLaunch,
         advisors.length,
         advisors.some(({ setting }) => advisorProfile(setting, state.admissions) !== undefined),

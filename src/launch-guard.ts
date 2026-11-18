@@ -69,6 +69,7 @@ export type LaunchRefusalCode =
   | "thinking-outside-policy"
   | "advisor-mismatch"
   | "advisor-off"
+  | "advisor-fork-context"
   | "shared-model-conflict";
 /** Closed kinds of correction the guard applies instead of refusing an unambiguous call. */
 export type LaunchCorrectionCode = "level-added" | "advisor-profile" | "role-alias";
@@ -309,6 +310,19 @@ export function statedChildren(input: Record<string, unknown>): StatedChildren |
       return { entry, model: inherits ? shared : stated, sharedModel: inherits };
     }),
   };
+}
+
+/**
+ * Whether this call asks the host to branch the session for this child. The host reads `context` on
+ * the call's `options` for every workflow child and on the child itself, so both are checked: a
+ * refusal that only read the child would be bypassed by the documented `options.context`.
+ */
+function forksThisChild(input: Record<string, unknown>, entry: Record<string, unknown>): boolean {
+  const options = isRecord(input.options) ? input.options : undefined;
+  // Three shapes reach the host: the child itself, the call's `options`, and a top-level `context`
+  // that governs every child of a multi-child call. All three are read here, because a refusal that
+  // missed one would be bypassed by moving the same value one level up.
+  return entry.context === "fork" || options?.context === "fork" || input.context === "fork";
 }
 
 /** One role code per child, read from the model that child runs. */
@@ -690,6 +704,18 @@ export function inspectSubagentLaunch(
         ? checkAdvisorChild(state, profile, base, level)
         : checkOrdinaryChild(state, base, level);
     if (why) return refuse(why.code, `${label}${why.message}`, children);
+    // An Advisor receives the brief the extension writes, never the conversation: a child that asks
+    // the host to branch this session would send it to the Advisor's provider, which the policy and
+    // the documentation say never happens. The check reads the profile this child will actually run
+    // with — after correction, not the one the call stated — because a role alias or an Advisor model
+    // turns an ordinary profile into an Advisor one. The configuration refusals above come first, so
+    // an Advisor that is off or mismatched still reports its real cause.
+    if (ADVISOR_AGENTS.has(profile) && forksThisChild(input, child.entry))
+      return refuse(
+        "advisor-fork-context",
+        `${label}an Advisor runs in fresh context with its brief; remove context "fork" from this call`,
+        children,
+      );
     plans.push(plan.plan);
   }
 

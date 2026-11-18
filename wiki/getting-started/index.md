@@ -68,16 +68,19 @@ Configure **Advisor 1** and optional **Advisor 2** and **Advisor 3** in `/delega
 **Advisor mode** or run `/delegate advisor on`. Default **Advisor launch: role** asks the main agent
 to consult every valid entry in one background call. Optional **tool** mode uses explicit
 `consult_advisor({ question, brief? })` through the authorized external executor, never from hooks.
-Fresh needs a self-contained brief; fork sends the conversation to each provider. The tool's executor
-requires stable `pi-subagents` SemVer `>=0.76.1`, with no upper bound, and the strict launch
-contract; prereleases and invalid versions are rejected. Advisor thinking is automatic. `A:PART`
+Every consultation runs in fresh context and needs a self-contained brief; the extension never sends
+the conversation. A fork default configured in `pi-subagents` itself is outside what the extension
+can read, so check that setting if your Advisors must never see it. The tool's executor requires stable `pi-subagents` SemVer `>=0.76.1`, with no
+upper bound, and the strict launch contract; prereleases and invalid versions are rejected. Advisor thinking is automatic. `A:PART`
 means only some entries are valid and usable.
 
 With delegation `off` and mode `on`, status shows `D:OFF A:ON`: consultation-only guidance is
 injected and ordinary roles are not required. Mode `off` silences consultation and keeps the saved
 model. The default `with-delegation` preserves the previous coupling to active delegation. A
-consultation sends a brief or, in `fork` mode, the conversation so far to another model, and can add
-latency and cost even with delegation off.
+consultation sends the question and brief to another model — the extension never adds the
+conversation, and it refuses a call that asks to fork the session for an Advisor — and it can add
+latency and cost even with delegation off. A fork default set in `pi-subagents` itself stays outside
+the extension's reach.
 
 Validation is reported per axis. An enabled Advisor whose model is missing, out of scope,
 or unauthenticated produces `A:ERR` and removes only

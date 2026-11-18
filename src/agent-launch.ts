@@ -157,7 +157,10 @@ export type AgentLaunchResultExpectation<Request, Value> =
 export type AgentLaunchDefinition<Request extends AgentLaunchRequest, Value> = Readonly<{
   agentName: string;
   agentPath: string;
-  /** Only the advisor may send a fork; reader requests remain fresh-only. */
+  /**
+   * Whether this definition may ask the host to branch the session. No current consumer sets it: the
+   * Advisor runs in fresh context and the reader requests are fresh-only, so fork is requested nowhere.
+   */
   allowFork?: boolean;
   /**
    * Builtin tools the child must expose. A profile that declares no tools and no

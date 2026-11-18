@@ -96,8 +96,8 @@ const events = {
 };
 const sentinel = "PRIVATE-QUESTION-BRIEF-ANSWER-CONVERSATION-SENTINEL";
 const hostErrorSentinel = "RAW-HOST-ERROR https://provider.invalid/secret /private/session/path";
-// `pi-subagents` 0.76.1 wraps a fork task before hashing the launch binding, so the preflight must
-// hash this exact prefix instead of the raw task the request still carries.
+// The optional public fork wrapper `pi-subagents` exports. The Advisor never sends a fork, so the
+// synthetic modules only have to prove that the extension still loads with and without it.
 const forkPreamble =
   "You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.";
 const forkTask = (task: string) => {
@@ -127,8 +127,8 @@ class Bus {
   requests: Payload[] = [];
   cancels: Payload[] = [];
   respond: ((payload: Payload) => void) | undefined;
-  /** The host wraps a fork task before it launches the child and binds that wrapped task. */
-  wrapForExecution: (task: string) => string = forkTask;
+  /** The task the host binds in its terminal contract; a different one cannot match the preflight. */
+  bindTask: (task: string) => string = (task) => task;
   failRequestEmit = false;
   /** The host allocates one execution run id per admitted launch. */
   runSeq = 0;
@@ -152,7 +152,7 @@ class Bus {
   }
   finish(request: Payload, status = "completed", answer: unknown = sentinel, error?: string) {
     const task = request.task as string;
-    const executionTask = request.context === "fork" ? this.wrapForExecution(task) : task;
+    const boundTask = this.bindTask(task);
     this.runSeq += 1;
     this.emit(events.startedEvent, request);
     this.emit(events.responseEvent, {
@@ -164,7 +164,7 @@ class Bus {
       agent: request.agent,
       model: `${request.model}:${request.thinking}`,
       thinking: request.thinking,
-      launchContractDigest: launchTaskDigest(executionTask),
+      launchContractDigest: launchTaskDigest(boundTask),
       result: { kind: "text", text: answer },
       ...(error === undefined ? {} : { error }),
     });
@@ -204,8 +204,6 @@ async function fakeModules(
       contract.model = `${fields.model}:${fields.thinking}`;
       contract.thinking = fields.thinking;
       contract.digest = digest;
-      // The real preflight hashes the task it received, which the extension must already have
-      // wrapped for a fork.
       contract.launchContractDigest = launchTaskDigest(fields.task as string);
       const tools = contract.tools as Payload;
       tools.effectiveAllowlist = [];
@@ -1078,8 +1076,13 @@ test("tool starts both exact models in parallel, preserves a partial answer and 
         request.task,
       ]),
       [
-        ["example/first", "high", "fork", sentinel],
-        ["example/second", "medium", "fork", sentinel],
+        ["example/first", "high", "fresh", JSON.stringify({ question: sentinel, brief: sentinel })],
+        [
+          "example/second",
+          "medium",
+          "fresh",
+          JSON.stringify({ question: sentinel, brief: sentinel }),
+        ],
       ],
     );
     assert.match(
@@ -1089,11 +1092,11 @@ test("tool starts both exact models in parallel, preserves a partial answer and 
     run.bus.finish(run.bus.requests[1]!, "failed", sentinel, hostErrorSentinel);
     run.bus.finish(run.bus.requests[0]!);
     const answer = await call;
-    assert.match(answer, /example\/first \[fork\]/);
+    assert.match(answer, /example\/first \[fresh\]/);
     assert.match(answer, new RegExp(sentinel));
     assert.match(
       answer,
-      /example\/second \[fork\]:\nThe host ended the Advisor run with status failed and supplied no safe detail/,
+      /example\/second \[fresh\]:\nThe host ended the Advisor run with status failed and supplied no safe detail/,
     );
     assert.doesNotMatch(answer, /RAW-HOST-ERROR|provider\.invalid|private\/session/);
     const policy = (await run.hook("before_provider_request", {
@@ -1115,13 +1118,13 @@ test("terminal results must match the bound digest and carry usable text", async
   {
     const run = await harness();
     try {
-      // A host that reports the raw fork task binds a digest the preflight never saw.
-      run.bus.wrapForExecution = (task) => task;
+      // A host that binds another task reports a digest the preflight never saw.
+      run.bus.bindTask = () => "a task the preflight never saw";
       run.bus.respond = (request) => run.bus.finish(request);
       const answer = await run.call();
       assert.match(
         answer,
-        /example\/first \[fork\]:\nThe host returned an Advisor reply whose launch contract digest did not match the preflight contract, so the reply was discarded/,
+        /example\/first \[fresh\]:\nThe host returned an Advisor reply whose launch contract digest did not match the preflight contract, so the reply was discarded/,
       );
       assert.doesNotMatch(answer, new RegExp(sentinel));
     } finally {
@@ -1141,19 +1144,12 @@ test("terminal results must match the bound digest and carry usable text", async
   }
 });
 
-test("fork fails closed without the public task normalizer and fresh still works", async () => {
+test("a build without the public fork wrapper still serves fresh consultations", async () => {
   const run = await harness(base, models, 10_000, { forkTaskNormalizer: false });
   try {
-    const forkAnswer = await run.call();
-    assert.match(forkAnswer, /does not export wrapForkTask/);
-    // A brief cannot switch this session to fresh, so the cause must not promise that fallback.
-    assert.doesNotMatch(forkAnswer, /Call again with brief/);
-    assert.match(forkAnswer, /install an admitted pi-subagents build/);
-    assert.doesNotMatch(forkAnswer, /0\.76\.1/);
-    assert.equal(run.bus.requests.length, 0);
-    run.ctx.getContextUsage = () => ({ tokens: 60_000 });
     run.bus.respond = (request) => run.bus.finish(request);
-    assert.match(await run.call({ question: sentinel, brief: sentinel }), new RegExp(sentinel));
+    assert.match(await run.call(), new RegExp(sentinel));
+    // The Advisor never asks for a fork, so a missing fork wrapper cannot block it.
     assert.deepEqual(
       [run.bus.requests[0]?.context, run.bus.requests[0]?.task],
       ["fresh", JSON.stringify({ question: sentinel, brief: sentinel })],
@@ -1192,14 +1188,13 @@ test("preflight failures differ from an invalid contract and render safe causes"
   }
 });
 
-test("a verified 0.83.1 contract admits the Advisor in fork and fresh and binds the fork digest", async () => {
+test("a verified 0.83.1 contract admits the Advisor in fresh context and binds its digest", async () => {
   const run = await harness(base, models, 10_000, { fixtureVersion: "0.83.1" });
   try {
-    // The synthetic host binds the wrapped fork task, exactly as the preflight did.
+    // The synthetic host binds the task the preflight saw, exactly as the preflight did.
     run.bus.respond = (request) => run.bus.finish(request);
-    assert.match(await run.call(), /example\/first \[fork\]/);
+    assert.match(await run.call(), /example\/first \[fresh\]/);
     await run.newTask();
-    run.ctx.getContextUsage = () => ({ tokens: 60_000 });
     assert.match(
       await run.call({ question: sentinel, brief: sentinel }),
       /example\/first \[fresh\]/,
@@ -1207,8 +1202,8 @@ test("a verified 0.83.1 contract admits the Advisor in fork and fresh and binds 
     assert.deepEqual(
       run.bus.requests.map((request) => [request.context, request.model, request.thinking]),
       [
-        ["fork", "example/first", "high"],
-        ["fork", "example/second", "high"],
+        ["fresh", "example/first", "high"],
+        ["fresh", "example/second", "high"],
         ["fresh", "example/first", "high"],
         ["fresh", "example/second", "high"],
       ],
@@ -1218,7 +1213,7 @@ test("a verified 0.83.1 contract admits the Advisor in fork and fresh and binds 
   }
 });
 
-test("stable pi-subagents releases at or above the minimum bind fork and fresh answers", async () => {
+test("stable pi-subagents releases at or above the minimum bind fresh answers", async () => {
   for (const packageVersion of [
     "0.76.1",
     "0.82.0",
@@ -1233,11 +1228,10 @@ test("stable pi-subagents releases at or above the minimum bind fork and fresh a
       run.bus.respond = (request) => run.bus.finish(request);
       assert.match(await run.call(), new RegExp(sentinel), packageVersion);
       await run.newTask();
-      run.ctx.getContextUsage = () => ({ tokens: 60_000 });
       assert.match(await run.call(), new RegExp(sentinel), packageVersion);
       assert.deepEqual(
         run.bus.requests.map((request) => request.context),
-        ["fork", "fork", "fresh", "fresh"],
+        ["fresh", "fresh", "fresh", "fresh"],
       );
     } finally {
       await run.close();
@@ -1281,51 +1275,60 @@ test("old, prerelease and malformed pi-subagents versions are rejected before an
   }
 });
 
-test("fork rejection retries only that advisor once with fresh brief", async () => {
-  const run = await harness();
-  try {
-    run.bus.respond = (request) => {
-      if (request.model === "example/first" && request.context === "fork")
-        run.bus.emit(events.responseEvent, {
-          requestId: request.requestId,
-          ownerRunId: request.ownerRunId,
-          nodeId: request.nodeId,
-          status: "unavailable_context",
+test("no consultation asks the host for a fork, whatever the session uses", async () => {
+  // Nothing is retried with a second context: an explicit host rejection ends the turn.
+  for (const tokens of [10_000, 60_000, null, 90_000]) {
+    const run = await harness(base, models, tokens as number | null);
+    try {
+      run.bus.respond = (request) => run.bus.finish(request);
+      assert.match(await run.call(), /example\/first \[fresh\]/);
+      assert.deepEqual(
+        run.bus.requests.map((request) => request.context),
+        ["fresh", "fresh"],
+        `usage ${String(tokens)}`,
+      );
+      for (const request of run.bus.requests) {
+        assert.deepEqual(JSON.parse(request.task as string), {
+          question: sentinel,
+          brief: sentinel,
         });
-      else run.bus.finish(request);
-    };
-    const answer = await run.call();
-    assert.equal(run.bus.requests.length, 3);
-    const retried = run.bus.requests.find((request) => request.context === "fresh")!;
-    assert.equal(retried.model, "example/first");
-    assert.deepEqual(JSON.parse(retried.task as string), { question: sentinel, brief: sentinel });
-    assert.match(answer, /example\/first \[fresh\]/);
-  } finally {
-    await run.close();
+      }
+    } finally {
+      await run.close();
+    }
   }
-});
-
-test("fresh requires a brief; rejected forks without a brief are not retried", async () => {
-  const fresh = await harness(base, models, 60_000);
+  const rejected = await harness();
   try {
-    assert.match(await fresh.call({ question: sentinel } as never), /fresh context requires brief/);
-    assert.equal(fresh.bus.requests.length, 0);
-  } finally {
-    await fresh.close();
-  }
-  const fork = await harness();
-  try {
-    fork.bus.respond = (request) =>
-      fork.bus.emit(events.responseEvent, {
+    rejected.bus.respond = (request) =>
+      rejected.bus.emit(events.responseEvent, {
         requestId: request.requestId,
         ownerRunId: request.ownerRunId,
         nodeId: request.nodeId,
         status: "unavailable_context",
       });
-    assert.match(await fork.call({ question: sentinel } as never), /Call again with brief/);
-    assert.equal(fork.bus.requests.length, 2);
+    assert.match(
+      await rejected.call(),
+      /example\/first \[fresh\]:\nThe host could not supply the requested context/,
+    );
+    assert.equal(rejected.bus.requests.length, 2, "a rejected turn is never retried");
   } finally {
-    await fork.close();
+    await rejected.close();
+  }
+});
+
+test("a first consultation requires a brief in fresh context", async () => {
+  const fresh = await harness(base, models, 60_000);
+  try {
+    assert.match(
+      await fresh.call({ question: sentinel } as never),
+      /a first consultation requires brief/,
+    );
+    assert.equal(fresh.bus.requests.length, 0);
+    // A blank brief is not a brief either.
+    assert.match(await fresh.call({ question: sentinel, brief: "  " }), /requires brief/);
+    assert.equal(fresh.bus.requests.length, 0);
+  } finally {
+    await fresh.close();
   }
 });
 
@@ -1442,7 +1445,7 @@ test("logs rotate, deduplicate policy hashes, contain metadata only and tolerate
             agent: ADVISOR_AGENT_NAME,
             model: "example/first:low",
             task: sentinel,
-            context: "fork",
+            context: "fresh",
           },
           { agent: "other", model: sentinel, task: sentinel },
         ],
@@ -1465,7 +1468,7 @@ test("logs rotate, deduplicate policy hashes, contain metadata only and tolerate
     );
     await writeFile(run.logPath, "x".repeat(ADVISOR_LOG_MAX_BYTES));
     run.log.consultation("role", [
-      { model: "example/first", status: "observed", context: "fork", durationMs: 0 },
+      { model: "example/first", status: "observed", context: "fresh", durationMs: 0 },
     ]);
     await run.log.flush();
     assert.equal((await readFile(`${run.logPath}.1`, "utf8")).length, ADVISOR_LOG_MAX_BYTES);
@@ -2076,12 +2079,12 @@ test("advisor group terminal timeout cancels each child and settles locally", as
         },
         request: {
           question: sentinel,
-          context: "fork" as const,
+          brief: sentinel,
           model: { provider: "example", id, thinking: "high" },
           availableModels: [{ provider: "example", id, fullId: `example/${id}`, reasoning: true }],
         },
       })),
-      consult: { question: sentinel, context: "fork" as const },
+      consult: { question: sentinel },
       task: { parentKey: "a".repeat(64), taskToken: "synthetic-task-0001" },
     },
     { cwd: "/synthetic", sessionId: "synthetic", events: bus },
@@ -2216,7 +2219,6 @@ for (const version of ["0.76.1", "0.83.1"] as const) {
           consult: {
             question: "synthetic question",
             brief: "synthetic brief",
-            context: "fresh",
           },
           task: { parentKey: "b".repeat(64), taskToken: "synthetic-task-0002" },
         },
@@ -2352,12 +2354,12 @@ test("a second turn resumes the exact new run id and returns its own file", asyn
   const rpc = new RpcHost(run.bus);
   try {
     run.bus.respond = (request) => run.bus.finish(request);
-    assert.match(await run.call(), /example\/first \[fork\]/);
+    assert.match(await run.call(), /example\/first \[fresh\]/);
     assert.equal(rpc.requests.length, 0, "the first turn is a launch, never a resume");
 
     const answer = await run.call({ question: "second question", evidence: "new evidence" });
-    assert.match(answer, /example\/first \[fork\]:\nanswer-0/);
-    assert.match(answer, /example\/second \[fork\]:\nanswer-1/);
+    assert.match(answer, /example\/first \[fresh\]:\nanswer-0/);
+    assert.match(answer, /example\/second \[fresh\]:\nanswer-1/);
     assert.match(answer, /Consultation complete: 2 of 2 advisors answered/);
 
     // One resume per slot, addressed to the run id the first turn returned, with its own file.
@@ -3227,18 +3229,17 @@ test("a task whose closing tombstones fail stays blocked until reconciliation", 
   }
 });
 
-test("a continuation needs no new brief when the context switches to fresh", async () => {
+test("a continuation needs no new brief, and only a first consultation requires one", async () => {
   const run = await harness();
   const rpc = new RpcHost(run.bus);
   try {
     run.bus.respond = (request) => run.bus.finish(request);
-    assert.match(await run.call(), /\[fork\]/);
-    run.ctx.getContextUsage = () => ({ tokens: 60_000 });
+    assert.match(await run.call(), /\[fresh\]/);
     assert.match(await run.call({ question: "second question" }), /answer-0/);
     assert.equal(rpc.resumes.length, 2);
-    // A first fresh launch still fails closed without a brief.
+    // A first launch still fails closed without a brief.
     await run.newTask();
-    assert.match(await run.call({ question: "third" }), /fresh context requires brief/);
+    assert.match(await run.call({ question: "third" }), /a first consultation requires brief/);
   } finally {
     await run.close();
   }

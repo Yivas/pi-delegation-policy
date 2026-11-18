@@ -52,7 +52,9 @@ invalid child refuses the whole call; a top-level `model` applies to children th
 Workflow scripts, inline, by path, by name or through `options.script`, are refused because their
 models live in code the extension cannot read: launch one child, use `tasks` or `chain`, or
 `workflow: "parallel"` with every model stated. Calls with `action` are management or control and
-pass; `resume` keeps the child's original model. With delegation off and Advisor on, only Advisor
+pass; `resume` keeps the child's original model. A child that will run with an Advisor profile is
+refused if the call asks for `context: "fork"`, because an Advisor answers from the brief the
+extension writes and never from your conversation. With delegation off and Advisor on, only Advisor
 profile launches are checked, and scripts are not.
 
 The refusal lists the accepted launches. The check applies to every `subagent` tool call in the
@@ -184,13 +186,17 @@ Both modes ask for consultation after orientation before substantive work, when 
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
 reactive steps and mechanics in a settled approach need no new call.
 
-Context is `fork` while the session fits in half of every valid advisor's window, `fresh` above that or
-with an unknown window, and returns to fork below 35%. Unknown token usage keeps the last mode. Fork
-sends the conversation to each provider, with only the question as the task. Fresh requires a short
-self-contained `brief`: objective, constraints, relevant facts, options and uncertainty. The tool
-retries only an explicitly rejected fork, once with fresh and only with a supplied brief. The tool
-launches each advisor at the highest level its model supports among `high`, `medium`, `low`, `minimal`
-and `off`, in that order. A level above `high` is used only by a model that supports none of them.
+Every consultation runs in fresh context: the request carries the question and a short self-contained
+`brief` — objective and constraints, relevant facts, options and proposal, uncertainty — and the
+extension never adds the conversation. A first consultation in a thread requires that brief; a later
+call in the same task sends only the new question and evidence. A call that asks for
+`context: "fork"` — on the child, in the call's `options` or at the top level — is refused when an
+Advisor is involved. One residual stays outside the extension's reach: a default such as
+`defaultSubagentContext: "fork"` lives in the `pi-subagents` configuration, which the extension does
+not read, so check it if this matters to you. The Advisor therefore sees only what you write in the
+brief, so a thin brief weakens the advice. The tool launches each advisor at the highest level its model supports
+among `high`, `medium`, `low`, `minimal` and `off`, in that order. A level above `high` is used only by
+a model that supports none of them.
 
 One pending call per tool: an advisor group launches one child per configured valid advisor, while the
 independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
@@ -214,7 +220,7 @@ ContextShunt and the original Advisor profile stay unchanged. See
 why downgrade to 0.22.2 silences all Advisors when an opt-in is saved. One bounded fresh/background
 real-provider consultation completed on Pi 1.4.0 with pi-subagents 0.83.1; launch metadata showed the
 prompt runtime and provider bridge, no required extensions and no observed tool calls. This does not
-validate fork, `consult_advisor`, other builds, or a sole cause of an earlier failure.
+validate `consult_advisor`, other builds, or a sole cause of an earlier failure.
 
 An [admitted provider extension](/configuration/#admitted-provider-extensions) works the same way for
 any other provider, with a weaker check: only its installed identity and listed user source are
@@ -255,7 +261,7 @@ check validates a declared contract, not a sandbox or an executor signature.
 
 ### Retention
 
-Questions, briefs, forked conversation and replies can persist in executor argv, temporary files,
+Questions, briefs and replies can persist in executor argv, temporary files,
 sessions, lifecycle records and at each provider. No deletion, external TTL or absence of cost is
 promised. Turn Advisor off when session content must not reach those providers. Local log rotation
 is not an external retention policy.

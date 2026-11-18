@@ -178,15 +178,15 @@ reveals session content.
 ### Consult Advisor tool
 
 `consult_advisor({ question, brief? })` is always registered but unavailable outside tool launch mode
-or without an enabled valid advisor. Fresh needs a self-contained brief; fork sends only the question
-as task and the host supplies the conversation. Only an explicitly rejected fork retries once, with
-brief and fresh context. Labelled answers survive another advisor's failure. One pending call per
+or without an enabled valid advisor. Every consultation runs in fresh context: the task is the question
+and a short self-contained brief, and the conversation is never sent. A first consultation in a thread
+requires that brief; a later call sends only the new question and evidence. Labelled answers survive
+another advisor's failure. One pending call per
 tool: an advisor group launches one child per valid configured advisor; the reader remains independent.
 Abort, branch changes, shutdown and detected authorization changes cancel the group.
 
 Status adds `advisor-launch=` and one `advisor-N=` token per entry, with its profile and source. In tool mode
-policy text asks for this tool, not the generic subagent launcher, and stays stable across context
-changes. See [privacy](/limits-and-privacy/#local-content-free-log) for the local metadata log.
+policy text asks for this tool, not the generic subagent launcher, whatever the session uses. See [privacy](/limits-and-privacy/#local-content-free-log) for the local metadata log.
 
 ## 6. Use ContextShunt safely
 

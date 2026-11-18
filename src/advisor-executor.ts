@@ -16,7 +16,6 @@ import {
   type AgentLaunchTerminalField,
   type AgentLaunchTerminalStatus,
 } from "./agent-launch.ts";
-import type { AdvisorContext } from "./prompt.ts";
 import { MAX_ADVISORS, type AdvisorSetting, type ThinkingLevelName } from "./types.ts";
 import type { ConsultationAttempt } from "./advisor-log.ts";
 import {
@@ -51,6 +50,7 @@ import {
   type AdvisorThreadFingerprint,
   type AdvisorThreadReason,
   type AdvisorThreadRecord,
+  type AdvisorTurnContext,
 } from "./advisor-threads.ts";
 
 export const ADVISOR_AGENT_NAME = "pi-delegation-policy.advisor";
@@ -63,7 +63,6 @@ export const ADVISOR_PACKAGE_VERSION = (
 export type AdvisorRequest = AgentLaunchRequest & {
   question: string;
   brief?: string;
-  context: AdvisorContext;
   /** Selects the child profile: Anthropic's own opt-in, or the extension admitted for the provider. */
   providerExtension?: "anthropic-auth" | "admitted";
 };
@@ -74,7 +73,6 @@ export type AdvisorConsultRequest = Readonly<{
   brief?: string;
   /** What changed since the previous turn; only a continuation sends it. */
   evidence?: string;
-  context: AdvisorContext;
 }>;
 
 /**
@@ -96,7 +94,7 @@ export type AdvisorSlotOutcome = Readonly<{
   slot: number;
   model: string;
   status: AdvisorSlotStatus;
-  context: AdvisorContext | "unknown";
+  context: AdvisorTurnContext | "unknown";
   /** Present only when the slot produced an answer. */
   answer?: string;
   /** Closed cause of a non-complete slot, or the continuity note of a complete one. */
@@ -185,7 +183,7 @@ export function advisorContinuityText(code: AdvisorContinuityCode): string {
     case "closing-failed":
       return "Advisor continuity is blocked: the closing state of an earlier task could not be persisted, so its records only look settled. Run /delegate advisor threads recover to reconcile it with the host before consulting again.";
     case "brief-required":
-      return "Advisor error: fresh context requires brief for a first consultation. Supply a short self-contained objective, constraints, relevant facts, options, and uncertainty; a continuation sends only the question and evidence.";
+      return "Advisor error: a first consultation requires brief. Fresh context sends only your question and brief, so supply a short self-contained objective, constraints, relevant facts, options, and uncertainty; a continuation sends only the question and evidence.";
     case "answer-missing":
       return `Advisor continuation is blocked: the turn completed but wrote no answer file. ${RECOVERY}`;
     case "answer-invalid":
@@ -204,12 +202,8 @@ const DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
   agentPath: resolve(
     fileURLToPath(new URL("../agents/pi-delegation-policy.advisor.md", import.meta.url)),
   ),
-  allowFork: true,
   internalTools: [],
-  buildTask: (request) =>
-    request.context === "fork"
-      ? request.question
-      : JSON.stringify({ question: request.question, brief: request.brief }),
+  buildTask: (request) => JSON.stringify({ question: request.question, brief: request.brief }),
   result: {
     variant: "text",
     isValue: (value): value is string => typeof value === "string" && value.trim().length > 0,
@@ -319,8 +313,6 @@ function hostStatusText(status: AgentLaunchTerminalStatus | undefined): string {
 function unavailableFailureText(reason: AgentLaunchFailure | undefined): string {
   const preflightSeconds = LAUNCH_PREFLIGHT_TIMEOUT_MS / 1000;
   switch (reason?.code) {
-    case "fork-task-normalizer-unavailable":
-      return "Fork launch is unavailable: the installed pi-subagents does not export wrapForkTask, so a fork task cannot be bound to the child. Retrying or supplying a brief will not switch this session to fresh; install an admitted pi-subagents build and reload the session.";
     case "modules-unavailable":
       return "Advisor launch is unavailable: the pi-subagents exports this extension requires were not found. Install an admitted pi-subagents build, then reload the session.";
     case "preflight-unavailable":
@@ -335,8 +327,6 @@ function unavailableFailureText(reason: AgentLaunchFailure | undefined): string 
       return "The host could not set up or send the Advisor launch event. Reload the session, then retry; if it repeats, check the installed extension against an admitted pi-subagents build.";
     case "host-session-missing":
       return "Advisor unavailable: the host supplied no session identity.";
-    case "fork-not-allowed":
-      return "This launch cannot use fork context: the packaged profile does not allow it, and a brief does not change that. Check the installed package version and reload the session.";
     case "launch-closed":
       return "Advisor launch is closed for this session. Reload the session, then retry.";
     case "journal-unavailable":
@@ -372,8 +362,11 @@ function failedFailureText(reason: AgentLaunchFailure | undefined): string {
  */
 export function advisorFailureText(result: AdvisorFailureResult): string {
   switch (result.kind) {
+    // Unreachable for the Advisor: no launch definition sets `allowFork`, so the host cannot reject a
+    // context this extension never requests. The case stays because the shared launcher result type
+    // still declares it, and narrowing that type would touch consumers outside this executor.
     case "unavailable-context":
-      return "Fork unavailable. Call again with brief for a fresh consultation.";
+      return "The host rejected the requested context. Call again with brief for a fresh consultation.";
     case "busy":
       return advisorContinuityText("busy");
     case "cancelled":
@@ -393,16 +386,13 @@ export function advisorFailureText(result: AdvisorFailureResult): string {
  * thread stays blocked instead of being reopened.
  */
 function provesNoRun(result: AdvisorFailureResult): boolean {
-  if (result.kind === "unavailable-context") return true;
   if (result.kind !== "unavailable" && result.kind !== "failed") return false;
   switch (result.reason?.code) {
     case "modules-unavailable":
-    case "fork-task-normalizer-unavailable":
     case "preflight-unavailable":
     case "preflight-timeout":
     case "contract-rejected":
     case "host-session-missing":
-    case "fork-not-allowed":
     case "launch-closed":
     case "journal-unavailable":
       return true;
@@ -661,9 +651,10 @@ export class AdvisorExecutor {
     session: AdvisorJournalSession,
     generation: number,
   ): Promise<AdvisorSlotOutcome> {
-    // A first launch needs its own context, so a fresh one still requires a brief. This is checked
-    // per slot, never for a continuation, which only sends the question and evidence.
-    if (plan.request.context === "fresh" && !plan.request.brief?.trim())
+    // A first launch carries its own context and the Advisor never sees this conversation, so it
+    // requires a brief. This is checked per slot, never for a continuation, which only sends the
+    // question and evidence inside the thread it already has.
+    if (!plan.request.brief?.trim())
       return {
         slot: plan.slot,
         model: plan.model,
@@ -706,19 +697,7 @@ export class AdvisorExecutor {
         },
       });
 
-    let context = plan.request.context;
-    let result = await launch(plan.request);
-    // Only an explicit context rejection proves no run was admitted. Never retry uncertain failures.
-    if (
-      result.kind === "unavailable-context" &&
-      plan.request.context === "fork" &&
-      plan.request.brief &&
-      this.isCurrent(input, generation, signal)
-    ) {
-      context = "fresh";
-      result = await launch({ ...plan.request, context });
-    }
-
+    const result = await launch(plan.request);
     if (result.kind !== "completed" && !this.isCurrent(input, generation, signal))
       return this.blocked(plan, "cancelled");
 
@@ -744,7 +723,7 @@ export class AdvisorExecutor {
           ? [...pending.runIds, runId].slice(-ADVISOR_THREAD_MAX_RUN_IDS)
           : pending.runIds,
         ...(runId ? { operationRunId: runId } : {}),
-        mode: context,
+        mode: "fresh",
         updatedAt: this.now(),
       };
       // The answer is returned only once the turn is recorded; otherwise continuity would be a lie.
@@ -756,7 +735,7 @@ export class AdvisorExecutor {
         slot: plan.slot,
         model: plan.model,
         status: "complete",
-        context,
+        context: "fresh",
         answer: result.value,
         ...(runId
           ? {}
@@ -781,7 +760,7 @@ export class AdvisorExecutor {
       slot: plan.slot,
       model: plan.model,
       status: closed ? "unavailable" : "blocked",
-      context,
+      context: "fresh",
       detail: advisorFailureText(result),
     };
   }

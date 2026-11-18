@@ -877,19 +877,19 @@ test("a global change that reaches the session is reported on the next turn", as
   });
 });
 
-test("an Advisor context mode change is not a configuration change", async () => {
+test("session usage changes neither the Advisor context nor the notice", async () => {
   await withHarness(models, async (harness) => {
     await harness.config({ ...defaults, advisors: [advisor], advisorMode: "on" });
     await harness.start();
-    const fork = await harness.turn();
-    assert.match(harness.policyBlock(fork), /Context: fork/);
+    const first = await harness.turn();
+    assert.match(harness.policyBlock(first), /Context: fresh; do not send this conversation/);
     await harness.finish();
 
-    // The Advisor context mode is derived from usage, so it moves without a notice.
+    // Every consultation is fresh; usage is not a configuration change and moves nothing.
     harness.setSessionTokens(900_000);
-    const fresh = await harness.turn();
-    assert.match(harness.policyBlock(fresh), /Context: fresh/);
-    assert.equal(harness.noticeText(fresh), undefined);
+    const used = await harness.turn();
+    assert.match(harness.policyBlock(used), /Context: fresh; do not send this conversation/);
+    assert.equal(harness.noticeText(used), undefined);
     await harness.shutdown();
   });
 });

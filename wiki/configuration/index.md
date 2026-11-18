@@ -270,13 +270,13 @@ Both modes ask for consultation after orientation before substantive work, when 
 approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
 reactive steps and mechanics in a settled approach need no new call.
 
-Context is `fork` while the session fits in half of every valid advisor's window, `fresh` above that or
-with an unknown window, and returns to fork below 35%. Unknown token usage keeps the last mode. Fork
-sends the conversation to each provider, with only the question as the task. Fresh requires a short
-self-contained `brief`: objective, constraints, relevant facts, options and uncertainty. The tool
-retries only an explicitly rejected fork, once with fresh and only with a supplied brief. The tool
-launches each advisor at the highest level its model supports among `high`, `medium`, `low`, `minimal`
-and `off`, in that order. A level above `high` is used only by a model that supports none of them.
+Every consultation runs in fresh context: the request carries the question and a short self-contained
+`brief` — objective and constraints, relevant facts, options and proposal, uncertainty — and never the
+conversation. A first consultation in a thread requires that brief; a later call in the same task sends
+only the new question and evidence. The Advisor therefore sees only what you write in the brief, so a
+thin brief weakens the advice. The tool launches each advisor at the highest level its model supports
+among `high`, `medium`, `low`, `minimal` and `off`, in that order. A level above `high` is used only by
+a model that supports none of them.
 
 One pending call per tool: an advisor group launches one child per configured valid advisor, while the
 independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
@@ -305,8 +305,10 @@ and valid, so the next save repairs that pair. A corrupt or unreadable companion
 settings. Settings still present in a legacy delegation file are retained; otherwise, configure the
 Advisor model again.
 
-Consulting sends a brief, or with `fork` the conversation so far, to another model and can incur
-latency and cost, including with delegation off. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
+Consulting sends the question and brief to another model — the extension never adds the conversation,
+and it refuses a call that asks to fork the session for an Advisor — and it can incur latency and
+cost, including with delegation off. A fork default set in `pi-subagents` itself stays outside the
+extension's reach. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
 ### Provider extension

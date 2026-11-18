@@ -53,6 +53,106 @@ function state(overrides: Partial<GlobalDefaults> = {}): RuntimeState {
   };
 }
 
+test("an Advisor child is refused when the call asks the host to branch the session", () => {
+  // The Advisor answers from the brief the extension writes; a forked child would send the whole
+  // conversation to its provider, so the promise that this never happens is enforced here.
+  for (const agent of [
+    ADVISOR_AGENT_NAME,
+    ANTHROPIC_ADVISOR_AGENT,
+    PROVIDER_EXTENSION_ADVISOR_AGENT,
+  ]) {
+    const input = { agent, task: "q", model: `advice/advisor-model:medium`, context: "fork" };
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, state());
+    assert.equal(refused.refusal?.code, "advisor-fork-context", agent);
+    assert.match(refused.refusal?.message ?? "", /fresh context with its brief/, agent);
+    assert.deepEqual(input, before, agent);
+    assert.deepEqual(refused.corrections, [], agent);
+  }
+  // A stated ordinary profile, or none at all, still becomes an Advisor through the model: the check
+  // reads the resolved profile, not the one the call wrote.
+  for (const input of [
+    { agent: "worker", task: "t", model: "advisor", context: "fork" },
+    { agent: "worker", task: "t", model: "advice/advisor-model:medium", context: "fork" },
+    { task: "t", model: "advice/advisor-model:medium", context: "fork" },
+  ]) {
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, state());
+    assert.equal(refused.refusal?.code, "advisor-fork-context", JSON.stringify(input));
+    assert.deepEqual(input, before, "the call is inspected, never rewritten");
+  }
+  // The host also reads `context` on the call's options for every workflow child, so that form is
+  // refused as well; otherwise the documented parameter would bypass the check in one line of code.
+  for (const input of [
+    {
+      agent: ADVISOR_AGENT_NAME,
+      task: "q",
+      model: "advice/advisor-model:medium",
+      options: { context: "fork" },
+    },
+    {
+      agent: "worker",
+      task: "q",
+      model: "advice/advisor-model:medium",
+      options: { context: "fork" },
+    },
+    {
+      workflow: "parallel",
+      options: { context: "fork" },
+      args: {
+        tasks: [{ agent: ADVISOR_AGENT_NAME, task: "q", model: "advice/advisor-model:medium" }],
+      },
+    },
+  ]) {
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, state());
+    assert.equal(refused.refusal?.code, "advisor-fork-context", JSON.stringify(input));
+    assert.deepEqual(input, before, "the call is inspected, never rewritten");
+  }
+  // A top-level `context` governs every child of a multi-child call, so the same value one level up
+  // must be refused too: tasks, chain and a parallel workflow are the three shapes a call can take.
+  for (const input of [
+    {
+      context: "fork",
+      tasks: [{ agent: ADVISOR_AGENT_NAME, task: "q", model: "advice/advisor-model:medium" }],
+    },
+    {
+      context: "fork",
+      chain: [{ agent: ADVISOR_AGENT_NAME, task: "q", model: "advice/advisor-model:medium" }],
+    },
+    {
+      context: "fork",
+      workflow: "parallel",
+      args: {
+        tasks: [{ agent: ADVISOR_AGENT_NAME, task: "q", model: "advice/advisor-model:medium" }],
+      },
+    },
+  ]) {
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, state());
+    assert.equal(refused.refusal?.code, "advisor-fork-context", JSON.stringify(input));
+    assert.deepEqual(input, before, "the call is inspected, never rewritten");
+  }
+  // An ordinary child keeps its own freedom: the refusal is specific to the Advisor.
+  const ordinary = {
+    agent: "worker",
+    task: "t",
+    model: "example/small-model:low",
+    context: "fork",
+  };
+  assert.equal(inspectSubagentLaunch(ordinary, state()).refusal, undefined);
+  // An Advisor that cannot run at all still reports its own cause instead of the context one.
+  const off = state();
+  off.effective.advisorMode = "off";
+  const unavailable = {
+    agent: ADVISOR_AGENT_NAME,
+    task: "q",
+    model: "advice/advisor-model:medium",
+    context: "fork",
+  };
+  assert.equal(inspectSubagentLaunch(unavailable, off).refusal?.code, "advisor-off");
+});
+
 test("valid launches pass and every policy violation is refused before launching", () => {
   const active = state();
   for (const allowed of [

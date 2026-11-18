@@ -163,13 +163,13 @@ configuration notice, never to the conversation, and it starts no turn, no child
 It adds no authority, revokes no instruction, and cannot make a consultation happen; it also cannot
 promise to arrive before the first edit, and it only reacts to the builtin tools listed above.
 
-Context is `fork` while the session fits in half of every valid advisor's window, `fresh` above that or
-with an unknown window, and returns to fork below 35%. Unknown token usage keeps the last mode. Fork
-sends the conversation to each provider, with only the question as the task. Fresh requires a short
-self-contained `brief`: objective, constraints, relevant facts, options and uncertainty. The tool
-retries only an explicitly rejected fork, once with fresh and only with a supplied brief. The tool
-launches each advisor at the highest level its model supports among `high`, `medium`, `low`, `minimal`
-and `off`, in that order. A level above `high` is used only by a model that supports none of them.
+Every consultation runs in fresh context: the request carries the question and a short self-contained
+`brief` — objective and constraints, relevant facts, options and proposal, uncertainty — and never the
+conversation. A first consultation in a thread requires that brief; a later call in the same task sends
+only the new question and evidence. The Advisor therefore sees only what you write in the brief, so a
+thin brief weakens the advice. The tool launches each advisor at the highest level its model supports
+among `high`, `medium`, `low`, `minimal` and `off`, in that order. A level above `high` is used only by
+a model that supports none of them.
 
 One pending call per tool: an advisor group launches one child per configured valid advisor, while the
 independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
@@ -196,8 +196,10 @@ and valid, so the next save repairs that pair. A corrupt or unreadable companion
 settings. Settings still present in a legacy delegation file are retained; otherwise, configure the
 Advisor model again.
 
-Consulting sends a brief, or with `fork` the conversation so far, to another model and can incur
-latency and cost, including with delegation off. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
+Consulting sends the question and brief to another model — the extension never adds your
+conversation, and a child that asks to fork the session is refused — and it can incur latency and
+cost, including with delegation off. A fork default set in `pi-subagents` itself is outside the
+extension's reach, so check that setting if this matters to you. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
 ### Provider extension
@@ -212,7 +214,7 @@ The account diagnostic is never invoked during initialization. With this opt-in 
 0.22.2 leaves all Advisors off instead of falling back to the standard profile. Available from
 0.23.0. One bounded real-provider background consultation completed in fresh context on
 Pi 1.4.0 with pi-subagents 0.83.1. Launch metadata showed only the prompt runtime and configured
-provider bridge, with no required extensions or observed tool calls. This does not validate fork,
+provider bridge, with no required extensions or observed tool calls. This does not validate
 `consult_advisor`, other builds, or a sole cause of the earlier failure. See the
 [configuration reference](https://yivas.github.io/pi-delegation-policy/configuration/#provider-extension)
 for the schema-10 option, trusted-code surface and installation limits.

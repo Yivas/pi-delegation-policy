@@ -75,6 +75,13 @@ export type AdvisorThreadFingerprint = Readonly<{
   /** Bumped whenever Advisor mode, launch or settings change inside one process. */
   epoch: number;
 }>;
+/**
+ * Context recorded for a turn, for description only: nothing reads it to decide how a thread launches.
+ * A first turn writes `fresh` when it completes; a continuation keeps whatever the record held, so a
+ * `fork` written by an earlier build can persist there.
+ */
+export type AdvisorTurnContext = "fresh" | "fork";
+
 export type AdvisorThreadRecord = Readonly<{
   slot: number;
   taskToken: string;
@@ -90,7 +97,12 @@ export type AdvisorThreadRecord = Readonly<{
   operationRunId?: string;
   /** Run-id chain, oldest first. The last entry is the only valid resume target. */
   runIds: readonly string[];
-  mode?: "fork" | "fresh";
+  /**
+   * Context recorded for the latest turn, for description only; no launch reads it. A first turn omits
+   * it while pending and writes `fresh` on completion, so a legacy `fork` disappears then. A
+   * continuation copies the record it continues, so it keeps that value instead of rewriting it.
+   */
+  mode?: AdvisorTurnContext;
   updatedAt: number;
 }>;
 export type AdvisorParentPartition = Readonly<{

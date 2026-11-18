@@ -385,17 +385,20 @@ test("Advisor commands and request hooks independently update and remove the own
     };
     assert.match(projected.messages[0]!.sections!.addendum!, /Advisor consultation:/);
     assert.equal(messages[0]!.content, "Host instructions");
-    // Both request hooks name the same context mode; it follows the session's usage against the
-    // advisor window, holds while usage is unknown, and starts over on a new session tree.
-    const contextMode = (text: string) => /Context: (fork|fresh)/.exec(text)?.[1];
-    assert.equal(contextMode(first.instructions), "fork");
-    assert.equal(contextMode(projected.messages[0]!.sections!.addendum!), "fork");
+    // Both request hooks name the same context: every consultation is fresh, whatever the session
+    // uses against the advisor window, and it never returns to a fork.
+    const contextLine = (text: string) =>
+      /Context: fresh; do not send this conversation/.test(text);
+    assert.ok(contextLine(first.instructions));
+    assert.ok(contextLine(projected.messages[0]!.sections!.addendum!));
     sessionTokens = 300_000;
-    assert.equal(contextMode((await request("Host instructions")).instructions), "fresh");
+    assert.ok(contextLine((await request("Host instructions")).instructions));
     sessionTokens = null;
-    assert.equal(contextMode((await request("Host instructions")).instructions), "fresh");
+    assert.ok(contextLine((await request("Host instructions")).instructions));
     await handlers.get("session_tree")!({}, ctx);
-    assert.equal(contextMode((await request("Host instructions")).instructions), "fork");
+    const afterTree = (await request("Host instructions")).instructions;
+    assert.ok(contextLine(afterTree));
+    assert.doesNotMatch(afterTree, /Context: fork/);
     sessionTokens = 100_000;
     await command("off", ctx);
     assert.equal(statuses.at(-1), "D:OFF A:ON");

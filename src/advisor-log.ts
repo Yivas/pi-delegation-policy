@@ -4,7 +4,7 @@ import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getGlobalConfigPath } from "./config.ts";
 import type { LaunchChildRole, LaunchCorrectionCode, LaunchRefusalCode } from "./launch-guard.ts";
-import type { AdvisorContext } from "./prompt.ts";
+import type { AdvisorTurnContext } from "./advisor-threads.ts";
 import type { AdvisorLaunch, AdvisorMode, Intensity } from "./types.ts";
 
 export const ADVISOR_LOG_MAX_BYTES = 256 * 1024;
@@ -27,7 +27,7 @@ export type ConsultationStatus =
 export type ConsultationAttempt = {
   model: string;
   status: ConsultationStatus;
-  context: AdvisorContext | "unknown";
+  context: AdvisorTurnContext | "unknown";
   durationMs: number;
   /** Original Advisor position; absent for a role-mode observation. */
   slot?: number;
@@ -79,7 +79,7 @@ export class AdvisorLog {
       intensity: Intensity;
       advisorMode: AdvisorMode;
       advisorLaunch: AdvisorLaunch;
-      context: AdvisorContext;
+      context: AdvisorTurnContext;
       advisors: number;
     },
   ): void {

@@ -71,12 +71,7 @@ import {
   readerToolError,
   type ReaderThinking,
 } from "./context-shunt-reader.ts";
-import {
-  type AdvisorContext,
-  advisorRoleLines,
-  buildDelegationPolicy,
-  selectAdvisorContext,
-} from "./prompt.ts";
+import { advisorRoleLines, buildDelegationPolicy } from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
   advisorSlots,
@@ -518,33 +513,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const resumeClient = options.advisorResume ?? ((events) => new AdvisorResumeClient({ events }));
     let latestRuntime: RuntimeState | undefined;
     let readerEpoch = 0;
-    // Remembered per session so the advisor context line only changes when usage crosses a
-    // threshold; both request hooks see the same usage and therefore render the same policy.
-    let advisorContext: AdvisorContext | undefined;
-    let advisorContextModel: string | undefined;
-    const resolveAdvisorContext = (ctx: ExtensionContext, state: RuntimeState): AdvisorContext => {
-      const entries = validAdvisors(state);
-      const advisor = entries[0]?.setting;
-      // A different advisor model has a different window, so its mode starts from scratch.
-      const model = JSON.stringify(
-        entries.map((entry) => [entry.setting.provider, entry.setting.model]),
-      );
-      if (model !== advisorContextModel) {
-        advisorContextModel = model;
-        advisorContext = undefined;
-      }
-      const windows = entries.map(
-        (entry) =>
-          ctx.modelRegistry?.find(entry.setting.provider, entry.setting.model)?.contextWindow,
-      );
-      const advisorWindow =
-        advisor && windows.every((window) => typeof window === "number" && window > 0)
-          ? Math.min(...(windows as number[]))
-          : undefined;
-      const sessionTokens = ctx.getContextUsage?.()?.tokens;
-      advisorContext = selectAdvisorContext(advisorContext, sessionTokens, advisorWindow);
-      return advisorContext;
-    };
     const invalidateReaderAuthorization = (): void => {
       readerEpoch += 1;
       executor.cancel();
@@ -1009,14 +977,13 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         return latestRuntime;
       }
     };
-    const renderPolicy = (ctx: ExtensionContext, state: RuntimeState): string | undefined => {
-      const context = resolveAdvisorContext(ctx, state);
-      const policy = buildDelegationPolicy(state, context);
+    const renderPolicy = (state: RuntimeState): string | undefined => {
+      const policy = buildDelegationPolicy(state);
       advisorLog.policy(policy, {
         intensity: state.effective.intensity,
         advisorMode: state.effective.advisorMode,
         advisorLaunch: state.effective.advisorLaunch,
-        context,
+        context: "fresh",
         advisors: validAdvisors(state).length,
       });
       return policy;
@@ -1025,7 +992,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       name: "consult_advisor",
       label: "Consult Advisor",
       description:
-        "Use only when advisor-launch=tool; in role mode launch Advisor with the host subagent tool instead. Consult the configured advisors after orientation before substantive work, when stuck, before changing approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Skip short reactive steps and mechanics within a settled approach. Supply a self-contained brief for a first consultation in fresh context or a rejected fork; a later call in the same task continues each thread with the question and evidence. Advice only; may send the conversation to each provider and incur cost.",
+        "Use only when advisor-launch=tool; in role mode launch Advisor with the host subagent tool instead. Consult the configured advisors after orientation before substantive work, when stuck, before changing approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Skip short reactive steps and mechanics within a settled approach. Supply a self-contained brief for a first consultation; a later call in the same task continues each thread with the question and evidence. Advice only; sends only the question and brief, never the conversation, and may incur cost.",
       parameters: Type.Object(
         {
           question: Type.String({ minLength: 1 }),
@@ -1072,7 +1039,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           return text(
             "Advisor error: question must not be blank. Call again with a specific question.",
           );
-        const context = resolveAdvisorContext(ctx, state);
         if (!sessionId)
           return text(
             "Advisor unavailable: host session identity is missing. Continue without Advisor consultation; do not retry until the host supplies a session identity.",
@@ -1112,7 +1078,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             request: {
               question: input.question,
               ...(input.brief?.trim() ? { brief: input.brief } : {}),
-              context,
               ...(profile ? { providerExtension: profile } : {}),
               model: {
                 provider: slot.model.provider,
@@ -1140,7 +1105,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               question: input.question,
               ...(input.brief?.trim() ? { brief: input.brief } : {}),
               ...(input.evidence?.trim() ? { evidence: input.evidence } : {}),
-              context,
             },
             task: { parentKey, taskToken: token },
             isAuthorized,
@@ -1493,7 +1457,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorReminder.closeTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
-      advisorContext = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
     });
     pi.on("session_tree", async (_event, ctx) => {
@@ -1501,7 +1464,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       executor.rotate();
       advisorExecutor.rotate();
       shunt.clearPending();
-      advisorContext = undefined;
       // A task that was in flight belongs to the branch the session left. The epoch and the token
       // are dropped synchronously, before any await, so a late answer cannot be delivered; the
       // tombstone itself is written at the next consultation, inside the journal lock.
@@ -1560,7 +1522,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // One request is one round. A retry of the same request carries no new tool result and keeps
       // the round, so its reminder is reused instead of rearmed.
       advisorReminder.beginRequest();
-      const policy = renderPolicy(ctx, state);
+      const policy = renderPolicy(state);
       const systemMessage = event.messages[0];
       if (
         !systemMessage ||
@@ -1664,7 +1626,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("before_provider_request", async (event, ctx) => {
       const state = await refreshProviderRuntime(ctx);
       if (!state) return event.payload;
-      return updateProviderPolicy(event.payload, renderPolicy(ctx, state));
+      return updateProviderPolicy(event.payload, renderPolicy(state));
     });
     pi.on("agent_end", async (event) => {
       // The event carries the messages of this low-level run; a run that reports none has no
@@ -1727,10 +1689,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
                     model,
                     status: "observed",
                     durationMs: 0,
-                    context:
-                      call.context === "fork" || call.context === "fresh"
-                        ? call.context
-                        : "unknown",
+                    // Only fresh is a context an Advisor may ask for; anything else is not
+                    // recorded as a mode.
+                    context: call.context === "fresh" ? call.context : "unknown",
                   },
                 ]
               : [],
