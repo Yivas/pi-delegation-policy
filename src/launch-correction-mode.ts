@@ -1,5 +1,10 @@
 import { readFile } from "node:fs/promises";
-import { atomicWrite, getGlobalConfigPath, type ConfigDiagnostic } from "./config.ts";
+import {
+  atomicWrite,
+  getGlobalConfigPath,
+  isAbsentPathError,
+  type ConfigDiagnostic,
+} from "./config.ts";
 
 /**
  * How the launch check treats a call it can correct unambiguously. `block` is a measurement mode:
@@ -49,9 +54,7 @@ async function readPreviousMode(path: string): Promise<PreviousMode> {
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? { kind: "absent" }
-      : { kind: "invalid" };
+    return isAbsentPathError(error) ? { kind: "absent" } : { kind: "invalid" };
   }
   let value: unknown;
   try {
@@ -98,8 +101,6 @@ export async function readLaunchCorrectionMode(
     const mode = parseLaunchCorrectionMode(JSON.parse(await readFile(path, "utf8")));
     return mode ? { mode } : invalid;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? { mode: DEFAULT_LAUNCH_CORRECTION_MODE }
-      : invalid;
+    return isAbsentPathError(error) ? { mode: DEFAULT_LAUNCH_CORRECTION_MODE } : invalid;
   }
 }

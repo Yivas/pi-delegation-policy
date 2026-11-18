@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import type { ContextWithSystemEvent } from "@earendil-works/pi-coding-agent";
-import { atomicWrite, getGlobalConfigPath, type ConfigDiagnostic } from "./config.ts";
+import {
+  atomicWrite,
+  getGlobalConfigPath,
+  isAbsentPathError,
+  type ConfigDiagnostic,
+} from "./config.ts";
 import type { AdvisorLaunch } from "./types.ts";
 
 /**
@@ -53,9 +58,7 @@ async function readPreviousMode(path: string): Promise<PreviousMode> {
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? { kind: "absent" }
-      : { kind: "invalid" };
+    return isAbsentPathError(error) ? { kind: "absent" } : { kind: "invalid" };
   }
   let value: unknown;
   try {
@@ -106,9 +109,7 @@ export async function readAdvisorReminderMode(
     const mode = parseAdvisorReminderMode(JSON.parse(await readFile(path, "utf8")));
     return mode ? { mode } : invalid;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? { mode: DEFAULT_ADVISOR_REMINDER_MODE }
-      : invalid;
+    return isAbsentPathError(error) ? { mode: DEFAULT_ADVISOR_REMINDER_MODE } : invalid;
   }
 }
 

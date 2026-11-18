@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
-import { atomicWrite, type ConfigDiagnostic, getGlobalConfigPath } from "./config.ts";
+import {
+  atomicWrite,
+  type ConfigDiagnostic,
+  getGlobalConfigPath,
+  isAbsentPathError,
+} from "./config.ts";
 import { isProviderPackage, type ProviderPackage } from "./provider-package.ts";
 
 /**
@@ -64,7 +69,7 @@ export async function readProviderAdmissions(
           diagnostic: { scope: "advisor-extension", reportWhenOff: true, message: INVALID_MESSAGE },
         };
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
+    return isAbsentPathError(error)
       ? { admissions: {} }
       : {
           admissions: {},

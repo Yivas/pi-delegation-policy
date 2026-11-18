@@ -16,7 +16,7 @@ import {
   renderAdvisorReminder,
   writeAdvisorReminderMode,
 } from "../src/advisor-reminders.ts";
-import { getGlobalConfigPath, writeConfig } from "../src/config.ts";
+import { getGlobalConfigPath, isAbsentPathError, writeConfig } from "../src/config.ts";
 import { DelegatePanel, type DelegatePanelOptions } from "../src/delegate-panel.ts";
 import piDelegationPolicy from "../src/index.ts";
 import { openDelegateEditor } from "../src/ui.ts";
@@ -481,6 +481,17 @@ test("tool results outside an operative task and after a branch move arm nothing
     await harness.config({ ...defaults, advisors: [medium] });
     assert.equal(harness.reminders(await harness.request()).length, 0);
   });
+});
+
+// The writer cases below make a path inaccessible by putting a regular file where a directory is
+// expected. Linux then reports ENOTDIR and Windows reports ENOENT for the same situation, and both
+// mean the state file does not exist: it is absent, never an unknown state to preserve.
+test("a path component that is a file is an absent state file", () => {
+  for (const code of ["ENOENT", "ENOTDIR"]) {
+    assert.equal(isAbsentPathError(Object.assign(new Error(code), { code })), true, code);
+  }
+  assert.equal(isAbsentPathError(Object.assign(new Error("EACCES"), { code: "EACCES" })), false);
+  assert.equal(isAbsentPathError(new Error("no code")), false);
 });
 
 test("the reminder writer stores the mode, keeps an unknown state and reports a failed write", async () => {

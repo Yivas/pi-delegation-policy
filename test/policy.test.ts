@@ -2564,7 +2564,8 @@ test("a saved admission is named when the correction step fails", async () => {
     assert.deepEqual((await readProviderAdmissions(admissionPath)).admissions, {
       "example-provider": { package: "example-provider-extension", version: "1.2.3" },
     });
-    await assert.rejects(readFile(correctionPath, "utf8"), /ENOENT/);
+    // The parent is a regular file, which Linux reports as ENOTDIR and Windows as ENOENT.
+    await assert.rejects(readFile(correctionPath, "utf8"), /ENOENT|ENOTDIR/);
     assert.match(
       view,
       /Could not save the launch correction mode\. The provider extension admission was saved\./,

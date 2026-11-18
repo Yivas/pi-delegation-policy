@@ -558,7 +558,7 @@ export async function readConfig(path: string): Promise<LoadedDefaults> {
           ],
         };
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
+    return isAbsentPathError(error)
       ? { defaults: emptyGlobalDefaults(), diagnostics: [] }
       : {
           defaults: emptyGlobalDefaults(),
@@ -674,6 +674,15 @@ export async function atomicWrite(path: string, text: string): Promise<void> {
     throw error;
   }
 }
+/**
+ * Nothing exists at `path`, so the caller may treat it as the documented default. A path component
+ * that is a regular file makes the path unrealisable, which Linux reports as ENOTDIR and Windows as
+ * ENOENT; both mean the same absent file, not an unreadable one.
+ */
+export function isAbsentPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
 function delegationProjection(state: GlobalDefaults | SessionDelegateState, session: boolean) {
   const delegation = { ...state };
   delete delegation.advisor;
@@ -748,7 +757,7 @@ async function readAdvisorCompanion(
   try {
     raw = await readFile(getAdvisorConfigPath(path), "utf8");
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
+    return isAbsentPathError(error)
       ? { defaults, diagnostics: [] }
       : {
           defaults: withoutAdvisorActivation(defaults, undefined),
@@ -781,9 +790,7 @@ async function readPreviousFile(path: string): Promise<PreviousFile> {
   try {
     return { kind: "content", text: await readFile(path, "utf8") };
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? { kind: "absent" }
-      : { kind: "unreadable" };
+    return isAbsentPathError(error) ? { kind: "absent" } : { kind: "unreadable" };
   }
 }
 function matchesPreviousFile(current: PreviousFile, previous: PreviousFile): boolean {
