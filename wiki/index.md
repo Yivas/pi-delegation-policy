@@ -24,7 +24,7 @@ features:
     details: Protect recognized oversized context through a separate opt-in layer.
 ---
 
-`pi-delegation-policy` is a local Pi extension that guides the main agent on when delegation is worth it and which exact models to use for Small, Medium, Large, and the optional Visual Design and Advisor roles. It adds guidance to the system prompt, one ephemeral notice after an effective configuration change and an optional Advisor reminder in the request context, and nothing else: it does not route, supervise, or collect delegated work, and it never changes Pi's main model, thinking level, or tool permissions.
+`pi-delegation-policy` is a local Pi extension that guides the main agent on when delegation is worth it and which exact models to use for Small, Medium, Large, and the optional Visual Design and Advisor roles. It adds guidance to the system prompt, one ephemeral notice after an effective configuration change and an optional Advisor reminder in the request context, and nothing else unless ContextShunt is enabled: it does not route, supervise, or collect delegated work, and it never changes Pi's main model, thinking level, or tool permissions.
 
 ::: warning
 The extension injects guidance only while an active configuration is valid. It cannot guarantee that another system follows a configured role or thinking choice. ContextShunt is off by default, is not a sandbox, and does not create an automatic worker bridge.
