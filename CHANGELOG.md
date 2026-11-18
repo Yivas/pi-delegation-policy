@@ -1,5 +1,508 @@
 # Changelog
 
+## Unreleased
+
+## 0.29.0 - 2026-11-18
+
+### Changed
+
+- Advisor consultations always run in fresh context. The extension no longer chooses between forking
+  the session and sending a brief, no longer tracks context usage to decide, and never adds your
+  conversation to the request: each consultation sends the question and the brief you write, and a
+  first consultation in a task requires that brief. The thresholds, the automatic return to fork and
+  the retry after a rejected fork are gone. A call that asks the host to fork the session for an
+  Advisor is refused, so the same value cannot be moved to the child, to `options` or to the top level
+  of the call to bypass it. A fork default configured in `pi-subagents` itself stays outside the
+  extension's reach: it is not read, and the host would still honour it, so review that setting if
+  the Advisor must never see a session.
+- Threads keep working as before: the first call in a task launches the packaged profiles with the
+  verified contract, and later calls continue each thread with `resume`. Threads recorded by an
+  earlier build keep working, and their stored context value is only descriptive.
+
+### Limits
+
+- The Advisor sees only what the brief says. A thin brief now weakens the advice more than before,
+  because nothing else reaches it.
+- Behaviour was not measured in a controlled before-and-after evaluation.
+
+## 0.28.1 - 2026-11-18
+
+### Fixed
+
+- A stored state file whose path cannot exist, because one of its parent components is a regular
+  file, is now read as absent instead of unreadable. Linux reports that case as `ENOTDIR` and Windows
+  as `ENOENT`, so on Linux the Advisor reminder's stored mode and its save step, the launch check's
+  mode and save step, and the provider admissions read could report an unknown or invalid state
+  where the file simply was not there. The same check now covers the stored global configuration,
+  its Advisor companion and the copy compared before a save: eight reads in all. The Advisor thread
+  bookkeeping keeps its current, fail-closed handling. No other result code, message or panel
+  behaviour changed.
+
+## 0.28.0 - 2026-11-18
+
+### Added
+
+- An automatic Advisor reminder, on by default, adds one short extension-owned line to the request
+  context at most once per operative task of each instance, so a useful consultation does not depend
+  on the user asking for it. It is armed by one successful builtin orientation result (`read`,
+  `find`, `grep`, `ls`), presented in the next request, or by the same builtin tool failing in two
+  different rounds; a batch is one round, and a retry of the same request keeps the presentation it
+  already carried. It is presented only while a valid Advisor is active, the task is live and the
+  configured launch mode has its launcher among the active tools, and an attempted consultation ends
+  it for that task even when it fails. Only the documented `pi-subagents` process markers
+  (`PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_RUNNER_PID`) exclude a child, so a `/fork` or `/clone` of a
+  human session keeps the reminder. It is appended to the request copy only, after the policy
+  block and the configuration notice: it starts no turn, child or consultation, writes no session
+  entry, and adds no authority. The global **Advisor reminder** row in `/delegate` stores
+  `delegation-policy.advisor-reminders.json`, a schema-1 companion with `mode` (`off` or `remind`),
+  through the same temporary-file replacement as the other global files; a missing file means
+  `remind`, an unreadable or invalid one suspends only the reminder with a diagnostic, and the row
+  then reads `Unavailable/Suspended · global` instead of presenting the suspension as a choice.
+- `consult_advisor` keeps each Advisor's conversation for the rest of the operative task. The first
+  call in a task launches the packaged profiles exactly as before and only that call carries the
+  verified launch contract; later calls in the same task continue each thread through the public
+  `pi-subagents` RPC `resume`, sending the new question and an optional `evidence` field and
+  accepting the answer only from the per-turn output file this extension owns, after the exact new
+  run id reports a completed single step with the same agent, model and thinking. A resumed turn
+  relies on the contract the host inherits plus those observed values, not on a re-verified digest,
+  and any mismatch, timeout or missing answer blocks the thread instead of retrying it or starting a
+  silent fresh replacement. Continuity is bounded by the operative task: a fresh user prompt, a
+  branch move, a configuration change or the task settling ends it, and a prompt an extension sends
+  opens no task at all, so a consultation from one starts nothing.
+- A private schema-1 journal (`delegation-policy.advisor-threads.json`) records one turn per parent
+  session, task token and original Advisor slot: opaque run ids, the model/profile/admission
+  fingerprint, the turn ordinal and a closed reason. It never holds a question, brief, answer, path
+  or host error. Each turn is written as pending before anything is sent, accepted before its
+  receipt is awaited, and answered before the answer is returned; a per-parent directory lock and a
+  short commit lock keep concurrent slots, parents and Pi processes from overwriting each other.
+- Every configured Advisor keeps its position and gets an explicit result, so two answers out of
+  three report `partial` and never a complete consultation. An unavailable slot keeps its index and
+  its own cause instead of disappearing from the group.
+- `/delegate advisor threads status|recover|reset` and a `C` row in the `/delegate` panel report the
+  continuity state, reconcile a possibly live turn with public terminal proof from the host, and
+  abandon threads only when nothing may still be running. Reset never proves that a turn stopped.
+- The launch check corrects an unambiguous `subagent` call instead of refusing it. A role name in
+  place of a model (`small`, `medium`, `large`, `visual-design`, `ui-design`, `uidesign`, `advisor`,
+  `advisor-1` to `advisor-3`, case-insensitive) becomes that role's exact provider/model with a
+  level; a role's exact model with no `:LEVEL` gains the role's fixed level, the lowest supported
+  level inside its range, or `medium` clamped to what the model supports when it has no policy; and a
+  child whose model is exactly one configured Advisor's runs with that Advisor's profile. The
+  correction is written into the call the host already validated, so it changes what executes, and
+  the extension appends a note to that call's result saying what it applied. Corrections apply per
+  child and once to a shared top-level `model`; a call that would resolve differently, or whose model
+  fits more than one role or Advisor, is refused instead of guessed.
+- `launch` records in the local log carry the closed kinds of correction applied
+  (`level-added`, `advisor-profile`, `role-alias`), never a model or a task.
+- A global **Launch correction** row in `/delegate` with `correct` (default) and `block`, the test
+  mode that refuses every case the check would correct, keeping the pre-correction behaviour for
+  measurement. It is global for every session and says so; Apply and Save both store a changed value
+  before their own step, Cancel discards it, and a failed write stops the step instead of reporting
+  success. The row writes `delegation-policy.launch-correction.json`, a schema-1 companion with
+  `mode`, through the same temporary-file replacement as the global defaults: an unreadable or
+  malformed file is reported and left alone, and an invalid one is ignored with a diagnostic without
+  invalidating the delegation axis.
+
+### Changed
+
+- The injected policy is generated by decision flow instead of by obligation type: purpose, the
+  direct-work rule, Advisor checkpoints, role selection, Visual Design, child briefs, launch, role
+  lines, results and limits. The numbered `Decision order` is replaced by that flow, and each rule's
+  obligation and exception stay together. Intensities, thresholds, role rules, Visual Design
+  conditions, brief fields, launch constraints and limits are unchanged and stated in fewer words;
+  only the active axes and enabled roles are rendered, so an Advisor-only session still carries
+  consultation guidance alone and both axes off still inject nothing. Each enabled role line keeps
+  the exact model base, the `pi-subagents` form and its thinking policy.
+- The policy's Limits paragraph says the extension corrects an unambiguous call and reports what it
+  applied, and refuses only what it cannot settle. It also names the measurement mode, where a call
+  the normal check would correct is refused instead.
+- The policy block adds a **Child briefs** section while delegation is active: the bounded outcome and
+  its owner, the context already decided, scope and permissions with exclusions, how the result is
+  verified, what the child returns and where, and when it stops to ask. An unresolved decision stays a
+  question the child may answer instead of a settled invariant, and a host agent name such as `worker`
+  or `reviewer` does not replace the model role. One emphasis line and one example follow per enabled
+  role only, so the section adds no threshold, permission, ownership rule, or new Advisor consultation
+  guidance.
+
+### Verification
+
+- The full suite passes: 335 tests, 332 passing and three skipped when their external fixtures are
+  absent. That covers the mechanism: rendering, stored files, refusals, thread continuation and
+  reminder timing.
+- Behaviour was not measured in a controlled before-and-after evaluation, so this release does not
+  claim that the model delegates or consults better than 0.27.0. What it claims is narrower and
+  checked: the policy renders as described, the launch correction applies only the three
+  unambiguous cases and refuses the rest, the brief guidance and the Advisor thread work, and the
+  reminder appears once per task under the conditions listed above. Version 0.27.0 stays available
+  if the new behaviour does not suit you.
+
+## 0.27.0 - 2026-11-16
+
+### Added
+
+- Two content-free events in the local log. A `task` record summarises one main-agent task, from the
+  user prompt to the next settle: duration, tool calls, edits, the position of the first edit and of
+  the first consult, whether the consult came before the first edit, and subagent launches and
+  refusals. A `launch` record covers one `subagent` call that launches children: allowed or refused,
+  a closed refusal code, child count and one role code per child. Control actions such as
+  `{action:"status"}` record nothing, a call that launches only Advisors counts as a consult and not
+  as a launch, and both records repeat the policy hash they ran under. `advisorConsults` counts
+  attempts: a `consult_advisor` call counts whether or not it reached a model.
+
+### Fixed
+
+- The Anthropic auth profile admits the exact managed-user `@gotgenes/pi-anthropic-auth` 3.6.0
+  alongside 3.4.3 and 3.4.4. Its surface, single entry and provider registration are the ones the
+  adapter already checks, and it registers after an awaited import, which the host waits for. Other
+  versions stay rejected, and an unavailable install still leaves the dispatch guard closed.
+- A launch refusal names a configured Advisor that failed validation instead of describing it as
+  unconfigured. A `Configured but unavailable:` section lists each such slot with the reason the
+  runtime already computed. The refusal decision is unchanged.
+
+## 0.26.0 - 2026-11-10
+
+### Added
+
+- Launch check. While delegation is active, a `subagent` call is refused before it launches when a
+  child has no model, a model that is not its role's, a missing or disallowed thinking level, or an
+  Advisor profile with another model. Parallel tasks and chain steps are checked one by one, with a
+  top-level model applying to children without one. Workflow scripts, inline or through
+  `options.script`, are refused because their models are not visible. Management actions pass. The
+  refusal lists the accepted launches. The check covers every `subagent` tool call in the session,
+  including ones other skills request, such as council mode's workflow script.
+- The Anthropic auth profile also admits `@gotgenes/pi-anthropic-auth` 3.4.4, which changed only
+  documentation.
+
+### Changed
+
+- The policy's Limits paragraph now describes the launch check instead of saying the extension
+  cannot enforce anything.
+
+## 0.25.0 - 2026-11-04
+
+### Added
+
+- Admitted provider extensions for Advisors. Choosing a model whose provider only an extension
+  supplies offers your installed packages in `/delegate`; the admission is global and per provider,
+  stored in `delegation-policy.provider-extensions.json`, and the new profile
+  `pi-delegation-policy.advisor-provider-extension` loads that one package in the child. Only the
+  package identity is checked before it runs; it is trusted code, not a sandbox.
+- `/delegate status` warns about an Advisor whose provider an extension replaced in this session
+  and that has no admission. The Advisor stays consulted.
+
+### Compatibility
+
+- No state schema change. 0.24 and earlier ignore the admissions file and launch the standard
+  profile for those Advisors.
+
+### Limits
+
+- No real-provider consultation was run through the new profile. Startup was checked with a real
+  provider extension, without network or requests; authentication, requests, compaction and
+  retries in a real child are not validated.
+
+## 0.24.0 - 2026-11-03
+
+### Added
+
+- A third Advisor. `/delegate` shows **Advisor 2** once Advisor 1 exists and **Advisor 3** once
+  Advisor 2 exists, and `/delegate advisor 3 model PROVIDER/MODEL` configures it. Every valid
+  Advisor gets the same question, so each extra one adds a consultation at every checkpoint.
+
+### Changed
+
+- Advisor thinking is no longer a setting. Role launch lets the main agent choose the level per
+  run; tool launch uses the highest level the model supports among `high`, `medium`, `low`,
+  `minimal` and `off`, where it used to fall back to the first supported level.
+- The Advisor profile is chosen together with the model: picking an `anthropic` model asks for
+  **Standard** or **Anthropic auth**. With two Advisors the panel shows five Advisor rows instead
+  of eight.
+- `/delegate advisor N thinking …` is removed and now reports that Advisor thinking is automatic.
+- At most four children can run at once: three Advisors and the ContextShunt reader.
+
+### Compatibility
+
+- A saved Advisor thinking policy, per entry or legacy `thinking.advisor`, still has to be well
+  formed but is ignored and dropped on the next save. No diagnostic is shown for it. In tool launch,
+  an Advisor that was fixed at a lower level now runs at `high` when its model supports it, which
+  can raise cost and latency.
+- Saves with one or two Advisors stay readable by 0.21–0.23 as before.
+- No schema change. Versions 0.21–0.23 fall back to Advisor 1 when a save holds three Advisors,
+  or turn every Advisor off when one uses Anthropic auth, as before. Saving from one of them drops
+  Advisors 2 and 3.
+
+## 0.23.3 - 2026-10-31
+
+### Fixed
+
+- The role-mode reply from `consult_advisor` starts with `Not an error:` and limits its instruction
+  not to call the tool again to the time when Advisor launch remains `role`.
+- The reply names the exact active host tool `subagent`, discovered at invocation time through Pi's
+  public tool API. If it is absent or inactive, the reply tells the model to inform the user that it
+  cannot launch the Advisor and not to improvise foreground execution, a CLI or another agent.
+
+### Compatibility and verification
+
+- Only the role-mode tool result changes. Tool definitions, the policy block and all other replies
+  remain unchanged from 0.23.2. No configuration migration, dependency, profile, model, permission or
+  Pi minimum change; upgrade and reload as usual.
+- Registered-tool tests cover the exact launcher name, its absence and changing availability within
+  one runtime. The existing definition-identity test remains unchanged and passes. These checks do
+  not measure provider cache hits or establish real-model behavior with the new wording.
+
+## 0.23.2 - 2026-10-31
+
+### Fixed
+
+- `consult_advisor` now tells the model what to do for the effective Advisor state instead of
+  suggesting a switch to tool mode. Off means no consultation; role mode redirects to one background
+  host subagent call with every valid Advisor's exact profile, model and thinking policy, and says
+  not to call this tool again. Unavailable entries report their existing diagnostics. Invalid saved
+  Advisor settings explicitly require informing the user to save them again in `/delegate`, without
+  retrying the tool; ordinary availability errors do not ask for configuration changes.
+- Busy, blank-question and missing-session replies now state the next action. ContextShunt recovery
+  errors also explain whether to use another range, obtain live evidence or continue without recovery.
+  The reader's JSON error contract is unchanged.
+
+### Compatibility and verification
+
+- No configuration, schema, dependency, profile, permission or Pi minimum change. Upgrade and reload;
+  no migration is needed. Tool definitions stay fixed across modes and requests. The tool description
+  changes once on upgrade, but no additional policy-block or tool-definition variation is introduced.
+- Registered-tool tests cover off, role, invalid and valid tool calls, exact thinking rules and stable
+  definitions. Saved-state guidance is tested at the message constructor without corrupt files; its
+  connection to the registered tool was reviewed. Policy output was independently checked byte for
+  byte against the previous release. These checks do not measure provider cache hits or establish
+  real-model behavior after an accidental role-mode tool call.
+
+## 0.23.1 - 2026-10-29
+
+### Fixed
+
+- Advisor and ContextShunt reader launches no longer reject later `pi-subagents` releases solely
+  because their package version is not on an exact list. Both require a valid stable SemVer version
+  `>=0.76.1`, with no upper bound. Prereleases, invalid versions and non-string values are rejected;
+  build metadata does not affect precedence.
+- All other launch checks remain unchanged: contract and lifecycle version 3, definition projection
+  version 2, packaged profile and shadowing, exact model and thinking, tool and extension lists,
+  permission runtime, session identity and terminal digest binding. An incompatible preflight
+  still fails closed before a request is sent; a terminal mismatch still discards the reply.
+
+### Compatibility and verification
+
+- Pi `0.87.1` remains the package minimum. No dependency, configuration, schema, provider option or
+  permission change. Upgrade and reload; no configuration migration is needed.
+- The final loader was exercised against real `pi-subagents` `0.84.0` exports with a synthetic event
+  host on Pi `1.4.0`: Advisor fresh/fork and reader fresh completed with terminal binding. This
+  checks admission, not real child execution, provider transport or personal permission rules.
+  Version labels are not signatures or a guarantee of future compatibility.
+
+## 0.23.0 - 2026-10-29
+
+### Added
+
+- An optional Anthropic provider extension for each Advisor. The native provider selector chooses the
+  separate `pi-delegation-policy.advisor-anthropic-auth` profile without changing the configured model,
+  thinking, background role behavior, standard Advisor profile or ContextShunt reader. Only an exact
+  managed-user installation of `@gotgenes/pi-anthropic-auth` 3.4.3 is admitted. Its normal configuration,
+  startup hook, aliases and account diagnostic command remain trusted host code; the diagnostic is
+  never invoked automatically. No provider package is bundled or installed by this extension.
+- Schema 10 stores the per-Advisor `providerExtension: "anthropic-auth"` opt-in. Schemas 2–9 migrate in
+  memory without surprise writes. When any opt-in is saved, companion envelope 2 binds the full state
+  to an Advisor-off schema-8 base: downgrading through 0.22.2 leaves all Advisors off instead of
+  silently choosing the standard profile. Ordinary delegation and the reader are preserved; saves
+  without an opt-in retain envelope 1.
+
+### Fixed
+
+- Changing an Advisor model through the command or panel preserves its provider option. An
+  incompatible provider reports an Advisor error rather than silently removing the opt-in.
+- Provider choices stay visible in short, narrow terminals; Enter and Escape retain their normal
+  apply/cancel behavior. An invalid companion now reports that Advisor remains off when that is the
+  actual restored state.
+
+### Compatibility and verification
+
+- Pi 0.87.1 or later remains the package minimum. Missing public APIs disable only the optional
+  provider path. Advisor launch contracts still admit exact pi-subagents 0.76.1/0.83.1; the reader
+  remains limited to 0.76.1. No ambient extensions, model fallback or permission bypass is added.
+- One bounded fresh/background real-provider consultation with the new profile completed on
+  Pi 1.4.0 and pi-subagents 0.83.1. Metadata showed only the prompt runtime and provider bridge, no
+  required child extensions and no observed tool calls. This does not validate fork, consult_advisor,
+  other builds or permission runtimes, or establish a sole cause of the earlier failure. Provider
+  code is not sandboxed, version labels are not signatures, and resolution-to-load races remain.
+
+## 0.22.2 - 2026-10-28
+
+### Fixed
+
+- The Advisor no longer rejects a verified `pi-subagents` build. Each launch definition now declares
+  the exact list of package versions whose launch contract it was checked against: the Advisor admits
+  `0.76.1` and `0.83.1`, while the ContextShunt reader keeps its single verified `0.76.1`, so the
+  reader limit does not widen. Everything else in the launch check is unchanged: exact profile
+  projection and digest shape, exact model and thinking, host session binding, empty tools and
+  extensions, the pinned `@gotgenes/pi-permission-system` `33.0.3` runtime, and the terminal digest
+  binding. A build outside the list still fails closed before any request is sent.
+
+  The two contracts were compared from their real preflight payloads: they differ only in the package
+  version, the install path of the runtime extension and the digests derived from that path, and the
+  public fork wrapper is byte-identical. Admission and terminal binding were exercised in an isolated
+  host that answered with each contract's own digest. That does not cover provider transport, real
+  child execution or a real consultation, which remain unverified, and it does not explain the
+  Advisor failure reported on a forked session or the menu/status discrepancy; both stay open.
+
+## 0.22.1 - 2026-10-22
+
+### Fixed
+
+- The footer no longer keeps a stale `D:ERR` from session start when an ordinary model becomes
+  available only after this extension's `session_start` handler. Another extension may fill the model
+  catalog in its own start handler, and the host then emits `resources_discover`; a read-only runtime
+  refresh there repaints the footer with the existing validation. This adds one configuration/branch
+  read and footer refresh per session bind or reload, returns no resource paths, makes no network
+  call, and leaves the configuration-change notice reference alone, so a pending change is not lost.
+  A model that is genuinely missing or unusable still reports `D:ERR`. The fix relies on the public
+  post-start discovery order, verified in Pi `0.87.1` and `1.1.0`; availability changes after that
+  event still refresh on the next request or menu action.
+
+## 0.22.0 - 2026-10-21
+
+### Added
+
+- One ephemeral configuration-change notice on the next user turn after an effective configuration
+  change, whether a `/delegate` save or an edit of the global defaults that reaches the session. It
+  lists the values that changed since the configuration the model was last shown: intensity,
+  preference, ordinary roles, Visual Design, thinking policies, Advisor entries, mode and launch, the
+  ContextShunt mode, and the reader role, toggle and answer limit. The ContextShunt enforcement
+  tuning (`limits`, `exceptionPatterns`, `delegationHintPatterns`) is left out on purpose: it changes
+  how much the shunt preserves or compacts, not the assignments the model follows. The notice exists
+  only in the requests of that turn, never in the conversation, and stays identical across their
+  retries. With both axes off by configuration it reports one line,
+  `Delegation and Advisor disabled by this policy.`, and then injects nothing; an Advisor left on but
+  unusable is not reported as disabled.
+- The reference is the configuration the model was actually shown. Changes made before a turn are
+  grouped, a reversion reports nothing, an edit that leaves effective values unchanged reports
+  nothing, and a change made while a turn is running waits for the next turn. The notice is consumed
+  when the run ends with its last recorded outcome completed, read from the final `agent_end`, so a
+  retried error that then succeeds consumes it while an error or abort reported before that point
+  leaves the change pending. Residual: an abort or a thrown error after the last successful response,
+  which the host reports through no later public event, can still consume it. Session starts,
+  reloads, forks and tree moves set the reference silently, and a prompt another extension sends with
+  `sendUserMessage` neither receives nor consumes the notice.
+
+### Compatibility and verification
+
+- No configuration, schema or dependency change. The notice uses public Pi `0.87.1` events,
+  is converted to user text by the host like any custom message and identifies itself as an extension
+  notice; it is not system policy and changes no model, permission or authority. The extension writes
+  no notice text to session history or its local log. This does not limit request retention by the
+  provider or other authorized host components. The existing local JSONL log keeps its fields.
+- Covered against the registered hooks with a synthetic host: grouping and reversion, no-op saves,
+  retries, a mid-turn change, a completed turn followed by a failed continuation, error and abort, an
+  unknown run outcome, the accepted abort/throw window after a completed response, the both-off
+  notice, an extension-sent prompt, session and tree resets, global changes, the Advisor context mode,
+  and the real host conversion and payload repair. No real-provider run was performed. The synthetic
+  host encodes Pi `0.87.1`'s event order instead of exercising a host process, so a future host that
+  reordered `input` and `before_agent_start` would not be detected.
+
+## 0.21.1 - 2026-10-19
+
+### Fixed
+
+- Accept valid Advisor replies in fork context. Preflight now uses the public executor wrapper to bind the same task that the host executes, while the emitted question and strict result identity checks remain unchanged. Version 0.21.0 discarded successful fork replies because the task digests differed.
+- Explain Advisor launch failures instead of returning only `Advisor failed`. Messages distinguish missing launch prerequisites, preflight failures, timeouts, mismatched result identity, and unusable answers. If the host supplies no safely displayable cause, the message says so; raw errors, prompts, paths, and secrets are never copied into replies or the local log.
+
+### Compatibility and verification
+
+- No configuration or schema migration. Pi `0.87.1+` and the exact `pi-subagents` `0.76.1` executor requirement are unchanged. Reload after upgrading.
+- The regression is covered against a synthetic host matching the installed executor, including rejection of a genuinely mismatched digest. A real-provider fork check remains pending after installation.
+
+## 0.21.0 - 2026-10-19
+
+### Added
+
+- Schema 9: one or two ordered Advisors with independent exact models and thinking policies. Consult every valid entry; `A:PART` reports one valid entry out of two.
+- Inherited `advisorLaunch: role|tool`, default `role`. Explicit `consult_advisor` uses the authorized external executor, parallel results, independent failures, fork-to-fresh retry only after explicit rejection, cancellation and local timeouts. No hook launches children.
+- Content-free local JSONL policy hashes and consultation metadata, with size rotation and no network telemetry. No questions, briefs, answers, conversations, project paths or raw errors.
+
+### Compatibility and privacy
+
+- Schemas 2–8 resolve in memory without rewriting files. The legacy companion keeps Advisor 1 readable by 0.17–0.20 in role mode; 0.16 keeps delegation without Advisor. A separately paired extension holds Advisor 2 and launch mode. Three atomic replacements are not a transaction; a missing or stale extension falls back to Advisor 1 with the inherited launch mode.
+- Fork sends the conversation to each advisor provider. Normal executor/provider retention, latency and cost remain; no deletion, external TTL or generation ceiling is promised. One pending call per tool permits one reader plus an Advisor group of up to two children.
+
+## 0.20.0 - 2026-10-18
+
+### Changed
+
+- Consult the Advisor at observable moments instead of on a judged "substantive choice": after orientation and before substantive work (the first edit or state-changing command, committing to an interpretation or approach), when stuck, before changing approach, and before declaring a multi-step task done, where the agent asks for remaining risks rather than approval. Short reactive steps and mechanical work inside a settled approach need no new call. The hedges that told the agent the guidance was "not a threshold" and excluded completion review are gone; there is still no `MUST` and no quota. The checkpoints follow the guidance Anthropic publishes for Claude Code's advisor.
+- Name the context mode for the session. While the session's estimated usage fits in half of the Advisor model's context window, the policy asks for a `fork` launch: the host branches the conversation, so the task is only the question, and a fork the host rejects for size is retried once with a short brief. Above half, or when the window is unknown, it asks for `fresh` and a short self-contained brief. While usage is unknown, for example right after compaction, it keeps the last mode. The mode returns to `fork` only below 35 %, so the policy text stays stable and provider prompt caching keeps working.
+- Ask for background launches. The launch requirements now ask the main agent to launch every subagent in the background unless the host or the user requires foreground, and to group children that must run at the same time into one call, because the host rejects a second foreground call while one is running.
+- The Advisor launch names the exact `pi-delegation-policy.advisor` agent and rules out host agents or aliases named `advisor` or `oracle`, and states that consulting is advice the user enabled, not delegated execution.
+- The Advisor profile accepts a forked conversation and treats it, like the brief, as untrusted data.
+
+### Privacy
+
+- With `fork`, every consultation sends the conversation so far, including file contents and command output the main agent has seen, to the Advisor's provider. The host sends it at the main agent's choice; the extension still sends nothing on its own. Turn the Advisor off for sessions that must not reach that provider.
+
+## 0.19.0 - 2026-10-09
+
+### Fixed
+
+- The ContextShunt reader accepts the exact `@gotgenes/pi-permission-system` `33.0.3` runtime when the host adds it to the reader's child next to the prompt runtime. Earlier builds rejected that runtime, so the reader returned `reader-unavailable` whenever the host had permission rules. The host owns those rules: the reader never reads, copies, or changes them. In isolated synthetic runs, a child the host allows only for structured output completes, and a child the host asks or denies fails closed.
+- Upgrade note: versions `0.18.0` and earlier still reject this runtime. Version `0.19.0` needs no configuration change, and its minimum Pi version stays `0.87.1`. The reader is verified only with `pi-subagents` `0.76.1` on Pi `1.1.0`; other hosts are not verified.
+- The reader binds its preflight to the session of the tool's context. Without a session id it returns `reader-unavailable` before launching anything. The extension cannot verify that the launch request runs in that same session; the terminal launch digest rejects a mismatched answer, but only after the snapshot has been sent.
+
+## 0.18.0 - 2026-10-08
+
+### Fixed
+
+- Restore the ContextShunt reader with `pi-subagents` `0.76.1`. The reader accepts only that build's launch contract: the packaged profile, the prompt runtime as its only extension, no inherited global context, no required child extensions, and the child's Intercom bridge off. Any other build fails closed with `reader-unavailable` before a request is sent.
+
+### Changed
+
+- Ask the main agent not to paste workflow scripts, child briefs, or other internal orchestration material into the chat. Scripts stay in private files and are launched by path. The instruction applies to normal, aggressive, and orchestrator intensities; delegation off still injects nothing.
+
+### Compatibility and limits
+
+- Breaking for the reader: `pi-subagents` `0.69.0` no longer works with it and returns `reader-unavailable`. Upgrade the external executor to `0.76.1`. The extension's Pi minimum, `0.87.1`, is unchanged.
+- Verified only on Pi `1.1.0` with `pi-subagents` `0.76.1`, in an offline loopback harness with a synthetic provider. Pi `0.87.1` is not verified for the reader, and no real provider was used.
+- A child that loads a permission extension is rejected, so the reader returns `reader-unavailable`. This path was not exercised with pi-subagents permission rules.
+
+## 0.17.0 - 2026-10-07
+
+### Added
+
+- Configure Advisor independently with `advisorMode: off|on|with-delegation`, the panel, or `/delegate advisor`. Explicit `on` permits consultation with delegation off (`D:OFF A:ON`) without ordinary roles. An omitted mode preserves the previous coupling; `off` keeps the saved model and thinking policy without validating or injecting consultation guidance.
+
+### Fixed
+
+- Isolate errors by axis: an invalid enabled Advisor removes only consultation, and invalid delegation does not suppress a valid enabled Advisor. Status and the panel show `D:* A:OFF|ON|ERR`; unreported configuration diagnostics remain visible without becoming Advisor errors.
+- Stop global saves before writing when either previous settings file cannot be read. If the companion write fails, attempt restoration and verify both files before reporting no changes; otherwise report a partial save and reload the observable state.
+- Preserve Advisor model and thinking from readable, valid but mismatched companions while silencing consultation. Compare normalized delegation projections rather than raw-text digests, so reformatting does not invalidate the pair.
+- Keep an older session's explicit removal of Advisor from inheriting a newly enabled global Advisor. Reset, invalid restoration, and interrupted session saves disable both axes.
+
+### Changed
+
+- Rewrite the README and wiki around setup, modes, role thinking, commands, persistence, downgrade, and privacy.
+
+### Compatibility and limits
+
+- Requires Pi `0.87.1` or later. Current state uses schema 8, but saved delegation remains schema 7, with Advisor in a companion. The actual `0.16.0` reader retains delegation after downgrade; earlier readers keep their existing limitations. Loading migrates only in memory.
+- Global settings use two individually atomic replacements, not a transaction. A hard stop can leave a mismatched pair with Advisor off; concurrency checks are not locks, and another writer can change a file between a check and a replacement.
+- ContextShunt remains suspended with delegation off. The extension does not launch Advisor from hooks, change the host executor, or alter the main model or thinking. Consultation still carries normal executor/provider retention, latency, and cost.
+
+## 0.16.0 - 2026-10-06
+
+### Changed
+
+- Favor a brief consultation whenever the work presents a substantive choice, not only when the main agent notices doubt. With an advisor configured, step 1 of the `Decision order` and the `Advisor consultation:` section now cover an approach, a scope, the acceptance criteria, a comparison between options, or a decision. The policy no longer asks the main agent to recognize a doubt, a proposal or alternatives first, and no longer asks it to predict whether the second opinion would change the decision; its own confidence is not a reason to skip the call.
+- Remove the generic escape hatch "routine decisions need none" and replace it with one concrete limit: a local detail with no effect on an approach or a solution already fixed needs no call. The existing examples — viable approaches trading off explicit requirements, evidence supporting conflicting explanations that call for different actions, and changes with destructive data operations, difficult rollback or compatibility breaks — stay as examples, not a closed list.
+- Say how to brief and reuse the advisor. The brief puts the objective, the constraints, the facts and the open choice first and the proposal and reasons after, without hiding decisive data; a decisive local fact is verified instead of guessed; the agent asks for an approach, criteria or critical assumptions rather than approval or a forced list of defects, and a short reply can be enough. A follow-up continues the same thread through the host's resume mechanism on a material discrepancy or gap, the advice is reused while the decision and its assumptions hold, and it is reopened only on new relevant evidence rather than on every turn, phase or tool call.
+- Distinguish choosing a solution, executing a decision already fixed, checking a verifiable fact, and the preferences or authorizations reserved to the user. The advisor helps compare, recommend and decide; the decision and its responsibility stay with the main agent, and the user keeps their own preferences and authorizations.
+
+### Compatibility
+
+No configuration, schema, model, thinking or permission change. The packaged profile, the exact references and the retention statements are unchanged.
+
 ## 0.15.1 - 2026-09-27
 
 ### Fixed

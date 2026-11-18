@@ -1,7 +1,13 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
+  ADVISOR_LAUNCH_MODES,
+  type AdvisorLaunch,
+  type AdvisorSetting,
+  ADVISOR_MODES,
+  type AdvisorMode,
   CONTEXT_SHUNT_MODES,
   type ContextShuntLimits,
   type ContextShuntSettings,
@@ -13,6 +19,7 @@ import {
   type GlobalDefaults,
   INTENSITIES,
   type Intensity,
+  MAX_ADVISORS,
   MODEL_ROLES,
   type ModelConfigKey,
   type ModelRef,
@@ -32,6 +39,8 @@ import {
 
 export type { GlobalDefaults, SessionDelegateState } from "./types.ts";
 export const SESSION_ENTRY_TYPE = "pi-delegation-policy:session";
+export const ADVISOR_SESSION_ENTRY_TYPE = "pi-delegation-policy:advisor-state";
+export const ADVISOR_EXTENSION_ENTRY_TYPE = "pi-delegation-policy:advisor-extension";
 export const GLOBAL_CONFIG_NAME = "delegation-policy.json";
 const LEGACY_SCHEMA_MESSAGE =
   "Global defaults use unsupported schema version 1. Configure them again with /delegate before activating delegation.";
@@ -52,6 +61,8 @@ const SCHEMA4_KEYS = [...SCHEMA2_KEYS, "contextShunt"] as const;
 const SCHEMA5_KEYS = SCHEMA4_KEYS;
 const SCHEMA6_KEYS = [...SCHEMA5_KEYS, "thinking"] as const;
 const SCHEMA7_KEYS = [...SCHEMA6_KEYS, "advisor"] as const;
+const SCHEMA8_KEYS = [...SCHEMA7_KEYS, "advisorMode"] as const;
+const SCHEMA9_KEYS = [...SCHEMA8_KEYS, "advisors", "advisorLaunch"] as const;
 const DEFAULT_LIMITS = {
   fullReadLines: 350,
   fullReadBytes: 16384,
@@ -64,11 +75,17 @@ const DEFAULT_ANSWER_MAX_BYTES = 8192;
 const MIN_ANSWER_MAX_BYTES = 1024;
 const MAX_ANSWER_MAX_BYTES = 16384;
 
-export type ConfigDiagnostic = { message: string; reportWhenOff?: boolean };
+export type ConfigDiagnostic = {
+  message: string;
+  reportWhenOff?: boolean;
+  scope?: "advisor" | "advisor-extension" | "launch-correction" | "advisor-reminder";
+};
 export type LoadedDefaults = {
   defaults: GlobalDefaults;
   diagnostics: ConfigDiagnostic[];
 };
+/** `unchanged` means this call left the previous pair in place; `partial` means it did not. */
+export type GlobalSaveResult = "saved" | "unchanged" | "partial";
 export type RestoredSessionState = {
   session: SessionDelegateState;
   diagnostics: ConfigDiagnostic[];
@@ -146,11 +163,11 @@ function thinkingPolicy(value: unknown): ThinkingPolicy | undefined {
 function parseThinking(
   value: unknown,
   session: boolean,
-  schema: 6 | 7,
+  schema: 6 | 7 | 8,
 ): ThinkingSettings | SessionThinkingSettings | undefined {
   // `advisor` arrived with schema 7: a document that claims an older version must not carry it.
   const keys =
-    schema === 7 ? THINKING_ROLE_KEYS : THINKING_ROLE_KEYS.filter((key) => key !== "advisor");
+    schema >= 7 ? THINKING_ROLE_KEYS : THINKING_ROLE_KEYS.filter((key) => key !== "advisor");
   if (!isRecord(value) || !only(value, keys)) return undefined;
   const thinking: SessionThinkingSettings = {};
   for (const key of keys) {
@@ -196,7 +213,7 @@ function validAnswerMaxBytes(value: unknown): value is number {
     (value as number) <= MAX_ANSWER_MAX_BYTES
   );
 }
-function parseShunt(value: unknown, schema: 4 | 5 | 6 | 7): ContextShuntSettings | undefined {
+function parseShunt(value: unknown, schema: 4 | 5 | 6 | 7 | 8): ContextShuntSettings | undefined {
   const keys = [
     "mode",
     "readerRole",
@@ -251,7 +268,7 @@ function parseShunt(value: unknown, schema: 4 | 5 | 6 | 7): ContextShuntSettings
 }
 function envelope(
   value: unknown,
-  schema: 2 | 3 | 4 | 5 | 6 | 7,
+  schema: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
   keys: readonly string[],
   intensityValidator: (value: unknown) => boolean,
 ): value is Record<string, unknown> {
@@ -297,7 +314,7 @@ export function parseSchema2Config(value: unknown): Schema2Config | undefined {
 }
 function parseModern(
   value: unknown,
-  schema: 3 | 4 | 5 | 6 | 7,
+  schema: 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
   session: boolean,
 ): GlobalDefaults | SessionDelegateState | undefined {
   const keys =
@@ -309,8 +326,32 @@ function parseModern(
           ? SCHEMA5_KEYS
           : schema === 6
             ? SCHEMA6_KEYS
-            : SCHEMA7_KEYS;
+            : schema === 7
+              ? SCHEMA7_KEYS
+              : schema === 8
+                ? SCHEMA8_KEYS
+                : SCHEMA9_KEYS;
   if (!envelope(value, schema, keys, isIntensity)) return undefined;
+  if (value.advisorMode !== undefined && !ADVISOR_MODES.includes(value.advisorMode as AdvisorMode))
+    return undefined;
+  if (
+    value.advisorLaunch !== undefined &&
+    !ADVISOR_LAUNCH_MODES.includes(value.advisorLaunch as AdvisorLaunch)
+  )
+    return undefined;
+  const advisors =
+    value.advisors === undefined
+      ? undefined
+      : session && value.advisors === null
+        ? null
+        : parseAdvisors(value.advisors, schema >= 10);
+  if (value.advisors !== undefined && advisors === undefined) return undefined;
+  if (
+    value.advisors !== undefined &&
+    (value.advisor !== undefined ||
+      (isRecord(value.thinking) && Object.hasOwn(value.thinking, "advisor")))
+  )
+    return undefined;
   const small = value.small === undefined ? undefined : ordinary(value.small);
   const medium = value.medium === undefined ? undefined : ordinary(value.medium);
   const large = value.large === undefined ? undefined : ordinary(value.large);
@@ -330,18 +371,21 @@ function parseModern(
     (value.advisor !== undefined && advisor === undefined)
   )
     return undefined;
-  const supportsContextShunt = schema === 4 || schema === 5 || schema === 6 || schema === 7;
+  const supportsContextShunt = schema >= 4;
   const contextShunt =
     supportsContextShunt && value.contextShunt !== undefined
-      ? parseShunt(value.contextShunt, schema as 4 | 5 | 6 | 7)
+      ? parseShunt(value.contextShunt, schema as 4 | 5 | 6 | 7 | 8)
       : undefined;
   if (supportsContextShunt && value.contextShunt !== undefined && !contextShunt) return undefined;
-  const supportsThinking = schema === 6 || schema === 7;
+  const supportsThinking = schema >= 6;
   const thinking =
     supportsThinking && value.thinking !== undefined
-      ? parseThinking(value.thinking, session, schema as 6 | 7)
+      ? parseThinking(value.thinking, session, schema as 6 | 7 | 8)
       : undefined;
   if (supportsThinking && value.thinking !== undefined && !thinking) return undefined;
+  // A saved Advisor policy stays valid input but no longer has an effect. Dropping it here, before
+  // any projection, keeps every base/companion/extension comparison working on the same shape.
+  if (thinking) delete thinking.advisor;
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     ...(value.intensity ? { intensity: value.intensity as Intensity } : {}),
@@ -355,6 +399,11 @@ function parseModern(
         ? { uiDesign: uiDesign as ModelRef }
         : {}),
     ...(advisor === null ? { advisor: null } : advisor ? { advisor: advisor as ModelRef } : {}),
+    ...(advisors !== undefined ? { advisors } : {}),
+    ...(value.advisorLaunch !== undefined
+      ? { advisorLaunch: value.advisorLaunch as AdvisorLaunch }
+      : {}),
+    ...(value.advisorMode !== undefined ? { advisorMode: value.advisorMode as AdvisorMode } : {}),
     ...(thinking && Object.keys(thinking).length
       ? { thinking: thinking as SessionThinkingSettings }
       : {}),
@@ -376,6 +425,53 @@ export function parseSchema6Config(value: unknown): GlobalDefaults | undefined {
 export function parseSchema7Config(value: unknown): GlobalDefaults | undefined {
   return parseModern(value, 7, false) as GlobalDefaults | undefined;
 }
+export function parseSchema8Config(value: unknown): GlobalDefaults | undefined {
+  return parseModern(value, 8, false) as GlobalDefaults | undefined;
+}
+export function parseSchema9Config(value: unknown): GlobalDefaults | undefined {
+  return parseModern(value, 9, false) as GlobalDefaults | undefined;
+}
+export function parseSchema10Config(value: unknown): GlobalDefaults | undefined {
+  return parseModern(value, 10, false) as GlobalDefaults | undefined;
+}
+function parseAdvisors(value: unknown, providerExtensions = false): AdvisorSetting[] | undefined {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_ADVISORS) return undefined;
+  const entries: AdvisorSetting[] = [];
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      !only(entry, [
+        "provider",
+        "model",
+        "thinking",
+        ...(providerExtensions ? ["providerExtension"] : []),
+      ])
+    )
+      return undefined;
+    if (entry.providerExtension !== undefined && entry.providerExtension !== "anthropic-auth")
+      return undefined;
+    const reference = model({ provider: entry.provider, model: entry.model });
+    // Earlier versions saved a per-entry thinking policy. It must still be well formed, but it is
+    // ignored: Advisor thinking is chosen per launch.
+    if (!reference || (entry.thinking !== undefined && !thinkingPolicy(entry.thinking)))
+      return undefined;
+    entries.push({
+      ...reference,
+      ...(entry.providerExtension === "anthropic-auth"
+        ? { providerExtension: "anthropic-auth" as const }
+        : {}),
+    });
+  }
+  return entries;
+}
+/** Normalize legacy first-advisor settings without mutating the loaded document. */
+export function configuredAdvisors(
+  state: GlobalDefaults | SessionDelegateState,
+): AdvisorSetting[] | null | undefined {
+  if (state.advisors !== undefined) return structuredClone(state.advisors);
+  if (state.advisor === null) return null;
+  return state.advisor ? [{ ...state.advisor }] : undefined;
+}
 function migrate2(value: Schema2Config | Schema2Session): SessionDelegateState {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -393,6 +489,9 @@ function migrate2(value: Schema2Config | Schema2Session): SessionDelegateState {
 }
 export function parseConfig(value: unknown): GlobalDefaults | undefined {
   return (
+    parseSchema10Config(value) ??
+    parseSchema9Config(value) ??
+    parseSchema8Config(value) ??
     parseSchema7Config(value) ??
     parseSchema6Config(value) ??
     parseSchema5Config(value) ??
@@ -422,6 +521,9 @@ function parseSchema2Session(value: unknown): Schema2Session | undefined {
 }
 export function parseSessionState(value: unknown): SessionDelegateState | undefined {
   return (
+    (parseModern(value, 10, true) as SessionDelegateState | undefined) ??
+    (parseModern(value, 9, true) as SessionDelegateState | undefined) ??
+    (parseModern(value, 8, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 7, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 6, true) as SessionDelegateState | undefined) ??
     (parseModern(value, 5, true) as SessionDelegateState | undefined) ??
@@ -443,10 +545,10 @@ export function getGlobalConfigPath(
 }
 export async function readConfig(path: string): Promise<LoadedDefaults> {
   try {
-    const value = JSON.parse(await readFile(path, "utf8"));
+    const value: unknown = JSON.parse(await readFile(path, "utf8"));
     const defaults = parseConfig(value);
     return defaults
-      ? { defaults, diagnostics: [] }
+      ? await readAdvisorCompanion(path, defaults)
       : {
           defaults: emptyGlobalDefaults(),
           diagnostics: [
@@ -456,7 +558,7 @@ export async function readConfig(path: string): Promise<LoadedDefaults> {
           ],
         };
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT"
+    return isAbsentPathError(error)
       ? { defaults: emptyGlobalDefaults(), diagnostics: [] }
       : {
           defaults: emptyGlobalDefaults(),
@@ -464,30 +566,373 @@ export async function readConfig(path: string): Promise<LoadedDefaults> {
         };
   }
 }
-async function atomicWrite(path: string, value: unknown): Promise<void> {
+function schema8Projection(state: GlobalDefaults | SessionDelegateState) {
+  const projected = { ...state, schemaVersion: 8 };
+  delete projected.advisors;
+  delete projected.advisorLaunch;
+  const first = configuredAdvisors(state)?.[0];
+  if (state.advisors !== undefined) {
+    delete projected.advisor;
+    if (first) projected.advisor = { provider: first.provider, model: first.model };
+    else if (state.advisors === null) projected.advisor = null;
+  }
+  // Old readers must never recover a provider-dependent Advisor as an ordinary one.
+  if (hasProviderExtension(state)) projected.advisorMode = "off";
+  return projected;
+}
+function hasProviderExtension(state: GlobalDefaults | SessionDelegateState): boolean {
+  return configuredAdvisors(state)?.some((entry) => entry.providerExtension !== undefined) ?? false;
+}
+export function getAdvisorExtensionPath(path: string): string {
+  return `${path.endsWith(".json") ? path.slice(0, -5) : path}.advisor-extension.json`;
+}
+function advisorExtension(state: GlobalDefaults | SessionDelegateState) {
+  if (hasProviderExtension(state))
+    return { schemaVersion: 2, base: schema8Projection(state), state };
+  const [, second, third] = configuredAdvisors(state) ?? [];
+  return {
+    schemaVersion: 1,
+    base: schema8Projection(state),
+    ...(second ? { advisor2: second } : {}),
+    // 0.23 and earlier reject this key and fall back to Advisor 1 only.
+    ...(third ? { advisor3: third } : {}),
+    ...(state.advisorLaunch ? { advisorLaunch: state.advisorLaunch } : {}),
+  };
+}
+function extensionDiagnostic(state: GlobalDefaults | SessionDelegateState): ConfigDiagnostic {
+  return {
+    scope: "advisor-extension",
+    reportWhenOff: true,
+    message:
+      state.advisorMode === "off" || !configuredAdvisors(state)?.length
+        ? "Advisor extension settings are missing, invalid, or stale. Advisor remains off; save again with /delegate."
+        : "Advisor extension settings are missing, invalid, or stale. Using Advisor 1 only with the inherited launch mode; save again with /delegate.",
+  };
+}
+function applyAdvisorExtension<T extends GlobalDefaults | SessionDelegateState>(
+  state: T,
+  value: unknown,
+): T | undefined {
+  if (isRecord(value) && value.schemaVersion === 2) {
+    if (!only(value, ["schemaVersion", "base", "state"])) return undefined;
+    const candidate = parseSessionState(value.state);
+    const base = parseSessionState(value.base);
+    if (
+      !candidate ||
+      !isRecord(value.state) ||
+      value.state.schemaVersion !== 10 ||
+      !hasProviderExtension(candidate) ||
+      !base ||
+      !isDeepStrictEqual(schema8Projection(candidate), schema8Projection(base)) ||
+      !isDeepStrictEqual(schema8Projection(base), schema8Projection(state))
+    )
+      return undefined;
+    return candidate as T;
+  }
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    !only(value, ["schemaVersion", "base", "advisor2", "advisor3", "advisorLaunch"])
+  )
+    return undefined;
+  const base = parseSessionState(value.base);
+  if (!base || !isDeepStrictEqual(schema8Projection(base), schema8Projection(state)))
+    return undefined;
+  if (
+    value.advisorLaunch !== undefined &&
+    !ADVISOR_LAUNCH_MODES.includes(value.advisorLaunch as AdvisorLaunch)
+  )
+    return undefined;
+  const second = value.advisor2 === undefined ? undefined : parseAdvisors([value.advisor2])?.[0];
+  const third = value.advisor3 === undefined ? undefined : parseAdvisors([value.advisor3])?.[0];
+  if ((value.advisor2 !== undefined && !second) || (value.advisor3 !== undefined && !third))
+    return undefined;
+  const advisors = configuredAdvisors(state);
+  // The list has no gaps: Advisor 3 needs Advisor 2, which needs Advisor 1.
+  if ((second && !advisors?.length) || (third && !second)) return undefined;
+  const extended = { ...state };
+  if (second) {
+    extended.advisors = [...advisors!, second, ...(third ? [third] : [])];
+    delete extended.advisor;
+  }
+  if (value.advisorLaunch) extended.advisorLaunch = value.advisorLaunch as AdvisorLaunch;
+  return extended;
+}
+function serialize(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+export async function atomicWrite(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await writeFile(temporary, text, "utf8");
     await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
+  } catch (error) {
+    // A committed rename leaves no temporary file behind, so this cleanup only ever runs before the
+    // commit and a cleanup failure never turns a written file into a failed replacement.
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
   }
 }
-export async function writeConfig(path: string, defaults: GlobalDefaults): Promise<void> {
-  const parsed = parseSchema7Config(defaults);
+/**
+ * Nothing exists at `path`, so the caller may treat it as the documented default. A path component
+ * that is a regular file makes the path unrealisable, which Linux reports as ENOTDIR and Windows as
+ * ENOENT; both mean the same absent file, not an unreadable one.
+ */
+export function isAbsentPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+function delegationProjection(state: GlobalDefaults | SessionDelegateState, session: boolean) {
+  const delegation = { ...state };
+  delete delegation.advisor;
+  delete delegation.advisorMode;
+  delete delegation.advisors;
+  delete delegation.advisorLaunch;
+  delete delegation.thinking;
+  const ordinaryThinking: SessionThinkingSettings = { ...state.thinking };
+  delete ordinaryThinking.advisor;
+  return {
+    ...delegation,
+    schemaVersion: 7 as const,
+    ...(session ? { advisor: null } : {}),
+    ...(Object.keys(ordinaryThinking).length ? { thinking: ordinaryThinking } : {}),
+  };
+}
+export function getAdvisorConfigPath(path: string): string {
+  return `${path.endsWith(".json") ? path.slice(0, -5) : path}.advisor.json`;
+}
+/**
+ * Advisor state is usable only while it describes the same delegation as the delegation file. When
+ * it cannot be trusted, delegation still wins and Advisor keeps its model and thinking policy but
+ * cannot activate, so a later save repairs the pair instead of losing them.
+ */
+function withoutAdvisorActivation(
+  defaults: GlobalDefaults,
+  preserved: GlobalDefaults | undefined,
+): GlobalDefaults {
+  const advisor = preserved?.advisor ?? defaults.advisor;
+  return {
+    ...defaults,
+    ...(advisor ? { advisor: { ...advisor } } : {}),
+    advisorMode: "off",
+  };
+}
+function advisorScopeDiagnostic(): ConfigDiagnostic {
+  return {
+    message:
+      "Advisor settings are invalid or no longer match delegation defaults. Save them again with /delegate; delegation remains available.",
+    scope: "advisor",
+    reportWhenOff: true,
+  };
+}
+/**
+ * Companion envelope. Current saves write `{schemaVersion: 1, state}`; the earlier development
+ * envelope also carried a `delegationDigest`, still accepted as a legacy shape but never used. The
+ * projection comparison below is the contract, and a digest of the raw delegation text would fail
+ * on harmless reformatting without adding integrity over the same two local files.
+ */
+function advisorCompanionState(value: unknown): GlobalDefaults | undefined {
+  if (!isRecord(value) || value.schemaVersion !== 1) return undefined;
+  const keys = Object.hasOwn(value, "delegationDigest")
+    ? ["schemaVersion", "delegationDigest", "state"]
+    : ["schemaVersion", "state"];
+  if (!only(value, keys)) return undefined;
+  if (value.delegationDigest !== undefined && typeof value.delegationDigest !== "string")
+    return undefined;
+  return parseSchema8Config(value.state);
+}
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+async function readAdvisorCompanion(
+  path: string,
+  defaults: GlobalDefaults,
+): Promise<LoadedDefaults> {
+  let raw: string;
+  try {
+    raw = await readFile(getAdvisorConfigPath(path), "utf8");
+  } catch (error) {
+    return isAbsentPathError(error)
+      ? { defaults, diagnostics: [] }
+      : {
+          defaults: withoutAdvisorActivation(defaults, undefined),
+          diagnostics: [advisorScopeDiagnostic()],
+        };
+  }
+  const state = advisorCompanionState(parseJson(raw));
+  if (
+    state &&
+    isDeepStrictEqual(delegationProjection(state, false), delegationProjection(defaults, false))
+  ) {
+    let extension: unknown;
+    try {
+      extension = parseJson(await readFile(getAdvisorExtensionPath(path), "utf8"));
+    } catch {
+      extension = undefined;
+    }
+    const extended = applyAdvisorExtension(state, extension);
+    return extended
+      ? { defaults: extended, diagnostics: [] }
+      : { defaults: state, diagnostics: [extensionDiagnostic(state)] };
+  }
+  return {
+    defaults: withoutAdvisorActivation(defaults, state),
+    diagnostics: [advisorScopeDiagnostic()],
+  };
+}
+type PreviousFile = { kind: "absent" } | { kind: "content"; text: string } | { kind: "unreadable" };
+async function readPreviousFile(path: string): Promise<PreviousFile> {
+  try {
+    return { kind: "content", text: await readFile(path, "utf8") };
+  } catch (error) {
+    return isAbsentPathError(error) ? { kind: "absent" } : { kind: "unreadable" };
+  }
+}
+function matchesPreviousFile(current: PreviousFile, previous: PreviousFile): boolean {
+  if (current.kind !== previous.kind) return false;
+  if (previous.kind === "content" && current.kind === "content")
+    return current.text === previous.text;
+  return previous.kind === "absent";
+}
+/** Both files must still hold their previous state for a save to claim the pair is unchanged. */
+async function pairMatchesPrevious(
+  path: string,
+  companionPath: string,
+  previousMain: PreviousFile,
+  previousCompanion: PreviousFile,
+): Promise<boolean> {
+  return (
+    matchesPreviousFile(await readPreviousFile(path), previousMain) &&
+    matchesPreviousFile(await readPreviousFile(companionPath), previousCompanion)
+  );
+}
+/**
+ * Replace delegation, its legacy Advisor companion, then the schema-9 extension. This is not a
+ * three-file transaction: each next file is accepted only against its normalized predecessor.
+ * Pre-read every file and restore only our committed prefix, never a foreign write. A hard stop
+ * between replacements can leave Advisor off or leave only Advisor 1 in role mode until repaired.
+ */
+export async function writeConfig(
+  path: string,
+  defaults: GlobalDefaults,
+): Promise<GlobalSaveResult> {
+  const parsed = parseSchema10Config(defaults);
   if (!parsed) throw new Error("Refusing to write invalid delegation policy defaults.");
-  await atomicWrite(path, parsed);
+  const companionPath = getAdvisorConfigPath(path);
+  const extensionPath = getAdvisorExtensionPath(path);
+  const previousExtension = await readPreviousFile(extensionPath);
+  const previousMain = await readPreviousFile(path);
+  const previousCompanion = await readPreviousFile(companionPath);
+  // An existing file this process cannot read holds a previous state that cannot be established, so
+  // the save stops before its first write: this call has then mutated nothing to report.
+  if (
+    previousMain.kind === "unreadable" ||
+    previousCompanion.kind === "unreadable" ||
+    previousExtension.kind === "unreadable"
+  )
+    return "unchanged";
+  const committed = serialize(delegationProjection(parsed, false));
+  try {
+    await atomicWrite(path, committed);
+  } catch {
+    return (await pairMatchesPrevious(path, companionPath, previousMain, previousCompanion)) &&
+      matchesPreviousFile(await readPreviousFile(extensionPath), previousExtension)
+      ? "unchanged"
+      : "partial";
+  }
+  let companionCommitted = false;
+  const companionText = serialize({ schemaVersion: 1, state: schema8Projection(parsed) });
+  try {
+    await atomicWrite(companionPath, companionText);
+    companionCommitted = true;
+    await atomicWrite(extensionPath, serialize(advisorExtension(parsed)));
+    return "saved";
+  } catch {
+    // Restore only while the delegation file still holds this call's projection and the companion
+    // still holds its previous state: a foreign write must not be overwritten, and the previous
+    // pair cannot be re-established once either file moved on.
+    const current = await readPreviousFile(path);
+    if (current.kind !== "content" || current.text !== committed) return "partial";
+    const currentCompanion = await readPreviousFile(companionPath);
+    if (
+      companionCommitted
+        ? currentCompanion.kind !== "content" || currentCompanion.text !== companionText
+        : !matchesPreviousFile(currentCompanion, previousCompanion)
+    )
+      return "partial";
+    if (!matchesPreviousFile(await readPreviousFile(extensionPath), previousExtension))
+      return "partial";
+    try {
+      if (companionCommitted) {
+        if (previousCompanion.kind === "content")
+          await atomicWrite(companionPath, previousCompanion.text);
+        else await rm(companionPath, { force: true });
+      }
+      if (previousMain.kind === "content") await atomicWrite(path, previousMain.text);
+      else await rm(path, { force: true });
+    } catch {
+      return "partial";
+    }
+    return (await pairMatchesPrevious(path, companionPath, previousMain, previousCompanion)) &&
+      matchesPreviousFile(await readPreviousFile(extensionPath), previousExtension)
+      ? "unchanged"
+      : "partial";
+  }
 }
 export function restoreSessionStateWithDiagnostics(entries: unknown[]): RestoredSessionState {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index] as Record<string, unknown> | undefined;
     if (entry?.type !== "custom" || entry.customType !== SESSION_ENTRY_TYPE) continue;
-    const session = parseSessionState(entry.data);
+    let session = parseSessionState(entry.data);
+    const previous = entries[index - 1] as Record<string, unknown> | undefined;
+    if (
+      session &&
+      previous?.type === "custom" &&
+      previous.customType === ADVISOR_SESSION_ENTRY_TYPE
+    ) {
+      const companion =
+        isRecord(previous.data) && previous.data.schemaVersion === 8
+          ? parseSessionState(previous.data)
+          : undefined;
+      if (companion && isDeepStrictEqual(delegationProjection(companion, true), entry.data)) {
+        session = companion;
+        const extension = entries[index - 2] as Record<string, unknown> | undefined;
+        const extended =
+          extension?.type === "custom" && extension.customType === ADVISOR_EXTENSION_ENTRY_TYPE
+            ? applyAdvisorExtension(companion, extension.data)
+            : undefined;
+        if (extended) session = extended;
+        else return { session, diagnostics: [extensionDiagnostic(session)] };
+      } else
+        return {
+          session: { ...session, advisor: null, advisorMode: "off" },
+          diagnostics: [
+            {
+              message:
+                "Advisor session settings are invalid or do not match delegation state. Apply them again with /delegate.",
+              scope: "advisor",
+              reportWhenOff: true,
+            },
+          ],
+        };
+    }
+    // The downgrade guard must also silence an independently enabled global Advisor.
+    if (
+      session &&
+      isRecord(entry.data) &&
+      entry.data.schemaVersion === 2 &&
+      entry.data.intensity === "off"
+    )
+      session.advisorMode = "off";
     return session
       ? { session, diagnostics: [] }
       : {
-          session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off" },
+          session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "off", advisorMode: "off" },
           diagnostics: [{ message: INVALID_SESSION_MESSAGE, reportWhenOff: true }],
         };
   }
@@ -583,6 +1028,12 @@ function resolveShunt(
     },
   };
 }
+/** A branch that removed its Advisor model also removed the consultation it allowed. */
+function resolveAdvisorMode(defaults: GlobalDefaults, session: SessionDelegateState): AdvisorMode {
+  if (session.advisorMode) return session.advisorMode;
+  if (configuredAdvisors(session) === null) return "off";
+  return defaults.advisorMode ?? "with-delegation";
+}
 /**
  * An optional specialist role resolves like an ordinary one, except that only a session override may
  * disable it and an absent global key stays unconfigured.
@@ -603,13 +1054,20 @@ export function resolveDelegateState(
 ): EffectiveDelegateState {
   const intensity = session.intensity ?? defaults.intensity ?? "off";
   const uiDesign = resolveOptionalRole(defaults, session, "uiDesign");
-  const advisor = resolveOptionalRole(defaults, session, "advisor");
+  const localAdvisors = configuredAdvisors(session);
+  const advisors =
+    localAdvisors !== undefined ? (localAdvisors ?? []) : (configuredAdvisors(defaults) ?? []);
+  const advisor = advisors[0]
+    ? { provider: advisors[0].provider, model: advisors[0].model }
+    : undefined;
   const role = (name: ModelRole) =>
     copyRole(Object.hasOwn(session, name) ? session[name] : defaults[name]);
   const small = role("small");
   const medium = role("medium");
   const large = role("large");
   const { thinking, source: thinkingSource } = resolveThinking(defaults, session);
+  // Parsed documents never carry it; a state built in memory must not resurrect it either.
+  delete thinking.advisor;
   return {
     intensity,
     preference: session.preference ?? defaults.preference ?? "standard",
@@ -618,6 +1076,9 @@ export function resolveDelegateState(
     ...(large !== undefined ? { large } : {}),
     ...(uiDesign ? { uiDesign } : {}),
     ...(advisor ? { advisor } : {}),
+    advisors,
+    advisorLaunch: session.advisorLaunch ?? defaults.advisorLaunch ?? "role",
+    advisorMode: resolveAdvisorMode(defaults, session),
     thinking,
     contextShunt: resolveShunt(defaults, session, intensity),
     source: {
@@ -627,7 +1088,20 @@ export function resolveDelegateState(
       medium: source(session, defaults.medium, "medium"),
       large: source(session, defaults.large, "large"),
       uiDesign: source(session, defaults.uiDesign, "uiDesign"),
-      advisor: source(session, defaults.advisor, "advisor"),
+      advisor:
+        localAdvisors !== undefined
+          ? "session"
+          : configuredAdvisors(defaults) !== undefined
+            ? "global"
+            : "default",
+      advisorMode: source(session, defaults.advisorMode, "advisorMode"),
+      advisors:
+        localAdvisors !== undefined
+          ? "session"
+          : configuredAdvisors(defaults) !== undefined
+            ? "global"
+            : "default",
+      advisorLaunch: source(session, defaults.advisorLaunch, "advisorLaunch"),
       thinking: thinkingSource,
     },
   };
@@ -647,8 +1121,16 @@ export function defaultsFromEffectiveState(state: EffectiveDelegateState): Globa
     ...("value" in role(state.medium) ? { medium: role(state.medium).value } : {}),
     ...("value" in role(state.large) ? { large: role(state.large).value } : {}),
     ...(state.uiDesign ? { uiDesign: { ...state.uiDesign } } : {}),
-    ...(state.advisor ? { advisor: { ...state.advisor } } : {}),
-    ...(Object.keys(state.thinking).length ? { thinking: copyThinking(state.thinking) } : {}),
+    ...(state.advisors.length ? { advisors: structuredClone(state.advisors) } : {}),
+    advisorMode: state.advisorMode,
+    advisorLaunch: state.advisorLaunch,
+    ...(Object.keys(state.thinking).some((key) => key !== "advisor")
+      ? {
+          thinking: Object.fromEntries(
+            Object.entries(copyThinking(state.thinking)).filter(([key]) => key !== "advisor"),
+          ),
+        }
+      : {}),
     ...(hasConfiguredContext
       ? {
           contextShunt: {
@@ -670,13 +1152,18 @@ export function appendGuardedSessionState(
   pi: SessionEntryWriter,
   session: SessionDelegateState,
 ): GuardedAppendResult {
+  const parsed = parseSessionState(session);
+  if (!parsed) return "state-failed";
   try {
     pi.appendEntry(SESSION_ENTRY_TYPE, { schemaVersion: 2, intensity: "off" });
   } catch {
     return "guard-failed";
   }
   try {
-    pi.appendEntry(SESSION_ENTRY_TYPE, session);
+    // The legacy companion remains immediately adjacent to the schema-7 commit for 0.20 readers.
+    pi.appendEntry(ADVISOR_EXTENSION_ENTRY_TYPE, advisorExtension(parsed));
+    pi.appendEntry(ADVISOR_SESSION_ENTRY_TYPE, schema8Projection(parsed));
+    pi.appendEntry(SESSION_ENTRY_TYPE, delegationProjection(parsed, true));
     return "success";
   } catch {
     return "state-failed";
