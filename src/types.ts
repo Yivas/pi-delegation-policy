@@ -1,8 +1,14 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-export const CURRENT_SCHEMA_VERSION = 7 as const;
+export const CURRENT_SCHEMA_VERSION = 10 as const;
+export const ADVISOR_LAUNCH_MODES = ["role", "tool"] as const;
+/** Advisors consulted together; the reader can run alongside them, so at most four children. */
+export const MAX_ADVISORS = 3;
+export type AdvisorLaunch = (typeof ADVISOR_LAUNCH_MODES)[number];
 
 export const INTENSITIES = ["off", "normal", "aggressive", "orchestrator"] as const;
+export const ADVISOR_MODES = ["off", "on", "with-delegation"] as const;
+export type AdvisorMode = (typeof ADVISOR_MODES)[number];
 export type Intensity = (typeof INTENSITIES)[number];
 export const PREFERENCES = ["efficient", "standard", "intensive"] as const;
 export type Preference = (typeof PREFERENCES)[number];
@@ -38,6 +44,13 @@ export const THINKING_LEVEL_NAMES = [
 export type ThinkingLevelName = (typeof THINKING_LEVEL_NAMES)[number];
 export type ThinkingPolicy =
   { level: ThinkingLevelName } | { min: ThinkingLevelName; max: ThinkingLevelName };
+/**
+ * Advisor thinking is not configurable: role mode chooses it per launch and tool mode picks it
+ * automatically. Saved policies from earlier versions are validated and then ignored on load.
+ */
+export type AdvisorSetting = ModelRef & {
+  providerExtension?: "anthropic-auth";
+};
 export type ThinkingSettings = Partial<Record<ModelConfigKey, ThinkingPolicy>>;
 export type SessionThinkingSettings = Partial<Record<ModelConfigKey, ThinkingPolicy | null>>;
 export const CONTEXT_SHUNT_MODES = ["off", "observe", "enforce"] as const;
@@ -67,7 +80,11 @@ export type GlobalDefaults = {
   medium?: OrdinaryRoleSetting;
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
+  /** Legacy first-advisor fields accepted at the in-memory compatibility boundary. */
   advisor?: ModelRef;
+  advisors?: AdvisorSetting[];
+  advisorLaunch?: AdvisorLaunch;
+  advisorMode?: AdvisorMode;
   thinking?: ThinkingSettings;
   contextShunt?: ContextShuntSettings;
 };
@@ -80,6 +97,9 @@ export type SessionDelegateState = {
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef | null;
   advisor?: ModelRef | null;
+  advisors?: AdvisorSetting[] | null;
+  advisorLaunch?: AdvisorLaunch;
+  advisorMode?: AdvisorMode;
   thinking?: SessionThinkingSettings;
   contextShunt?: ContextShuntSettings;
 };
@@ -106,6 +126,9 @@ export type EffectiveDelegateState = {
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
   advisor?: ModelRef;
+  advisors: AdvisorSetting[];
+  advisorLaunch: AdvisorLaunch;
+  advisorMode: AdvisorMode;
   thinking: ThinkingSettings;
   contextShunt: EffectiveContextShunt;
   source: {
@@ -116,6 +139,9 @@ export type EffectiveDelegateState = {
     large: ValueSource;
     uiDesign: ValueSource;
     advisor: ValueSource;
+    advisorMode: ValueSource;
+    advisors: ValueSource;
+    advisorLaunch: ValueSource;
     thinking: Record<ModelConfigKey, ValueSource>;
   };
 };

@@ -234,7 +234,20 @@ async function assertHost(
   assert.match(result.tarball.sha256, /^[a-f0-9]{64}$/);
   assert.deepEqual(
     result.cases.map((entry) => entry.case),
-    ["off", "observe", "enforce", "compact", "deny", "mutation", "override", "abort", "concurrent"],
+    [
+      "off",
+      "advisor-reminder",
+      "policy-update",
+      "observe",
+      "forced-prompt",
+      "enforce",
+      "compact",
+      "deny",
+      "mutation",
+      "override",
+      "abort",
+      "concurrent",
+    ],
   );
   assert.ok(
     result.cases.every((entry) => entry.status === "passed" && entry.providerRequests <= 8),
@@ -247,6 +260,34 @@ async function assertHost(
     result.assertions.includes(
       "harness: RPC line, event, and output cap terminates a synthetic flood",
     ),
+  );
+  assert.ok(
+    result.assertions.includes(
+      "forced-prompt: provider instruction fields contain exactly one current owned policy",
+    ),
+  );
+  assert.ok(
+    result.assertions.includes("forced-prompt: foreign instruction and tool result are preserved"),
+  );
+  assert.ok(
+    result.assertions.includes("advisor-reminder: first provider request carries no reminder"),
+  );
+  assert.ok(
+    result.assertions.includes(
+      "advisor-reminder: second provider request ends with exactly one reminder",
+    ),
+  );
+  assert.ok(
+    result.assertions.includes("advisor-reminder: orientation read completed before the reminder"),
+  );
+  assert.ok(
+    result.assertions.includes(
+      "advisor-reminder: case environment carries no subagent child marker",
+    ),
+  );
+  assert.ok(result.assertions.includes("advisor-reminder: active launcher is never invoked"));
+  assert.ok(
+    result.assertions.includes("advisor-reminder: stored session entries contain no reminder"),
   );
   assert.ok(result.assertions.includes("enforce: declared excess read is blocked"));
   assert.ok(result.assertions.includes("compact: recovery tool executes through the host"));
@@ -300,7 +341,7 @@ const npmExecPath = process.env.npm_execpath?.trim();
 test("loads the packed extension through the selected npm CLI", async () => {
   const baselinePiRoot = join(process.cwd(), "node_modules/@earendil-works/pi-coding-agent");
   if (process.env.npm_execpath === undefined) {
-    await assertHost(baselinePiRoot, "0.85.1");
+    await assertHost(baselinePiRoot, "0.87.1");
     return;
   }
 
@@ -324,7 +365,7 @@ test("loads the packed extension through the selected npm CLI", async () => {
     );
     await assertHost(
       baselinePiRoot,
-      "0.85.1",
+      "0.87.1",
       { ...process.env, npm_execpath: npmExecPath },
       isolatedNode,
     );
