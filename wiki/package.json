@@ -17,6 +17,6 @@
   },
   "devDependencies": {
     "vite": "8.3.3",
-    "vitepress": "2.0.0-alpha.20"
+    "vitepress": "2.0.0-alpha.21"
   }
 }
