@@ -454,7 +454,9 @@ class RpcPi {
         "--tools",
         this.name === "policy-update"
           ? "read,context_shunt_recover,set_policy"
-          : "read,context_shunt_recover",
+          : this.name === "advisor-reminder"
+            ? "read,context_shunt_recover,subagent"
+            : "read,context_shunt_recover",
         ...extensions.flatMap((extension) => ["--extension", extension]),
         "--model",
         "loopback/synthetic",
@@ -696,6 +698,11 @@ const record = async (entry) => {
 };
 
 export default function adversarialExtension(pi) {
+  if (mode === "forced-prompt") {
+    pi.on("before_agent_start", (event) => ({
+      systemPrompt: event.systemPrompt + "\\n\\n<foreign-policy>Keep this unrelated instruction.</foreign-policy>",
+    }));
+  }
   if (mode === "policy-update") {
     pi.on("before_agent_start", (event) => {
       const appendix = event.systemPromptOptions.appendSystemPrompt ?? "";
@@ -714,6 +721,20 @@ export default function adversarialExtension(pi) {
         config.intensity = "orchestrator";
         await writeFile(configPath, JSON.stringify(config), "utf8");
         return { content: [{ type: "text", text: "Policy changed for the next request." }], details: {} };
+      },
+    });
+  }
+  if (mode === "advisor-reminder") {
+    // An active launcher is what the reminder requires; the synthetic stub records any invocation
+    // so the case can prove the reminder never launched a consultation.
+    pi.registerTool({
+      name: "subagent",
+      label: "Synthetic subagent launcher",
+      description: "Active launcher fixture; the Advisor reminder must never invoke it.",
+      parameters: Type.Object({}),
+      async execute(toolCallId) {
+        await record({ kind: "subagent-execute", toolCallId });
+        return { content: [{ type: "text", text: "SYNTHETIC-SUBAGENT-RESULT" }], details: {} };
       },
     });
   }
@@ -908,6 +929,12 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
       commands.data?.commands?.some((command) => command.name === "delegate"),
     );
     if (caseName === "off") await rpc.prompt("/delegate off");
+    // A valid Advisor and its launcher come from public commands: the schema-4 fixture has no
+    // Advisor fields, and the case must not invent a parser for them.
+    if (caseName === "advisor-reminder") {
+      await rpc.prompt("/delegate advisor 1 model loopback/synthetic");
+      await rpc.prompt("/delegate advisor on");
+    }
 
     if (["mutation", "abort", "concurrent"].includes(caseName)) {
       await admitOneTimeException(rpc, caseName);
@@ -984,6 +1011,38 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
         "off: source read result reaches the model",
         payloads[1]?.includes("SYNTHETIC-READ-MARKER"),
       );
+    } else if (caseName === "advisor-reminder") {
+      const requests = requestsByCase.get(caseName) ?? [];
+      const reminderCount = (payload) => (payload.match(/<advisor_reminder>/g) ?? []).length;
+      recordAssertion(
+        "advisor-reminder: first provider request carries no reminder",
+        !payloads[0].includes("<advisor_reminder>"),
+      );
+      recordAssertion(
+        "advisor-reminder: second provider request ends with exactly one reminder",
+        reminderCount(payloads[1] ?? "") === 1 &&
+          JSON.stringify(requests[1]?.messages?.at(-1)?.content ?? "").includes(
+            "<advisor_reminder>",
+          ),
+      );
+      recordAssertion(
+        "advisor-reminder: orientation read completed before the reminder",
+        toolResults.some((event) => event.toolName === "read" && !event.isError),
+      );
+      recordAssertion(
+        "advisor-reminder: case environment carries no subagent child marker",
+        !("PI_SUBAGENT_CHILD" in prepared.environment) &&
+          !("PI_SUBAGENT_RUNNER_PID" in prepared.environment),
+      );
+      recordAssertion(
+        "advisor-reminder: active launcher is never invoked",
+        !audit.some((entry) => entry.kind === "subagent-execute"),
+      );
+      const entries = await rpc.send({ type: "get_entries" });
+      recordAssertion(
+        "advisor-reminder: stored session entries contain no reminder",
+        entries.success === true && !JSON.stringify(entries.data).includes("<advisor_reminder>"),
+      );
     } else if (caseName === "observe") {
       recordAssertion(
         "observe: delegation policy is injected",
@@ -996,6 +1055,44 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
       recordAssertion(
         "observe: read result remains unchanged",
         payloads[1]?.includes("SYNTHETIC-READ-MARKER"),
+      );
+    } else if (caseName === "forced-prompt") {
+      const requests = requestsByCase.get(caseName) ?? [];
+      const instructionContents = (request) =>
+        (request?.messages ?? [])
+          .filter((message) => message.role === "system" || message.role === "developer")
+          .map((message) => message.content)
+          .filter((content) => typeof content === "string");
+      const markerCount = (contents) =>
+        contents.reduce(
+          (count, content) => count + (content.match(/pi-delegation-policy:owned/g) ?? []).length,
+          0,
+        );
+      // The forced projection collapses the system prompt on every request, so each one must carry
+      // exactly one repaired policy block rather than only the first request of the turn.
+      const perRequest = requests.map(instructionContents);
+      recordAssertion(
+        "forced-prompt: provider instruction fields contain exactly one current owned policy",
+        requests.length === 2 &&
+          perRequest.every(
+            (contents) =>
+              markerCount(contents) === 1 &&
+              contents.some((content) => content.includes("Intensity: normal")),
+          ),
+      );
+      recordAssertion(
+        "forced-prompt: foreign instruction and tool result are preserved",
+        perRequest.every((contents) =>
+          contents.some((content) => content.includes("Keep this unrelated instruction.")),
+        ) &&
+          (requests[1]?.messages ?? []).some(
+            (message) =>
+              message.role === "tool" && message.content.includes("SYNTHETIC-READ-MARKER"),
+          ),
+      );
+      recordAssertion(
+        "forced-prompt: excessive declared read completes",
+        toolResults.some((event) => event.toolName === "read" && !event.isError),
       );
     } else if (caseName === "enforce") {
       recordAssertion(
@@ -1172,8 +1269,10 @@ async function main() {
   try {
     for (const [caseName, mode] of [
       ["off", "off"],
+      ["advisor-reminder", "off"],
       ["policy-update", "off"],
       ["observe", "observe"],
+      ["forced-prompt", "observe"],
       ["enforce", "enforce"],
       ["compact", "enforce"],
       ["deny", "enforce"],

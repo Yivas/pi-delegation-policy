@@ -17,20 +17,25 @@ permissions:
 
 concurrency:
   group: github-pages-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build and upload the documentation site
-        uses: withastro/action@e84f40bd8d2caa9e768ec82ad30dd81f0b280853 # v6.1.2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          path: ./wiki
           node-version: 24
-          package-manager: npm
-          build-cmd: npm run check && npm run build && npm run check:links
+          cache: npm
+          cache-dependency-path: wiki/package-lock.json
+      - name: Install and verify the documentation site
+        working-directory: wiki
+        run: npm ci && npm run check
+      - name: Upload the built documentation site
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: wiki/.vitepress/dist
 
   deploy:
     if: github.ref == 'refs/heads/main'

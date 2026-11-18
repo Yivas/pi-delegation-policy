@@ -200,7 +200,10 @@ test("source removal, mutation, and expiry cascade to derived artifacts", async 
   await unlink(missing.paths[0]!);
   assert.deepEqual(
     await missing.store.recover({ artifactId: missingDerived, byteOffset: 0, maxBytes: 7 }, 7),
-    { error: "Recovery artifact is unavailable or expired." },
+    {
+      error:
+        "Recovery artifact is unavailable or expired. Do not retry this artifact ID; use a new live artifact from an authorized bounded read if the evidence is still needed.",
+    },
   );
   await assert.rejects(stat(missing.paths[1]!));
   const replacements = await Promise.all(
@@ -219,7 +222,10 @@ test("source removal, mutation, and expiry cascade to derived artifacts", async 
   await writeFile(mutated.paths[0]!, "changed", "utf8");
   assert.deepEqual(
     await mutated.store.recover({ artifactId: mutatedDerived, byteOffset: 0, maxBytes: 7 }, 7),
-    { error: "Recovery artifact is unavailable or expired." },
+    {
+      error:
+        "Recovery artifact is unavailable or expired. Do not retry this artifact ID; use a new live artifact from an authorized bounded read if the evidence is still needed.",
+    },
   );
   await assert.rejects(stat(mutated.paths[1]!));
   await mutated.store.close();
@@ -235,7 +241,10 @@ test("source removal, mutation, and expiry cascade to derived artifacts", async 
   now = TTL_MS;
   assert.deepEqual(
     await expired.recover({ artifactId: expiredDerived, byteOffset: 0, maxBytes: 7 }, 7),
-    { error: "Recovery artifact is unavailable or expired." },
+    {
+      error:
+        "Recovery artifact is unavailable or expired. Do not retry this artifact ID; use a new live artifact from an authorized bounded read if the evidence is still needed.",
+    },
   );
   await expired.close();
 });
@@ -667,7 +676,8 @@ test("discarding a derived artifact twice preserves the live source snapshot", a
   await store.discardDerived(derivedId, snapshot);
   await store.discardDerived(derivedId, snapshot);
   assert.deepEqual(await store.recover({ artifactId: derivedId, byteOffset: 0, maxBytes: 7 }, 7), {
-    error: "Recovery artifact is unavailable or expired.",
+    error:
+      "Recovery artifact is unavailable or expired. Do not retry this artifact ID; use a new live artifact from an authorized bounded read if the evidence is still needed.",
   });
   assert.equal(await store.revalidateSource(snapshot), true);
   assert.deepEqual(await store.recover({ artifactId: sourceId, byteOffset: 0, maxBytes: 6 }, 6), {

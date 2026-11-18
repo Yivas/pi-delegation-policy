@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
-import test from "node:test";
+import { join, resolve } from "node:path";
+import test, { after } from "node:test";
 import {
   CONTEXT_SHUNT_READER_AGENT_NAME,
-  CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
   ContextShuntExecutor,
   createDefaultReaderExecutorLoader,
   READER_PREFLIGHT_TIMEOUT_MS,
@@ -22,6 +23,36 @@ const agentPath = resolve(
   ),
 );
 const digest = "a".repeat(64);
+const promptRuntimePath = "/packages/pi-subagents/src/runs/shared/subagent-prompt-runtime.js";
+const pi076FixtureText = readFileSync(
+  new URL("./fixtures/pi-subagents-0.76.1/preflight-contract.json", import.meta.url),
+  "utf8",
+);
+const pi076LaunchDigest = (
+  JSON.parse(pi076FixtureText) as { contract: { launchContractDigest: string } }
+).contract.launchContractDigest;
+
+/**
+ * The contract `pi-subagents` 0.76.1 returned for the packaged reader. Machine paths and the run id
+ * are placeholders, the lifecycle block is omitted, and the model is the synthetic `example/reader`.
+ * The digests come from the real run with its machine paths, so they are carried as recorded and
+ * never recomputed here.
+ */
+function pi076Preflight(
+  runId: string,
+  cwd: string,
+  mutate?: (contract: Record<string, unknown>) => void,
+): { ok: true; contract: Record<string, unknown> } {
+  const escapeJson = (text: string) => JSON.stringify(text).slice(1, -1);
+  const text = pi076FixtureText
+    .replaceAll("{{agentPath}}", escapeJson(agentPath))
+    .replaceAll("{{cwd}}", escapeJson(resolve(cwd)))
+    .replaceAll("{{promptRuntimePath}}", escapeJson(promptRuntimePath));
+  const value = JSON.parse(text) as { ok: true; contract: Record<string, unknown> };
+  value.contract.runId = runId;
+  mutate?.(value.contract);
+  return value;
+}
 const request: ReaderExecutorRequest = {
   question: "What does this prove?",
   snapshot: {
@@ -85,7 +116,7 @@ function contract(
     version: 3,
     protocol: {
       lifecycleArtifactVersion: 3,
-      packageVersion: CONTEXT_SHUNT_READER_PROTOCOL_VERSION,
+      packageVersion: "0.76.1",
     },
     runId: requestId,
     digest,
@@ -104,8 +135,10 @@ function contract(
     model: modelName(value),
     thinking: value.model.thinking,
     systemPromptMode: "replace",
+    inheritGlobalContext: false,
     inheritProjectContext: false,
     inheritSkills: false,
+    intercomBridge: { active: false, mode: "off" },
     skills: { requested: [], resolved: [], missing: [] },
     tools: {
       explicitAllowlist: true,
@@ -118,8 +151,9 @@ function contract(
       effectiveMcpTools: [],
       toolExtensionPaths: [],
       configuredExtensions: [],
-      runtimeExtensions: ["/runtime.ts"],
-      extensionArgs: ["/runtime.ts"],
+      runtimeExtensions: [promptRuntimePath],
+      extensionArgs: [promptRuntimePath],
+      requiredExtensionIds: [],
       fanoutAuthorized: false,
       disableAmbientExtensions: true,
     },
@@ -146,8 +180,13 @@ function modules(
     const fields = preflightFields(input);
     return contract(fields.runId as string, fields.cwd as string);
   },
+  admittedRuntimeExtensionLists: readonly (readonly string[])[] = [[promptRuntimePath]],
 ): ReaderExecutorModules {
-  return { ...events, resolveSubagentLaunchContract: preflight };
+  return {
+    ...events,
+    resolveSubagentLaunchContract: preflight,
+    admittedRuntimeExtensionLists: () => admittedRuntimeExtensionLists,
+  };
 }
 
 function tuple(payload: Record<string, unknown>) {
@@ -222,6 +261,9 @@ test("default loader accepts only the approved delegation event protocol", async
     if (specifier === "pi-subagents/preflight") {
       return { resolveSubagentLaunchContract: preflight };
     }
+    if (specifier === "pi-subagents/child-tool-plan") {
+      return { resolvePiLaunchToolPlan: () => ({ runtimeExtensions: [promptRuntimePath] }) };
+    }
     return {
       SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
       SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
@@ -231,6 +273,9 @@ test("default loader accepts only the approved delegation event protocol", async
   });
   const valid = await validLoader();
   assert.equal(typeof valid?.resolveSubagentLaunchContract, "function");
+  // That stub exports no fork wrapper, so the optional normalizer stays absent.
+  assert.equal(valid?.normalizeForkTask, undefined);
+  assert.deepEqual(valid?.admittedRuntimeExtensionLists(), [[promptRuntimePath]]);
   assert.deepEqual(
     valid && [valid.requestEvent, valid.startedEvent, valid.responseEvent, valid.cancelEvent],
     [
@@ -251,6 +296,9 @@ test("default loader accepts only the approved delegation event protocol", async
       if (specifier === "pi-subagents/preflight") {
         return { resolveSubagentLaunchContract: preflight };
       }
+      if (specifier === "pi-subagents/child-tool-plan") {
+        return { resolvePiLaunchToolPlan: () => ({ runtimeExtensions: [promptRuntimePath] }) };
+      }
       return {
         SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
         SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
@@ -260,6 +308,331 @@ test("default loader accepts only the approved delegation event protocol", async
       };
     });
     assert.equal(await loader(), undefined, exportName);
+  }
+});
+
+test("default loader keeps the public fork task wrapper optional", async () => {
+  const loaderWithSharedTypes = (sharedTypes: () => Promise<unknown>) =>
+    createDefaultReaderExecutorLoader(async (specifier) => {
+      if (specifier === "pi-subagents/preflight") {
+        return { resolveSubagentLaunchContract: async () => undefined };
+      }
+      if (specifier === "pi-subagents/child-tool-plan") {
+        return { resolvePiLaunchToolPlan: () => ({ runtimeExtensions: [promptRuntimePath] }) };
+      }
+      if (specifier === "pi-subagents/shared-types") return sharedTypes();
+      return {
+        SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
+        SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
+        SUBAGENT_DELEGATION_RESPONSE_EVENT: "prompt-template:subagent:response",
+        SUBAGENT_DELEGATION_CANCEL_EVENT: "prompt-template:subagent:cancel",
+      };
+    });
+  const wrapForkTask = (task: string) => `fork preamble\n\nTask:\n${task}`;
+  const withWrapper = await loaderWithSharedTypes(async () => ({ wrapForkTask }))();
+  assert.equal(withWrapper?.normalizeForkTask?.("task"), wrapForkTask("task"));
+  assert.equal(typeof withWrapper?.resolveSubagentLaunchContract, "function");
+  for (const sharedTypes of [
+    async () => ({}),
+    async () => ({ wrapForkTask: "not-a-function" }),
+    async () => {
+      throw new Error("shared types unavailable");
+    },
+  ]) {
+    const loaded = await loaderWithSharedTypes(sharedTypes)();
+    assert.equal(typeof loaded?.resolveSubagentLaunchContract, "function");
+    assert.equal(loaded?.normalizeForkTask, undefined);
+  }
+});
+
+test("default loader fails closed when the public child tool plan is unavailable", async () => {
+  const loaderWithChildToolPlan = (childToolPlan: unknown) =>
+    createDefaultReaderExecutorLoader(async (specifier) => {
+      if (specifier === "pi-subagents/preflight") {
+        return { resolveSubagentLaunchContract: async () => undefined };
+      }
+      if (specifier === "pi-subagents/child-tool-plan") return childToolPlan;
+      return {
+        SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
+        SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
+        SUBAGENT_DELEGATION_RESPONSE_EVENT: "prompt-template:subagent:response",
+        SUBAGENT_DELEGATION_CANCEL_EVENT: "prompt-template:subagent:cancel",
+      };
+    });
+  assert.equal(await loaderWithChildToolPlan(undefined)(), undefined, "missing module");
+  assert.equal(await loaderWithChildToolPlan({})(), undefined, "missing export");
+  assert.equal(
+    await loaderWithChildToolPlan({ resolvePiLaunchToolPlan: "not-a-function" })(),
+    undefined,
+    "non-function export",
+  );
+});
+
+const permissionFixtureRoot = mkdtempSync(join(tmpdir(), "context-shunt-permission-"));
+after(() => rmSync(permissionFixtureRoot, { recursive: true, force: true }));
+
+/** Writes a scoped `pi-permission-system` package with the given manifest and returns its entry. */
+function permissionEntry(folder: string, manifest: Record<string, unknown>): string {
+  return writePermissionPackage(
+    join(permissionFixtureRoot, folder, "node_modules", "@gotgenes", "pi-permission-system"),
+    manifest,
+  );
+}
+
+/** Writes a `pi-permission-system` package at the given root and returns its loaded entry. */
+function writePermissionPackage(packageRoot: string, manifest: Record<string, unknown>): string {
+  mkdirSync(join(packageRoot, "src"), { recursive: true });
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify(manifest));
+  const entry = join(packageRoot, "src", "index.ts");
+  writeFileSync(entry, "export {};\n");
+  return entry;
+}
+const pinnedPermissionManifest = {
+  name: "@gotgenes/pi-permission-system",
+  version: "33.0.3",
+  pi: { extensions: ["./src/index.ts"] },
+};
+const pinnedPermissionPath = permissionEntry("pinned", pinnedPermissionManifest);
+
+/** A `child-tool-plan` stub whose probe, and only the probe, reports the permission runtime. */
+function permissionProbeLoader(
+  runtimeFor: (input: Record<string, unknown>) => string[],
+): ReturnType<typeof createDefaultReaderExecutorLoader> {
+  return createDefaultReaderExecutorLoader(async (specifier) => {
+    if (specifier === "pi-subagents/preflight") {
+      return { resolveSubagentLaunchContract: async () => undefined };
+    }
+    if (specifier === "pi-subagents/child-tool-plan") {
+      return {
+        resolvePiLaunchToolPlan: (input: Record<string, unknown>) => ({
+          runtimeExtensions: runtimeFor(input),
+        }),
+      };
+    }
+    return {
+      SUBAGENT_DELEGATION_REQUEST_EVENT: "prompt-template:subagent:request",
+      SUBAGENT_DELEGATION_STARTED_EVENT: "prompt-template:subagent:started",
+      SUBAGENT_DELEGATION_RESPONSE_EVENT: "prompt-template:subagent:response",
+      SUBAGENT_DELEGATION_CANCEL_EVENT: "prompt-template:subagent:cancel",
+    };
+  });
+}
+
+const withPermissionProbe = (permissionPath: string) => (input: Record<string, unknown>) =>
+  input.permissionRules ? [promptRuntimePath, permissionPath] : [promptRuntimePath];
+
+test("default loader admits the permission runtime only when the probe resolves the pinned package", async () => {
+  const loaded = await permissionProbeLoader(withPermissionProbe(pinnedPermissionPath))();
+  assert.deepEqual(loaded?.admittedRuntimeExtensionLists(), [
+    [promptRuntimePath],
+    [promptRuntimePath, pinnedPermissionPath],
+  ]);
+});
+
+test("default loader keeps prompt-only when the permission probe is not the pinned package", async () => {
+  const cases: Array<[string, (input: Record<string, unknown>) => string[]]> = [
+    [
+      "other version",
+      withPermissionProbe(
+        permissionEntry("other-version", { ...pinnedPermissionManifest, version: "33.0.2" }),
+      ),
+    ],
+    [
+      "other package name",
+      withPermissionProbe(
+        permissionEntry("other-name", { ...pinnedPermissionManifest, name: "pi-permission" }),
+      ),
+    ],
+    ["missing entry", withPermissionProbe(join(permissionFixtureRoot, "missing", "index.ts"))],
+    [
+      "declared entry that is not the loaded entry",
+      withPermissionProbe(
+        permissionEntry("declared-other", {
+          ...pinnedPermissionManifest,
+          pi: { extensions: ["./src/other.ts"] },
+        }),
+      ),
+    ],
+    [
+      "unscoped second candidate under extensions",
+      withPermissionProbe(
+        writePermissionPackage(
+          join(permissionFixtureRoot, "direct", "extensions", "pi-permission-system"),
+          pinnedPermissionManifest,
+        ),
+      ),
+    ],
+    [
+      "reordered runtime",
+      (input) =>
+        input.permissionRules ? [pinnedPermissionPath, promptRuntimePath] : [promptRuntimePath],
+    ],
+    [
+      "extra runtime after the permission entry",
+      (input) =>
+        input.permissionRules
+          ? [promptRuntimePath, pinnedPermissionPath, "/evil/ext.js"]
+          : [promptRuntimePath],
+    ],
+    [
+      "probe failure",
+      (input) => {
+        if (input.permissionRules) throw new Error("manifest is invalid");
+        return [promptRuntimePath];
+      },
+    ],
+  ];
+  for (const [name, runtimeFor] of cases) {
+    const loaded = await permissionProbeLoader(runtimeFor)();
+    assert.deepEqual(loaded?.admittedRuntimeExtensionLists(), [[promptRuntimePath]], name);
+  }
+});
+
+function withRuntimeExtensions(runtimeExtensions: string[], args = runtimeExtensions) {
+  return (value: Record<string, unknown>) => {
+    const tools = value.tools as Record<string, unknown>;
+    tools.runtimeExtensions = runtimeExtensions;
+    tools.extensionArgs = args;
+  };
+}
+const permissionAdmittedLists = [
+  [promptRuntimePath],
+  [promptRuntimePath, pinnedPermissionPath],
+] as const;
+
+test("accepts the pinned permission runtime only as an admitted exact list", async () => {
+  const bus = new FakeEventBus();
+  const executor = new ContextShuntExecutor({
+    loader: async () =>
+      modules(
+        async (input) => {
+          const fields = preflightFields(input);
+          return pi076Preflight(
+            fields.runId as string,
+            fields.cwd as string,
+            withRuntimeExtensions([promptRuntimePath, pinnedPermissionPath]),
+          );
+        },
+        permissionAdmittedLists.map((list) => [...list]),
+      ),
+  });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
+  const emitted = await waitForRequest(bus);
+  start(bus, emitted);
+  bus.emit(events.responseEvent, {
+    ...completed(emitted),
+    launchContractDigest: pi076LaunchDigest,
+  });
+  assert.equal((await pending).kind, "completed");
+});
+
+test("rejects permission runtime shapes outside the admitted lists before REQUEST", async () => {
+  const cases: Array<[string, (value: Record<string, unknown>) => void]> = [
+    [
+      "args differ from runtime",
+      (value) => {
+        (value.tools as Record<string, unknown>).runtimeExtensions = [
+          promptRuntimePath,
+          pinnedPermissionPath,
+        ];
+        (value.tools as Record<string, unknown>).extensionArgs = [promptRuntimePath];
+      },
+    ],
+    [
+      "unadmitted permission path",
+      withRuntimeExtensions([promptRuntimePath, "/evil/pi-permission-system/index.ts"]),
+    ],
+    [
+      "reordered permission runtime",
+      withRuntimeExtensions([pinnedPermissionPath, promptRuntimePath]),
+    ],
+    [
+      "duplicated permission runtime",
+      withRuntimeExtensions([promptRuntimePath, pinnedPermissionPath, pinnedPermissionPath]),
+    ],
+    [
+      "extra runtime after permission runtime",
+      withRuntimeExtensions([promptRuntimePath, pinnedPermissionPath, "/evil/ext.js"]),
+    ],
+    [
+      "required child extension with permission runtime",
+      (value) => {
+        withRuntimeExtensions([promptRuntimePath, pinnedPermissionPath])(value);
+        (value.tools as Record<string, unknown>).requiredExtensionIds = ["sha256:0123456789abcdef"];
+      },
+    ],
+  ];
+  for (const [name, mutate] of cases) {
+    const bus = new FakeEventBus();
+    const executor = new ContextShuntExecutor({
+      loader: async () =>
+        modules(
+          async (input) => {
+            const fields = preflightFields(input);
+            return pi076Preflight(fields.runId as string, fields.cwd as string, mutate);
+          },
+          permissionAdmittedLists.map((list) => [...list]),
+        ),
+    });
+    assert.equal(
+      (await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }))
+        .kind,
+      "reader-unavailable",
+      name,
+    );
+    assert.equal(bus.emissions.length, 0, name);
+  }
+});
+
+test("sends the host session as the preflight parent and fails closed without one", async () => {
+  const bus = new FakeEventBus();
+  const parentSessions: unknown[] = [];
+  const executor = new ContextShuntExecutor({
+    loader: async () =>
+      modules(async (input) => {
+        const fields = preflightFields(input);
+        parentSessions.push(fields.parentSessionId);
+        return pi076Preflight(fields.runId as string, fields.cwd as string, (value) => {
+          if (fields.parentSessionId === "session-with-required-extension") {
+            (value.tools as Record<string, unknown>).requiredExtensionIds = [
+              "sha256:0123456789abcdef",
+            ];
+          }
+        });
+      }),
+  });
+  assert.equal(
+    (
+      await executor.execute(request, {
+        cwd: "/workspace",
+        sessionId: "session-with-required-extension",
+        events: bus,
+      })
+    ).kind,
+    "reader-unavailable",
+    "required extension for the host session",
+  );
+  assert.deepEqual(parentSessions, ["session-with-required-extension"]);
+  assert.equal(bus.emissions.length, 0, "no REQUEST for an admitted required extension");
+
+  for (const sessionId of ["", "   "]) {
+    let preflightCalls = 0;
+    const missing = new ContextShuntExecutor({
+      loader: async () =>
+        modules(async () => {
+          preflightCalls += 1;
+          return undefined;
+        }),
+    });
+    assert.equal(
+      (await missing.execute(request, { cwd: "/workspace", sessionId, events: bus })).kind,
+      "reader-unavailable",
+    );
+    assert.equal(preflightCalls, 0, `session ${JSON.stringify(sessionId)}`);
   }
 });
 
@@ -278,7 +651,11 @@ test("preflight and request payloads use their exact public parser fields and on
       return () => ids.shift() ?? "extra";
     })(),
   });
-  const pending = executor.execute(request, { cwd: "/workspace/./reader", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace/./reader",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   assert.ok(preflightInput);
   assert.deepEqual(Object.keys(preflightInput).sort(), [
@@ -287,17 +664,22 @@ test("preflight and request payloads use their exact public parser fields and on
     "availableModels",
     "context",
     "cwd",
+    "intercomBridge",
     "model",
     "output",
     "outputSchema",
+    "parentSessionId",
     "runId",
     "skill",
     "task",
     "thinking",
   ]);
+  assert.equal(preflightInput.context, "fresh");
+  assert.equal(preflightInput.parentSessionId, "session-1");
   assert.equal(preflightInput.model, "example/reader");
   assert.equal(preflightInput.thinking, "low");
   assert.equal(preflightInput.output, false);
+  assert.deepEqual(preflightInput.intercomBridge, { mode: "off" });
   assert.equal("turnBudget" in preflightInput, false);
   assert.deepEqual(preflightInput.outputSchema, createReaderAnswerSchema(request.snapshot));
   assert.deepEqual(Object.keys(emitted).sort(), [
@@ -305,6 +687,7 @@ test("preflight and request payloads use their exact public parser fields and on
     "artifacts",
     "context",
     "cwd",
+    "intercomBridge",
     "model",
     "nodeId",
     "ownerRunId",
@@ -315,6 +698,7 @@ test("preflight and request payloads use their exact public parser fields and on
     "thinking",
     "timeoutMs",
   ]);
+  assert.equal(emitted.context, "fresh");
   assert.equal(emitted.timeoutMs, READER_TERMINAL_TIMEOUT_MS);
   for (const forbidden of [
     "output",
@@ -354,7 +738,11 @@ test("resolves every reader thinking level, including off, to a suffixed contrac
           return contract(fields.runId as string, fields.cwd as string, current);
         }),
     });
-    const pending = executor.execute(current, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(current, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     assert.equal(preflight?.thinking, thinking);
     start(bus, emitted);
@@ -374,7 +762,11 @@ test("accepts an installed package profile without packageName and rejects prove
   const executor = new ContextShuntExecutor({
     loader: async () => modules(validWithoutPackageName),
   });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   start(bus, emitted);
   bus.emit(events.responseEvent, completed(emitted));
@@ -401,7 +793,11 @@ test("accepts an installed package profile without packageName and rejects prove
         }),
     });
     assert.deepEqual(
-      await rejected.execute(request, { cwd: "/workspace", events: rejectedBus }),
+      await rejected.execute(request, {
+        cwd: "/workspace",
+        sessionId: "session-1",
+        events: rejectedBus,
+      }),
       {
         kind: "reader-unavailable",
       },
@@ -434,6 +830,7 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
     ],
     ["launch digest", (value) => (value.launchContractDigest = "short")],
     ["context", (value) => (value.context = "shared")],
+    ["fork context", (value) => (value.context = "fork")],
     ["model", (value) => (value.model = "example/reader")],
     // `pi-subagents` 0.68.0 dropped `modelCandidates` with same-launch model switching, so a
     // second model can only reach us as a different resolved `model`. This is the surviving
@@ -509,10 +906,115 @@ test("rejects each pinned contract mutation before REQUEST", async () => {
         }),
     });
     assert.deepEqual(
-      await executor.execute(request, { cwd: "/workspace", events: bus }),
+      await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }),
       {
         kind: "reader-unavailable",
       },
+      name,
+    );
+    assert.equal(bus.emissions.length, 0, name);
+  }
+});
+
+test("accepts stable pi-subagents releases from 0.76.1 and binds the reader terminal result", async () => {
+  for (const packageVersion of ["0.76.1", "0.83.1", "0.84.0", "1.0.0+build.01"]) {
+    const bus = new FakeEventBus();
+    const executor = new ContextShuntExecutor({
+      loader: async () =>
+        modules(async (input) => {
+          const fields = preflightFields(input);
+          return pi076Preflight(fields.runId as string, fields.cwd as string, (value) => {
+            (value.protocol as Record<string, unknown>).packageVersion = packageVersion;
+          });
+        }),
+    });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
+    const emitted = await waitForRequest(bus);
+    assert.deepEqual(emitted.intercomBridge, { mode: "off" });
+    start(bus, emitted);
+    bus.emit(events.responseEvent, {
+      ...completed(emitted),
+      launchContractDigest: pi076LaunchDigest,
+    });
+    assert.equal((await pending).kind, "completed", packageVersion);
+    executor.close();
+  }
+});
+
+test("rejects pi-subagents contract drift and widening before REQUEST", async () => {
+  const protocol = (value: Record<string, unknown>) => value.protocol as Record<string, unknown>;
+  const tools = (value: Record<string, unknown>) => value.tools as Record<string, unknown>;
+  const withRuntime = (runtimeExtensions: string[]) => (value: Record<string, unknown>) => {
+    tools(value).runtimeExtensions = runtimeExtensions;
+    tools(value).extensionArgs = runtimeExtensions;
+  };
+  const mutations: Array<[string, (value: Record<string, unknown>) => void]> = [
+    ...["0.76.0", "0.84.0-rc.1", "not-semver", null, 84].map(
+      (packageVersion): [string, (value: Record<string, unknown>) => void] => [
+        `unsupported package ${JSON.stringify(packageVersion)}`,
+        (value) => (protocol(value).packageVersion = packageVersion),
+      ],
+    ),
+    ["retired package", (value) => (protocol(value).packageVersion = "0.69.0")],
+    ["relabeled runtime extension", withRuntime(["/evil/subagent-prompt-runtime.js"])],
+    ["additional runtime extension", withRuntime([promptRuntimePath, "/evil/ext.js"])],
+    [
+      "widened extension args only",
+      (value) => (tools(value).extensionArgs = [promptRuntimePath, "/evil/ext.js"]),
+    ],
+    [
+      "permission extension",
+      withRuntime([promptRuntimePath, "/packages/@gotgenes/pi-permission-system/index.ts"]),
+    ],
+    ["inherited global context", (value) => (value.inheritGlobalContext = true)],
+    [
+      "missing global context flag",
+      (value) => {
+        delete value.inheritGlobalContext;
+      },
+    ],
+    [
+      "required child extension",
+      (value) => (tools(value).requiredExtensionIds = ["sha256:0123456789abcdef"]),
+    ],
+    [
+      "missing required child extension list",
+      (value) => {
+        delete tools(value).requiredExtensionIds;
+      },
+    ],
+    [
+      "active intercom bridge",
+      (value) => (value.intercomBridge = { active: true, mode: "always" }),
+    ],
+    ["intercom bridge mode", (value) => (value.intercomBridge = { active: false, mode: "always" })],
+    [
+      "active intercom bridge with off mode",
+      (value) => (value.intercomBridge = { active: true, mode: "off" }),
+    ],
+    [
+      "missing intercom bridge",
+      (value) => {
+        delete value.intercomBridge;
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const bus = new FakeEventBus();
+    const executor = new ContextShuntExecutor({
+      loader: async () =>
+        modules(async (input) => {
+          const fields = preflightFields(input);
+          return pi076Preflight(fields.runId as string, fields.cwd as string, mutate);
+        }),
+    });
+    assert.deepEqual(
+      await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }),
+      { kind: "reader-unavailable" },
       name,
     );
     assert.equal(bus.emissions.length, 0, name);
@@ -533,7 +1035,11 @@ test("synchronous STARTED arms only the terminal deadline and leaves delayed com
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
   });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   assert.deepEqual(
     timers.live().map((timer) => timer.delay),
@@ -564,7 +1070,8 @@ test("synchronous STARTED and RESPONSE complete without leaking timers", async (
     clearTimer: timers.clearTimer,
   });
   assert.equal(
-    (await executor.execute(request, { cwd: "/workspace", events: bus })).kind,
+    (await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }))
+      .kind,
     "completed",
   );
   assert.deepEqual(timers.live(), []);
@@ -584,7 +1091,11 @@ test("maps terminal statuses, validates optional metadata, and ignores spoofed p
   for (const [status, expected] of mappings) {
     const bus = new FakeEventBus();
     const executor = new ContextShuntExecutor({ loader: async () => modules() });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     start(bus, emitted);
     bus.emit(events.responseEvent, { ...tuple(emitted), status });
@@ -594,7 +1105,11 @@ test("maps terminal statuses, validates optional metadata, and ignores spoofed p
   for (const status of ["invalid_request", "unavailable_context", "duplicate_node"]) {
     const bus = new FakeEventBus();
     const executor = new ContextShuntExecutor({ loader: async () => modules() });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     bus.emit(events.responseEvent, { ...tuple(emitted), status, model: modelName() });
     assert.equal((await pending).kind, "reader-unavailable", status);
@@ -602,7 +1117,11 @@ test("maps terminal statuses, validates optional metadata, and ignores spoofed p
 
   const bus = new FakeEventBus();
   const executor = new ContextShuntExecutor({ loader: async () => modules() });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   for (const status of ["completed", "failed", "cancelled", "timed_out"]) {
     bus.emit(events.responseEvent, { ...tuple(emitted), status });
@@ -630,7 +1149,11 @@ test("fails completed metadata and wrapper mismatches, then ignores late and for
   ]) {
     const bus = new FakeEventBus();
     const executor = new ContextShuntExecutor({ loader: async () => modules() });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     start(bus, emitted);
     const response = completed(emitted);
@@ -643,7 +1166,11 @@ test("fails completed metadata and wrapper mismatches, then ignores late and for
 
   const bus = new FakeEventBus();
   const executor = new ContextShuntExecutor({ loader: async () => modules() });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const emitted = await waitForRequest(bus);
   for (const field of ["requestId", "ownerRunId", "nodeId"] as const) {
     bus.emit(events.responseEvent, { ...tuple(emitted), [field]: "foreign", status: "failed" });
@@ -675,7 +1202,11 @@ test("loader and preflight availability deadlines and aborts settle without send
         return () => ids.shift() ?? "extra";
       })(),
     });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     timers.fire(READER_PREFLIGHT_TIMEOUT_MS);
     assert.equal((await pending).kind, "reader-unavailable", phase);
     release?.();
@@ -703,7 +1234,7 @@ test("loader and preflight availability deadlines and aborts settle without send
     const controller = new AbortController();
     const pending = executor.execute(
       request,
-      { cwd: "/workspace", events: bus },
+      { cwd: "/workspace", sessionId: "session-1", events: bus },
       controller.signal,
     );
     controller.abort();
@@ -723,7 +1254,11 @@ test("start availability and terminal deadlines each send one CANCEL and explici
       setTimer: timers.setTimer,
       clearTimer: timers.clearTimer,
     });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     if (started) start(bus, emitted);
     timers.fire(started ? READER_TERMINAL_TIMEOUT_MS : READER_PREFLIGHT_TIMEOUT_MS);
@@ -738,7 +1273,11 @@ test("start availability and terminal deadlines each send one CANCEL and explici
 
   const bus = new FakeEventBus();
   const executor = new ContextShuntExecutor({ loader: async () => modules() });
-  const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+  const pending = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   await waitForRequest(bus);
   executor.cancel();
   executor.cancel();
@@ -795,7 +1334,11 @@ test("cancellation settles locally before a synchronous CANCEL response", async 
       setTimer: timers.setTimer,
       clearTimer: timers.clearTimer,
     });
-    const pending = executor.execute(request, { cwd: "/workspace", events: bus });
+    const pending = executor.execute(request, {
+      cwd: "/workspace",
+      sessionId: "session-1",
+      events: bus,
+    });
     const emitted = await waitForRequest(bus);
     if (scenario.name !== "start availability deadline") start(bus, emitted);
     scenario.trigger(executor, timers, emitted, bus);
@@ -820,7 +1363,8 @@ test("request emit failure settles before a synchronous CANCEL response", async 
     clearTimer: timers.clearTimer,
   });
   assert.equal(
-    (await executor.execute(request, { cwd: "/workspace", events: bus })).kind,
+    (await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }))
+      .kind,
     "reader-unavailable",
   );
   assert.equal(cancelCount(bus), 1);
@@ -838,12 +1382,20 @@ test("rotation and close cancel once, clean up, change owner identity, and close
       return () => ids.shift() ?? "extra";
     })(),
   });
-  const first = executor.execute(request, { cwd: "/workspace", events: bus });
+  const first = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   const firstEmission = await waitForRequest(bus);
   executor.rotate();
   assert.equal((await first).kind, "cancelled");
   assert.equal(cancelCount(bus), 1);
-  const second = executor.execute(request, { cwd: "/workspace", events: bus });
+  const second = executor.execute(request, {
+    cwd: "/workspace",
+    sessionId: "session-1",
+    events: bus,
+  });
   for (let attempt = 0; attempt < 20 && cancelCount(bus) < 1; attempt += 1) {
     await new Promise<void>((resolveTick) => setImmediate(resolveTick));
   }
@@ -857,9 +1409,12 @@ test("rotation and close cancel once, clean up, change owner identity, and close
   executor.close();
   assert.equal((await second).kind, "cancelled");
   assert.equal(cancelCount(bus), 2);
-  assert.deepEqual(await executor.execute(request, { cwd: "/workspace", events: bus }), {
-    kind: "reader-unavailable",
-  });
+  assert.deepEqual(
+    await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }),
+    {
+      kind: "reader-unavailable",
+    },
+  );
 });
 
 test("request emit and cleanup failures remain bounded without exposing foreign errors", async () => {
@@ -873,9 +1428,12 @@ test("request emit and cleanup failures remain bounded without exposing foreign 
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
   });
-  assert.deepEqual(await executor.execute(request, { cwd: "/workspace", events: bus }), {
-    kind: "reader-unavailable",
-  });
+  assert.deepEqual(
+    await executor.execute(request, { cwd: "/workspace", sessionId: "session-1", events: bus }),
+    {
+      kind: "reader-unavailable",
+    },
+  );
   assert.equal(cancelCount(bus), 1);
   assert.deepEqual(timers.live(), []);
   assert.equal(executor.busy, false);
