@@ -19,12 +19,22 @@
 
 ### Changed
 
-- A provider-extension Advisor may keep one reviewed tool. `pi-antigravity-acp-provider` `0.1.21`
-  registers `antigravity_acp_permission`, which asks Antigravity for a permission decision the provider
-  itself issued, so the child used to be refused and every request returned `UNAVAILABLE`. The
-  exception is pinned to that package name, that version and that tool; any other tool, package or
-  version is still rejected, and the Advisor child's empty tool allowlist keeps the tool away from the
-  model. Registering runs package code in the child, so a new version needs a new review.
+- A provider-extension Advisor loads its provider package the only way the host allows. The packaged
+  profile pins `pi-antigravity-acp-provider` `0.1.21` in `subagentOnlyExtensions` and keeps
+  `extensions:` empty, so the child starts with that one package and no ambient extension. The child
+  resolves its model and provider before any extension `session_start` runs, so it cannot revalidate
+  the package: the checks live in the main session, which reports an admission naming another package
+  as an Advisor error instead of serving it. The empty tool allowlist keeps
+  `antigravity_acp_permission` away from the model, and a new package or version needs its own profile
+  and its own review.
+
+### Removed
+
+- The in-child provider loader. It read the admission and revalidated the package from
+  `session_start`, which arrives after the child has resolved its model and provider, so it could
+  never serve an extension-supplied model. Its identity, surface and guard checks went with it. The
+  main session, the pinned profile and the empty tool allowlist now carry that responsibility, and
+  the wiki says so where it used to promise a check in the child.
 
 ### Panel
 

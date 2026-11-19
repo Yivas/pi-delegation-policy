@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import * as sdk from "@earendil-works/pi-coding-agent";
-import providerExtension from "../src/advisor-provider-extension.ts";
+import { KNOWN_TOOL_SURFACE, PINNED_PACKAGE } from "../src/advisor-provider-extension.ts";
 import { advisorAgentName } from "../src/advisor-executor.ts";
 import { getGlobalConfigPath } from "../src/config.ts";
 import { DelegatePanel } from "../src/delegate-panel.ts";
@@ -15,54 +14,17 @@ import {
   readProviderAdmissions,
   writeProviderAdmissions,
 } from "../src/provider-admissions.ts";
-import { listProviderExtensionCandidates } from "../src/provider-package.ts";
+import { listProviderExtensionCandidates, packageSource } from "../src/provider-package.ts";
 import { resolveDelegateState } from "../src/config.ts";
 import { validateRuntime, type RuntimeState } from "../src/runtime.ts";
 import { CURRENT_SCHEMA_VERSION, type GlobalDefaults } from "../src/types.ts";
 
 const PACKAGE = "synthetic-go-provider";
 const VERSION = "1.0.0";
-const PROVIDER = "openai";
 
-// Mirrors a quota-rotating provider extension: it replaces a built-in provider natively from
-// session_start, listens to input and compaction, and declares a user command.
-const syntheticSource = `let shared;
-export default function (pi) {
-  const mode = process.env.PI_PROVIDER_EXTENSION_MODE;
-  if (mode === "factory") throw Error("factory sentinel");
-  if (mode === "unlisted") pi.on("tool_call", () => undefined);
-  pi.on("session_before_compact", () => {
-    if (mode === "compact-throw") throw Error("compaction sentinel");
-    return { cancel: mode === "compact-cancel" };
-  });
-  pi.on("session_start", async (_event, ctx) => {
-    if (mode === "start") throw Error("start sentinel");
-    const registry = ctx.modelRegistry;
-    const original = registry.getProvider("${PROVIDER}");
-    const stream = (model) => {
-      const message = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
-        content: [{ type: "text", text: "EXTENSION_PROVIDER_SENTINEL" }], stopReason: "stop", timestamp: 0,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-      return { async *[Symbol.asyncIterator]() { yield { type: "done", reason: "stop", message }; },
-        result: async () => message };
-    };
-    const native = (id) => ({ id, name: "Synthetic",
-      auth: { apiKey: { name: "Synthetic", resolve: async () => ({ auth: { apiKey: "managed" }, source: "Synthetic" }) } },
-      getModels: () => original.getModels(), stream, streamSimple: stream });
-    // One module-level object re-registered on every start must still count as a fresh registration.
-    if (mode === "shared") registry.registerProvider((shared ??= native("${PROVIDER}")));
-    else registry.registerProvider(native("${PROVIDER}"));
-    if (mode === "extra") registry.registerProvider(native("synthetic-extra"));
-    if (mode === "shadow") registry.registerProvider(native("synthetic-other"));
-    if (mode === "held-extra") pi.registerProvider("synthetic-held", { api: "openai-completions", streamSimple: stream });
-    if (mode === "tools") pi.registerTool({ name: "unexpected", description: "not allowed",
-      parameters: { type: "object", properties: {} }, execute: async () => ({ content: [], details: {} }) });
-  });
-  pi.on("input", () => (mode === "input" ? { action: "transform", text: "rewritten" } : undefined));
-  pi.registerCommand("synthetic-accounts", { description: "never runs",
-    handler: async () => { throw Error("command must never run"); } });
-}`;
+// The candidate check reads only the manifest, the pinned user source and one entry file inside the
+// package, so the entry has to exist but does not have to do anything.
+const syntheticSource = "export default function () {}\n";
 
 async function withAgentDirectory<T>(
   name: string,
@@ -93,122 +55,6 @@ async function installSynthetic(directory: string, configured = true): Promise<v
     JSON.stringify({ packages: configured ? [`npm:${PACKAGE}@${VERSION}`] : [] }),
   );
 }
-
-test("an admitted provider extension answers in the Advisor child and every refusal stays closed", async () => {
-  const previousMode = process.env.PI_PROVIDER_EXTENSION_MODE;
-  const fetch = globalThis.fetch;
-  let network = 0;
-  globalThis.fetch = async () => {
-    network++;
-    throw Error("network forbidden");
-  };
-  try {
-    await withAgentDirectory("advisor-provider-extension-", async (directory) => {
-      await installSynthetic(directory);
-      const admissionsPath = getProviderAdmissionsPath(getGlobalConfigPath(directory));
-      for (const mode of [
-        "success",
-        "shared",
-        "compact-cancel",
-        "identity",
-        "unconfigured",
-        "no-admission",
-        "factory",
-        "start",
-        "unlisted",
-        "tools",
-        "extra",
-        "shadow",
-        "compact-throw",
-        "held-extra",
-        "input",
-        "active-tools",
-      ]) {
-        process.env.PI_PROVIDER_EXTENSION_MODE = mode;
-        await installSynthetic(directory, mode !== "unconfigured");
-        if (mode === "no-admission") await rm(admissionsPath, { force: true });
-        else
-          await writeProviderAdmissions(
-            { [PROVIDER]: { package: PACKAGE, version: mode === "identity" ? "1.0.1" : VERSION } },
-            admissionsPath,
-          );
-        const runtime = await sdk.ModelRuntime.create({
-          credentials: {
-            read: async () => undefined,
-            list: async () => [],
-            modify: async (_provider, change) => change(undefined),
-            delete: async () => undefined,
-          },
-          modelsPath: null,
-          modelsStorePath: join(directory, `models-${mode}.json`),
-          refreshOnCreate: false,
-          allowModelNetwork: false,
-        });
-        const registry = new sdk.ModelRegistry(runtime);
-        // A provider another extension registered before this one; a failure must give it back.
-        const other = { ...runtime.getProvider(PROVIDER)!, id: "synthetic-other" };
-        registry.registerProvider(other);
-        const model = runtime.getModels(PROVIDER)[0]!;
-        const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-        const commands: string[] = [];
-        const api = {
-          registerProvider: (name: string, config: sdk.ProviderConfig) =>
-            runtime.registerProvider(name, config),
-          on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => {
-            handlers.set(name, handler);
-          },
-          registerCommand: (name: string) => {
-            commands.push(name);
-          },
-          getActiveTools: () => (mode === "active-tools" ? ["unexpected"] : []),
-        };
-        providerExtension(api as unknown as sdk.ExtensionAPI);
-        const context = {
-          cwd: directory,
-          model,
-          modelRegistry: registry,
-          isProjectTrusted: () => false,
-          hasUI: false,
-          ui: { notify: () => undefined },
-        };
-        await handlers.get("session_start")!({ type: "session_start" }, context);
-        if (mode === "shared")
-          await handlers.get("session_start")!({ type: "session_start" }, context);
-        const compaction = (await handlers.get("session_before_compact")!(
-          { type: "session_before_compact" },
-          context,
-        )) as { cancel?: boolean } | undefined;
-        await handlers.get("input")!(
-          { type: "input", text: "question", source: "interactive" },
-          context,
-        );
-        await handlers.get("before_agent_start")!({}, context);
-        const answer = await runtime
-          .streamSimple(model, { messages: [] }, { apiKey: "synthetic", env: {}, maxTokens: 1 })
-          .result();
-        if (["success", "shared", "compact-cancel"].includes(mode)) {
-          assert.equal(answer.stopReason, "stop", mode);
-          // The host's rule for session_before_*: the extension's cancel reaches it unchanged.
-          assert.equal(compaction?.cancel, mode === "compact-cancel", mode);
-          assert.deepEqual(answer.content, [{ type: "text", text: "EXTENSION_PROVIDER_SENTINEL" }]);
-        } else {
-          // Never the built-in provider: every refusal reaches the guard.
-          assert.equal(answer.stopReason, "error", mode);
-          assert.match(answer.errorMessage ?? "", /Advisor provider unavailable/, mode);
-        }
-        assert.deepEqual(commands, [], mode);
-        for (const unexpected of ["synthetic-extra", "synthetic-held"])
-          assert.ok(!registry.getRegisteredProviderIds().includes(unexpected), mode);
-        assert.equal(registry.getRegisteredNativeProvider("synthetic-other"), other, mode);
-        assert.equal(network, 0);
-      }
-    });
-  } finally {
-    globalThis.fetch = fetch;
-    if (previousMode === undefined) delete process.env.PI_PROVIDER_EXTENSION_MODE;
-    else process.env.PI_PROVIDER_EXTENSION_MODE = previousMode;
-  }
-});
 
 test("admissions are strict per provider and candidates are only configured, exact user packages", async () => {
   await withAgentDirectory("advisor-provider-admissions-", async (directory) => {
@@ -261,10 +107,19 @@ function routeAndReport(): void {
     advisorMode: "on",
     advisorLaunch: "role",
   };
-  const admissions = { "example-provider": { package: PACKAGE, version: VERSION } };
+  const admissions = {
+    "example-provider": { package: PINNED_PACKAGE.package, version: PINNED_PACKAGE.version },
+  };
   assert.equal(
     advisorAgentName(advisors[0]!, admissions),
     "pi-delegation-policy.advisor-provider-extension",
+  );
+  // The packaged profile pins one package, so an admission naming another one must not route to it.
+  assert.equal(
+    advisorAgentName(advisors[0]!, {
+      "example-provider": { package: PACKAGE, version: VERSION },
+    }),
+    "pi-delegation-policy.advisor",
   );
   assert.equal(advisorAgentName(advisors[1]!, admissions), "pi-delegation-policy.advisor");
   assert.equal(
@@ -310,10 +165,16 @@ function routeAndReport(): void {
   assert.match(unadmitted.advisorWarnings?.[0] ?? "", /replaced by an extension in this session/);
   assert.deepEqual(unadmitted.advisorEntries?.[1]?.errors, []);
 
-  // An admitted package that the child would reject is reported before any launch.
+  // An admitted package that is no longer installed is reported before any launch.
   const missing = state(admissions);
   validateRuntime(context(["example-provider"]), missing);
   assert.match(missing.advisorEntries?.[0]?.errors[0] ?? "", /re-select the provider extension/);
+
+  // The packaged profile pins one package, so an admission naming another one is an error, not a
+  // silent route to the ordinary profile.
+  const foreign = state({ "example-provider": { package: PACKAGE, version: VERSION } });
+  validateRuntime(context(["example-provider"]), foreign);
+  assert.match(foreign.advisorEntries?.[0]?.errors[0] ?? "", /cannot be served/);
 
   const unaffected = state({});
   validateRuntime(context([]), unaffected);
@@ -437,4 +298,26 @@ test("the provider-extension step admits, removes and discards only through the 
   withoutStep.render(80);
   chooseAdvisorModel(withoutStep);
   assert.ok(!withoutStep.render(80).some((line) => line.startsWith("> Standard profile")));
+});
+
+// The child resolves its model and provider before any extension `session_start` runs, so the host
+// loads the admitted package and the profile pins it. The empty `extensions:` key is what turns
+// ambient extensions off, and no extension path of its own may come back.
+test("the packaged profile pins the reviewed provider package the host loads", async () => {
+  const profile = (
+    await readFile(
+      join(process.cwd(), "agents", "pi-delegation-policy.advisor-provider-extension.md"),
+      "utf8",
+    )
+  ).replace(/\r\n/g, "\n");
+  const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(profile)?.[1];
+  assert.ok(frontmatter, "provider extension profile must have frontmatter");
+  assert.match(frontmatter, /^extensions:\nsubagentOnlyExtensions: npm:\S+@\S+$/m);
+  assert.equal(
+    frontmatter.match(/^subagentOnlyExtensions:(.*)$/m)?.[1]?.trim(),
+    packageSource(PINNED_PACKAGE),
+  );
+  assert.match(frontmatter, /^tools:$/m);
+  // A static profile can pin one package, so the reviewed exception has to stay a single one.
+  assert.equal(KNOWN_TOOL_SURFACE.length, 1);
 });

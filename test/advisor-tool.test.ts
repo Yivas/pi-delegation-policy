@@ -13,9 +13,10 @@ import {
   ANTHROPIC_ADVISOR_EXTENSION,
 } from "../src/advisor-anthropic-provider.ts";
 import {
+  PINNED_PACKAGE,
   PROVIDER_EXTENSION_ADVISOR_AGENT,
-  PROVIDER_EXTENSION_ADVISOR_EXTENSION,
 } from "../src/advisor-provider-extension.ts";
+import { packageSource } from "../src/provider-package.ts";
 import { AdvisorLog, ADVISOR_LOG_MAX_BYTES } from "../src/advisor-log.ts";
 import {
   AdvisorJournalError,
@@ -2142,7 +2143,9 @@ const PROVIDER_PROFILES = [
     providerExtension: "admitted" as const,
     agent: PROVIDER_EXTENSION_ADVISOR_AGENT,
     file: "../agents/pi-delegation-policy.advisor-provider-extension.md",
-    extension: PROVIDER_EXTENSION_ADVISOR_EXTENSION,
+    // The packaged profile pins the admitted package, so the host reports that source rather than
+    // an extension path of its own.
+    extension: packageSource(PINNED_PACKAGE),
     provider: "example-provider",
   },
 ];

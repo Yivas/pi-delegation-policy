@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { locateAdvisorAnthropicProvider } from "./advisor-anthropic-provider.ts";
+import { isPinnedAdmission, PINNED_PACKAGE } from "./advisor-provider-extension.ts";
 import { advisorAgentName } from "./advisor-executor.ts";
 import {
   admissionFor,
@@ -447,8 +448,9 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
 }
 
 /**
- * An admitted package must still pass the identity the child will check: otherwise the child would
- * refuse every request, so the Advisor is left out. Without an admission, a provider that an
+ * An admitted package must pass the identity check the parent applies, and name the package the
+ * packaged profile pins. The child does not repeat the check, so a failure here leaves the Advisor
+ * out instead of launching a profile that cannot serve it. Without an admission, a provider that an
  * extension replaced natively in this session runs as a different implementation in the child,
  * which loads no extension. That is only a warning: the built-in provider may still answer with its
  * own credentials. Auth sources are not used as proof: a native provider reports its own key as an
@@ -462,11 +464,16 @@ function providerExtensionCheck(
 ): { kind: "error" | "warning"; message: string } | undefined {
   const pkg = admissionFor(admissions, setting.provider);
   if (pkg)
-    return locateInstalledPackage(ctx.cwd, pkg, { configured: true }).ok
-      ? undefined
+    return isPinnedAdmission(pkg)
+      ? locateInstalledPackage(ctx.cwd, pkg, { configured: true }).ok
+        ? undefined
+        : {
+            kind: "error",
+            message: `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; re-select the provider extension in /delegate.`,
+          }
       : {
           kind: "error",
-          message: `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; re-select the provider extension in /delegate.`,
+          message: `${label} provider extension ${pkg.package} ${pkg.version} cannot be served: the packaged profile pins ${PINNED_PACKAGE.package} ${PINNED_PACKAGE.version}. Re-admit that package, or use an Advisor whose provider needs no extension.`,
         };
   if (setting.provider === RESERVED_PROVIDER) return undefined;
   const native = ctx.modelRegistry?.getRegisteredNativeProvider?.(setting.provider);

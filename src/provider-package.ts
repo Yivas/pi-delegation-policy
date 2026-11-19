@@ -118,8 +118,8 @@ function parsePinnedNpmSource(source: string): ProviderPackage | undefined {
 
 /**
  * User packages the panel may offer as a provider extension. Each candidate passes the same
- * identity check the Advisor child repeats before loading it; whether it registers the Advisor's
- * provider is only known once loaded, so this is a list of candidates, not of providers.
+ * identity check the parent applies before pinning it; whether it registers the Advisor's provider
+ * is only known once loaded, so this is a list of candidates, not of providers.
  */
 export function listProviderExtensionCandidates(
   cwd: string,

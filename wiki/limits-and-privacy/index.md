@@ -206,9 +206,10 @@ downgrade to `0.22.2` silences all Advisors when an opt-in is saved.
 
 An [admitted provider extension](/configuration/#admitted-provider-extensions) works the same way for
 any other provider, with a weaker check: only its installed identity and listed user source are
-verified before it runs, not its exact surface. Once loaded it is trusted host code with your files,
-network and its own accounts. Withdrawing its provider after a failed check does not undo its side
-effects, and the admission applies to every session.
+verified, and only in the parent. The child does not revalidate the package, because it has to load
+it to resolve the model at all. Once the host loads it, it is trusted host code with your files,
+network and its own accounts. The admission applies to every session, and the packaged profile pins
+one package, so a second one needs its own profile and its own review.
 
 ### Local content-free log
 

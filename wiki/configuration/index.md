@@ -437,39 +437,36 @@ store a changed admission; **Cancel** discards it and **Standard** removes it. T
 Only a package you already load qualifies: your user settings must list exactly
 `npm:<package>@<version>` unfiltered, Pi's managed user install must hold that version with no
 project candidate or links, and its manifest must declare exactly one extension entry inside the
-package. The panel offers only packages that pass this check, and both `/delegate` validation and the
-Advisor child repeat it. After `pi update` changes the version, the Advisor reports an error until
-you select the extension again; it never follows the new version on its own. An invalid file is
-ignored with a diagnostic and leaves the other Advisors running.
+package. The panel offers only packages that pass this check, and `/delegate` validation repeats it.
+The Advisor child does not, and cannot: it resolves its model and its provider before any extension
+`session_start` runs, so a check inside the child would arrive too late to matter. After `pi update`
+changes the version, the Advisor reports an error until you select the extension again; it never
+follows the new version on its own. An invalid file is ignored with a diagnostic and leaves the other
+Advisors running.
 
-In the child, the profile reads the admission for its own model's provider and loads that one entry
-in an isolated loader. The package may listen only to `session_start`, `session_shutdown`, `input`,
-`session_before_compact`, `session_compact` and `session_before_tree`, and may not register tools,
-flags, shortcuts or renderers. There is exactly one exception, pinned to one package and one version:
-`pi-antigravity-acp-provider` `0.1.21` may register `antigravity_acp_permission`, the tool that asks
-Antigravity for a permission decision the provider itself issued. The Advisor child launches with an
-empty tool allowlist, so that tool never reaches the model, and any other tool, any other package, and
-any other version of that package are still rejected. Registering still runs package code in the child,
-so a new version is a new review and never inherits the exception. Its commands are not registered: a child has no user to run them.
-After `session_start` it must have registered that provider anew and changed no other provider. An
-`input` handler that rewrites or consumes the question also counts as a failure. Any failure
-withdraws what the package registered and leaves a guard for that provider: the child's requests
-fail, with an Advisor error or Pi's own "provider is not configured", and never reach the built-in
-provider with ambient credentials. The guard covers the API of the child's own model, the only one
-an Advisor child requests.
+The packaged profile pins the admitted package in `subagentOnlyExtensions` and keeps `extensions:`
+empty, so the host loads exactly that package for the child and no ambient extension. The pin is one
+package and one version: `pi-antigravity-acp-provider` `0.1.21`. Its registration is the only one
+reviewed, and it may register `antigravity_acp_permission`, the tool that asks Antigravity for a
+permission decision the provider itself issued. The Advisor child launches with an empty tool
+allowlist, so that tool never reaches the model. A second admitted package, or a new version of this
+one, needs its own profile and its own review: a static profile can pin only one.
 
-This is trusted code, not a sandbox. Only the package identity is checked before it runs; the later
-checks can withdraw its provider but cannot undo what it already did. It can read files, use the
-network and reach its own accounts. Per-process state stays per process: a quota-rotating extension
-checks quota again in each child and can pick an account the main session already exhausted. If the
-admission changes between the main session's check and the child's start, the child uses the new one
-or fails closed. An Advisor whose provider an extension replaced in the main session, with no
-admission, gets a warning in `/delegate status` and stays consulted, because the built-in provider
-may still answer with its own credentials. An admission whose package no longer passes the check is
-an Advisor error instead. The candidate list holds every pinned user package, not only providers;
-choosing one that does not register the provider runs its code in the child before the Advisor
-refuses it. Releases before this option ignore the file and launch the standard profile, which may
-answer through the built-in provider or fail as before.
+Because the pin is fixed, an admission that names another package is not served. Routing checks it
+before any launch and leaves the Advisor out, rather than loading a package the current admission no
+longer authorizes.
+
+This is trusted code, not a sandbox. The package identity is checked in this session, and that is the
+only check: the child loads the pinned package before it can inspect anything. It can read files,
+use the network and reach its own accounts, and a provider it registers is the one used. Per-process
+state stays per process: a quota-rotating extension checks quota again in each child and can pick an
+account the main session already exhausted. An Advisor whose provider an extension replaced in the
+main session, with no admission, gets a warning in `/delegate status` and stays consulted, because
+the built-in provider may still answer with its own credentials. An admission whose package no longer
+passes the check, or whose package is not the pinned one, is an Advisor error instead. The candidate
+list holds every pinned user package, not only providers. Releases before this option ignore the
+file and launch the standard profile, which may answer through the built-in provider or fail as
+before.
 
 ## Launch correction mode {#launch-correction-mode}
 

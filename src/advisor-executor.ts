@@ -23,10 +23,12 @@ import {
   ANTHROPIC_ADVISOR_EXTENSION,
 } from "./advisor-anthropic-provider.ts";
 import {
+  isPinnedAdmission,
+  PINNED_PACKAGE,
   PROVIDER_EXTENSION_ADVISOR_AGENT,
-  PROVIDER_EXTENSION_ADVISOR_EXTENSION,
 } from "./advisor-provider-extension.ts";
 import { admissionFor, type ProviderAdmissions } from "./provider-admissions.ts";
+import { packageSource } from "./provider-package.ts";
 import {
   AdvisorResumeClient,
   advisorStatusVerdict,
@@ -218,7 +220,10 @@ export function advisorProfile(
   admissions: ProviderAdmissions = {},
 ): AdvisorRequest["providerExtension"] {
   if (setting.providerExtension === "anthropic-auth") return "anthropic-auth";
-  return admissionFor(admissions, setting.provider) ? "admitted" : undefined;
+  const admitted = admissionFor(admissions, setting.provider);
+  // The packaged profile pins one package, so an admission naming another one cannot be served. It
+  // fails closed here instead of loading a package the current admission no longer authorizes.
+  return admitted && isPinnedAdmission(admitted) ? "admitted" : undefined;
 }
 
 /**
@@ -255,7 +260,9 @@ const PROVIDER_EXTENSION_DEFINITION: AgentLaunchDefinition<AdvisorRequest, strin
   agentPath: fileURLToPath(
     new URL("../agents/pi-delegation-policy.advisor-provider-extension.md", import.meta.url),
   ),
-  configuredExtensions: [PROVIDER_EXTENSION_ADVISOR_EXTENSION],
+  // The profile pins the admitted package for the host to load, so the launch contract expects that
+  // source rather than an extension path of its own.
+  configuredExtensions: [packageSource(PINNED_PACKAGE)],
 };
 
 /** Highest first; levels above `high` are left out to bound cost across parallel advisors. */
