@@ -51,6 +51,8 @@ import {
   type ModelRole,
   type OptionalRoleEntryKey,
   optionalRoleEntryKeys,
+  type OptionalRoleFamily,
+  OPTIONAL_ROLE_FAMILIES,
   PREFERENCES,
   emptyRoleEntries,
   type Preference,
@@ -87,6 +89,9 @@ const FIELD_IDS = [
   "vision",
   "vision2",
   "vision3",
+  "writing",
+  "writing2",
+  "writing3",
   "contextShunt",
   "contextAdvanced",
   "thinkingSmall",
@@ -118,7 +123,16 @@ type AdvisorField = (typeof ADVISOR_FIELDS)[number];
  * Optional-role entries are rows of their own. They are global, like the other sidecar settings,
  * because the entry lists live in `delegation-policy.roles.json` rather than in the session.
  */
-const ENTRY_FIELDS = ["uiDesign2", "uiDesign3", "vision", "vision2", "vision3"] as const;
+const ENTRY_FIELDS = [
+  "uiDesign2",
+  "uiDesign3",
+  "vision",
+  "vision2",
+  "vision3",
+  "writing",
+  "writing2",
+  "writing3",
+] as const;
 type EntryField = (typeof ENTRY_FIELDS)[number];
 type ModelField = ThinkingKey | AdvisorField | EntryField;
 const ENTRY_FIELD_KEYS: Record<EntryField, OptionalRoleEntryKey> = {
@@ -127,6 +141,9 @@ const ENTRY_FIELD_KEYS: Record<EntryField, OptionalRoleEntryKey> = {
   vision: "vision",
   vision2: "vision2",
   vision3: "vision3",
+  writing: "writing",
+  writing2: "writing2",
+  writing3: "writing3",
 };
 function isEntryField(field: string): field is EntryField {
   return (ENTRY_FIELDS as readonly string[]).includes(field);
@@ -134,8 +151,8 @@ function isEntryField(field: string): field is EntryField {
 function entryKeyOf(field: EntryField): OptionalRoleEntryKey {
   return ENTRY_FIELD_KEYS[field];
 }
-function entryFamilyOf(key: OptionalRoleEntryKey): "uiDesign" | "vision" {
-  return key.startsWith("uiDesign") ? "uiDesign" : "vision";
+function entryFamilyOf(key: OptionalRoleEntryKey): OptionalRoleFamily {
+  return OPTIONAL_ROLE_FAMILIES.find((family) => key.startsWith(family)) ?? "vision";
 }
 /**
  * The row that must already be configured before this one can appear. `vision` has none: the family
@@ -147,6 +164,9 @@ const ENTRY_FIELD_PARENT: Record<EntryField, EntryField | "uiDesign" | "always">
   vision: "always",
   vision2: "vision",
   vision3: "vision2",
+  writing: "always",
+  writing2: "writing",
+  writing3: "writing2",
 };
 const THINKING_FIELD_KEYS: Record<ThinkingField, ThinkingKey> = {
   thinkingSmall: "small",
@@ -327,6 +347,9 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   vision: "Vision",
   vision2: "Vision 2",
   vision3: "Vision 3",
+  writing: "Writing",
+  writing2: "Writing 2",
+  writing3: "Writing 3",
   contextShunt: "Context protection",
   contextAdvanced: "Context advanced",
   thinkingSmall: "Small thinking",
@@ -365,6 +388,11 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
     "Second Vision entry; global, and its thinking policy lives in delegation-policy.roles.json.",
   vision3:
     "Third Vision entry; global, and its thinking policy lives in delegation-policy.roles.json.",
+  writing: "Models the user chose for text other people read; public prose and microcopy only.",
+  writing2:
+    "Second Writing entry; global, and its thinking policy lives in delegation-policy.roles.json.",
+  writing3:
+    "Third Writing entry; global, and its thinking policy lives in delegation-policy.roles.json.",
   contextShunt: "Off, observe, or enforce bounded context protection.",
   contextAdvanced:
     "Reader role, limits, and path patterns; each value can inherit from global defaults.",

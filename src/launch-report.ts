@@ -39,6 +39,9 @@ const ROLE_CODES = {
   vision: true,
   vision2: true,
   vision3: true,
+  writing: true,
+  writing2: true,
+  writing3: true,
   advisor: true,
   unknown: true,
 } satisfies Record<LaunchChildRole, true>;

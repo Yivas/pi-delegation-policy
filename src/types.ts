@@ -19,7 +19,7 @@ export type ModelRole = (typeof MODEL_ROLES)[number];
  * thinking policy and the status line keep addressing one concrete model instead of a list index that
  * a removal in the panel would silently shift.
  */
-export const OPTIONAL_ROLE_FAMILIES = ["uiDesign", "vision"] as const;
+export const OPTIONAL_ROLE_FAMILIES = ["uiDesign", "vision", "writing"] as const;
 export type OptionalRoleFamily = (typeof OPTIONAL_ROLE_FAMILIES)[number];
 export const OPTIONAL_ROLE_ENTRY_LIMIT = 3 as const;
 export const OPTIONAL_ROLE_ENTRY_KEYS = [
@@ -29,6 +29,9 @@ export const OPTIONAL_ROLE_ENTRY_KEYS = [
   "vision",
   "vision2",
   "vision3",
+  "writing",
+  "writing2",
+  "writing3",
 ] as const;
 export type OptionalRoleEntryKey = (typeof OPTIONAL_ROLE_ENTRY_KEYS)[number];
 /** The entry keys of one family, in preference order. */
@@ -46,6 +49,9 @@ export const ROLE_LABELS: Record<ModelConfigKey, string> = {
   vision: "Vision",
   vision2: "Vision 2",
   vision3: "Vision 3",
+  writing: "Writing",
+  writing2: "Writing 2",
+  writing3: "Writing 3",
   advisor: "Advisor",
 };
 
@@ -175,6 +181,9 @@ export type EffectiveDelegateState = {
   vision?: ModelRef;
   vision2?: ModelRef;
   vision3?: ModelRef;
+  writing?: ModelRef;
+  writing2?: ModelRef;
+  writing3?: ModelRef;
   /** The configured entries per optional role, in preference order. */
   roleEntries: RoleEntries;
   /** Entries the document/sidecar merge dropped; reported as warnings, never as a failure. */
@@ -211,7 +220,7 @@ export function emptyGlobalDefaults(): GlobalDefaults {
   return { schemaVersion: CURRENT_SCHEMA_VERSION };
 }
 export function emptyRoleEntries(): RoleEntries {
-  return { uiDesign: [], vision: [] };
+  return { uiDesign: [], vision: [], writing: [] };
 }
 export function emptySessionState(): SessionDelegateState {
   return { schemaVersion: CURRENT_SCHEMA_VERSION };

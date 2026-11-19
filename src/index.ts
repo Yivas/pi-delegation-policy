@@ -110,6 +110,7 @@ import {
   MAX_ADVISORS,
   optionalRoleEntryKeys,
   OPTIONAL_ROLE_ENTRY_KEYS,
+  OPTIONAL_ROLE_FAMILIES,
   ROLE_LABELS,
   type OptionalRoleEntryKey,
   THINKING_ROLE_KEYS,
@@ -187,7 +188,13 @@ export function parseCommand(args: string): CommandAction {
   }
   // Optional-role entries can be set here or from the panel rows; both write the same sidecar.
   const entryFamily =
-    parts[0] === "vision" ? "vision" : parts[0] === "visual-design" ? "uiDesign" : undefined;
+    parts[0] === "vision"
+      ? "vision"
+      : parts[0] === "visual-design"
+        ? "uiDesign"
+        : parts[0] === "writing"
+          ? "writing"
+          : undefined;
   if (entryFamily) {
     // A bare number names a slot; anything outside 2 and 3 is a mistake, not a model.
     if (parts[1] !== undefined && /^\d+$/.test(parts[1]) && parts[1] !== "2" && parts[1] !== "3")
@@ -222,6 +229,9 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
     "vision 3 model",
     "visual-design 2 model",
     "visual-design 3 model",
+    "writing model",
+    "writing 2 model",
+    "writing 3 model",
     "context off",
     "context observe",
     "context enforce",
@@ -422,7 +432,7 @@ export function launchRoleCodes(state: RuntimeState): LaunchChildRole[] {
 
 /** Status tokens spell the slot the way the command and the docs do: `ui-design-2`, `vision-2`. */
 function entryStatusToken(key: OptionalRoleEntryKey): string {
-  const family = key.startsWith("uiDesign") ? "uiDesign" : "vision";
+  const family = OPTIONAL_ROLE_FAMILIES.find((name) => key.startsWith(name)) ?? "vision";
   const slot = key.slice(family.length);
   return `${family === "uiDesign" ? "ui-design" : family}${slot ? `-${slot}` : ""}`;
 }
@@ -1378,7 +1388,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           return;
         }
         if (action.kind === "role-entry") {
-          const family = action.key.startsWith("uiDesign") ? "uiDesign" : "vision";
+          const family =
+            OPTIONAL_ROLE_FAMILIES.find((name) => action.key.startsWith(name)) ?? "vision";
           const current = await loadRuntime(ctx);
           if (current.diagnostics.some(({ scope }) => scope === "role-entries")) {
             ctx.ui.notify(
@@ -1631,7 +1642,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           return;
         }
         ctx.ui.notify(
-          "Usage: /delegate [off|normal|aggressive|orchestrator|status|reset|advisor off|on|with-delegation|vision [2|3] PROVIDER/MODEL|visual-design 2|3 PROVIDER/MODEL|context off|observe|enforce|status|allow TOKEN MAX_LINES MAX_BYTES]",
+          "Usage: /delegate [off|normal|aggressive|orchestrator|status|reset|advisor off|on|with-delegation|vision [2|3] PROVIDER/MODEL|visual-design 2|3 PROVIDER/MODEL|writing [2|3] PROVIDER/MODEL|context off|observe|enforce|status|allow TOKEN MAX_LINES MAX_BYTES]",
           "error",
         );
       },

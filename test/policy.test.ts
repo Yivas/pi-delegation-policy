@@ -687,7 +687,7 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   assert.doesNotMatch(buildDelegationPolicy(enabled) ?? "", /Visual Design:/);
   assert.match(
     buildDelegationPolicy(enabled) ?? "",
-    /Visual Design and Vision are outside that comparison/,
+    /Visual Design, Vision and Writing are outside that comparison/,
   );
 
   const configured = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
@@ -714,7 +714,7 @@ test("Visual Design keeps the uiDesign key and participates only when configured
     visualPolicy,
     /choose the least costly of Small, Medium and Large that meets the acceptance criteria/,
   );
-  assert.match(visualPolicy, /Visual Design and Vision are outside that comparison/);
+  assert.match(visualPolicy, /Visual Design, Vision and Writing are outside that comparison/);
   // Capability is stated as the registry reports it, so an unresolved model never claims to see.
   assert.match(
     visualPolicy,
@@ -1000,10 +1000,13 @@ test("the status line spells each entry as a token the launch check accepts", ()
   const visual2 = { provider: "example", model: "visual-2" };
   const vision2 = { provider: "example", model: "vision-2" };
   const state = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
+  const writer = { provider: "example", model: "writer" };
+  const writer2 = { provider: "example", model: "writer-2" };
   state.roleEntries = {
     ...emptyRoleEntries(),
     uiDesign: [uiDesign, visual2],
     vision: [vision, vision2],
+    writing: [writer, writer2],
   };
   validateRuntime(
     context({
@@ -1015,6 +1018,8 @@ test("the status line spells each entry as a token the launch check accepts", ()
         model(visual2),
         model(vision),
         model(vision2),
+        model(writer),
+        model(writer2),
       ],
     }),
     state,
@@ -1024,7 +1029,8 @@ test("the status line spells each entry as a token the launch check accepts", ()
   assert.match(text, /ui-design-2=example\/visual-2 \(global\)/);
   assert.match(text, /vision-2=example\/vision-2 \(global\)/);
   // Every entry token the status prints has to be a name the launch check resolves.
-  for (const token of ["ui-design", "ui-design-2", "vision", "vision-2"]) {
+  assert.match(text, /writing-2=example\/writer-2 \(global\)/);
+  for (const token of ["ui-design", "ui-design-2", "vision", "vision-2", "writing", "writing-2"]) {
     const call = { agent: "worker", task: "t", model: token };
     assert.equal(inspectSubagentLaunch(call, state).refusal, undefined, token);
   }
@@ -1328,7 +1334,11 @@ test("an optional role is described without a forward reference and outside the 
       /choose the least costly of Small, Medium and Large that meets the acceptance criteria/,
       intensity,
     );
-    assert.match(policy, /Visual Design and Vision are outside that comparison/, intensity);
+    assert.match(
+      policy,
+      /Visual Design, Vision and Writing are outside that comparison/,
+      intensity,
+    );
     assert.match(policy, /Optional roles: Visual Design\./, intensity);
     assert.match(
       policy,
@@ -2718,7 +2728,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
 test("the settings list keeps one row per field and one hint block that follows the focus", () => {
   const harness = createPanelHarness({ rows: 24 });
   const item =
-    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design|Vision|Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
+    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design|Vision|Writing|Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
   const view = (steps: number) => {
     for (let step = 0; step < steps; step += 1) sendKeys(harness.panel, KEY_DOWN);
     const lines = harness.panel.render(80);
@@ -2733,7 +2743,7 @@ test("the settings list keeps one row per field and one hint block that follows 
   assert.equal(first.rows, 13, "one row per field");
   assert.match(first.body, /When delegation is worth considering/);
 
-  const context = view(8);
+  const context = view(9);
   assert.equal(context.rows, first.rows, "a longer hint does not resize the list viewport");
   assert.match(context.body, /Off, observe, or enforce bounded context protection/);
   assert.match(context.body, /reader off; role small; answer 8192 bytes/);
@@ -3575,7 +3585,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.30.0");
+  assert.equal(packageJson.version, "0.31.0");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
   assert.deepEqual(packageJson.pi.subagents.agents, ["./agents"]);
@@ -4501,7 +4511,9 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // capability, and the child-brief section states that a brief must name the files it needs.
   // Front 46 regenerated them for the capability line, which lists every model the configuration
   // holds, Advisors included. The fixture models declare no input, so the image fact stays unproven
-  // and is not emitted, which is why these two hashes are the previous ones.
+  // and is not emitted, which is why these two hashes are the previous ones. Front 47 regenerated
+  // them for the optional Writing role: the role-fit paragraph now names it beside Visual Design and
+  // Vision, and the cost comparison still covers Small, Medium and Large only.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -4510,8 +4522,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "bfd301e14a256a31fcf630096e684a8c686670e1a9ef68cc30fc9932ef4de06b",
-    aggressive: "6a44d30ac083d9bf81c7e26e01e18cc6372ff5024f49f764cf949deaea8bab0f",
+    normal: "dcdf64f60f27ae750dacc068946dcd9f501d780681edafcea15f2da82f1ea997",
+    aggressive: "a0f8a0e409f6ce39e1c131590505ff11f4fc7086ae1e004095635ddb4b2e1571",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
@@ -5133,6 +5145,7 @@ test("removing an entry closes the gap and hides the rows that depended on it", 
     onSaveRoleEntries: async () => "saved",
     roleEntries: {
       uiDesign: [],
+      writing: [],
       vision: [
         { provider: "example", model: "vision-one" },
         { provider: "example", model: "ui-design" },
@@ -5369,6 +5382,7 @@ test("changing an entry model keeps that entry's thinking policy", () => {
     rows: 30,
     roleEntries: {
       uiDesign: [],
+      writing: [],
       vision: [{ provider: "example", model: "vision-one", thinking: { level: "low" } }],
     },
     onSaveRoleEntries: async (entries) => {

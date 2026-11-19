@@ -1100,6 +1100,7 @@ function resolveRoleEntries(
   }
   lists.uiDesign = visual;
   lists.vision = entries.vision.map(copyRoleEntry);
+  lists.writing = entries.writing.map(copyRoleEntry);
   // Entry 1's thinking policy is the document's `thinking.uiDesign`, which wins on read, so the entry
   // list never carries a value the effective state ignores.
   const firstVisual = lists.uiDesign[0];
@@ -1124,6 +1125,7 @@ function resolveRoleEntries(
     lists[family] = kept;
   }
   const visionSource: ValueSource = entries.vision.length ? "global" : "default";
+  const writingSource: ValueSource = entries.writing.length ? "global" : "default";
   // A branch `null` suppressed the family, so every one of its slots is the branch's decision;
   // reporting `default` there would suggest nothing had been configured.
   const visualDisabled = session.uiDesign === null;
@@ -1138,6 +1140,9 @@ function resolveRoleEntries(
   sources.uiDesign = firstVisualSource;
   for (const [index, key] of optionalRoleEntryKeys("vision").entries()) {
     if (lists.vision[index]) sources[key] = visionSource;
+  }
+  for (const [index, key] of optionalRoleEntryKeys("writing").entries()) {
+    if (lists.writing[index]) sources[key] = writingSource;
   }
   return { lists, sources, repeated };
 }
@@ -1158,7 +1163,7 @@ export function resolveDelegateState(
   const intensity = session.intensity ?? defaults.intensity ?? "off";
   const resolvedEntries = resolveRoleEntries(defaults, session, roleEntries);
   const entryModel = (key: OptionalRoleEntryKey): ModelRef | undefined => {
-    const family = key.startsWith("uiDesign") ? "uiDesign" : "vision";
+    const family = OPTIONAL_ROLE_FAMILIES.find((name) => key.startsWith(name)) ?? "vision";
     const entry = resolvedEntries.lists[family][optionalRoleEntryKeys(family).indexOf(key)];
     return entry ? { provider: entry.provider, model: entry.model } : undefined;
   };
@@ -1182,7 +1187,7 @@ export function resolveDelegateState(
   // policy resolved above stands and any thinking a sidecar entry carries for it is ignored.
   for (const key of OPTIONAL_ROLE_ENTRY_KEYS) {
     if (key === "uiDesign") continue;
-    const family = key.startsWith("uiDesign") ? "uiDesign" : "vision";
+    const family = OPTIONAL_ROLE_FAMILIES.find((name) => key.startsWith(name)) ?? "vision";
     const entry = resolvedEntries.lists[family][optionalRoleEntryKeys(family).indexOf(key)];
     if (entry?.thinking) thinking[key] = copyPolicy(entry.thinking);
     else delete thinking[key];
@@ -1199,6 +1204,9 @@ export function resolveDelegateState(
     ...(entryModel("vision") ? { vision: entryModel("vision") } : {}),
     ...(entryModel("vision2") ? { vision2: entryModel("vision2") } : {}),
     ...(entryModel("vision3") ? { vision3: entryModel("vision3") } : {}),
+    ...(entryModel("writing") ? { writing: entryModel("writing") } : {}),
+    ...(entryModel("writing2") ? { writing2: entryModel("writing2") } : {}),
+    ...(entryModel("writing3") ? { writing3: entryModel("writing3") } : {}),
     roleEntries: resolvedEntries.lists,
     repeatedRoleEntries: resolvedEntries.repeated,
     ...(advisor ? { advisor } : {}),

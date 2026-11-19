@@ -29,6 +29,7 @@ available. The editor requires TUI mode, while these arguments also work in othe
 | `/delegate context allow TOKEN MAX_LINES MAX_BYTES` | Approve the next matching blocked read once.                              |
 | `/delegate vision [2\|3] PROVIDER/MODEL`            | Set a Vision entry; `remove` clears it.                                   |
 | `/delegate visual-design 2\|3 PROVIDER/MODEL`       | Set Visual Design entry 2 or 3; `remove` clears it.                       |
+| `/delegate writing [2\|3] PROVIDER/MODEL`           | Set a Writing entry; `remove` clears it.                                  |
 
 Optional-role entries fill in order too, and the first Visual Design entry is edited in the panel
 because it shares the legacy `uiDesign` key in the delegation document.

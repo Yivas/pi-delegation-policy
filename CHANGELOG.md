@@ -2,8 +2,17 @@
 
 ## Unreleased
 
+## 0.31.0 - 2026-11-19
+
 ### Added
 
+- An optional **Writing** role, with up to three entries of its own, for text other people will
+  read: public prose and interface microcopy. It changes only the words, never code, data or
+  identifiers, and Visual Design keeps the presentation when the same work changes how something
+  looks. It stays outside the cheapest-role comparison, does not count toward the ordinary-role
+  minimum, and is configured from `/delegate writing [2|3]` or from its panel row. A reader older
+  than this version rejects the whole `delegation-policy.roles.json`, so remove its Writing entries
+  before downgrading.
 - An Advisor child can load the operator's own extensions. `delegation-policy.advisor-extensions.json`
   names up to two exact `package@version` entries, admitted like a provider extension, and the host
   loads them for every child of the session while an Advisor is enabled, the ContextShunt reader

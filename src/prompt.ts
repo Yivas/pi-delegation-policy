@@ -55,7 +55,7 @@ const DELEGATION_RESTRICTIONS =
  * produced a launch and fought this very sentence.
  */
 function roleFitPolicy(): string {
-  return "Weigh demand, ambiguity, dependencies, risk, quantity, and error/review cost together, and choose the least costly of Small, Medium and Large that meets the acceptance criteria and evidence; if none can, keep the work. Visual Design and Vision are outside that comparison: their reason is the model the user chose, not its price. A more capable enabled role may cover a disabled role's work on the same acceptance and evidence; never choose a less capable one because it is the only one enabled. Agent type does not determine the model role.";
+  return "Weigh demand, ambiguity, dependencies, risk, quantity, and error/review cost together, and choose the least costly of Small, Medium and Large that meets the acceptance criteria and evidence; if none can, keep the work. Visual Design, Vision and Writing are outside that comparison: their reason is the model the user chose, not its price. A more capable enabled role may cover a disabled role's work on the same acceptance and evidence; never choose a less capable one because it is the only one enabled. Agent type does not determine the model role.";
 }
 
 const SMALL_ROLE_POLICY =
@@ -74,6 +74,8 @@ const VISUAL_DESIGN_POLICY =
   "Visual Design: these entries are the models the user chose for work whose result is judged by eye — restyling, layout, spacing, typography, colour, component styling, or matching a mock or a screenshot. Use the first entry that fits, hand it the files to change and the target (the mock or screenshot path, or a written description), and let it run the existing checks. Logic, data, tests and behaviour that do not change how something looks stay with an ordinary role. Judging or describing an existing image without changing it is Vision work.";
 const VISION_POLICY =
   "Vision: these entries are the models the user chose for work that must look at images — screenshots, rendered pages, UI captures, diagrams, charts or scanned pages. Use the first entry that fits whenever the answer depends on what an image shows and cannot be taken from text; an entry marked text only cannot do this. A child sees only its brief, so name every image path and what to extract from it, and ask the child to separate what it saw from what it inferred and to say what it could not read. Changing how something looks is Visual Design work.";
+const WRITING_POLICY =
+  "Writing: these entries are the models the user chose for text other people will read — public prose, articles, announcements, release notes, issues, documentation prose and interface microcopy. Use the first entry that fits when the deliverable is that text. It changes only the words: code, commands, data, identifiers and numbers stay exactly as they are, and prose that carries them keeps them intact. When the same work also changes how something looks, Visual Design owns the presentation and Writing owns the words. If the text has to be checked against an image, that evidence is Vision work.";
 const OPTIONAL_ROLE_ROUTING_LEGACY =
   "Route interaction behavior, state, validation, semantic HTML, keyboard/ARIA, authentication, permissions, persistence, test infrastructure and behavior tests to an enabled ordinary role that fits, or keep them with the main agent. Eligibility alone never forces delegation.";
 const OPTIONAL_ROLE_ROUTING_ORCHESTRATOR =
@@ -88,6 +90,7 @@ const BRIEF_ROLE_EMPHASIS: Record<ModelRole | OptionalRoleFamily | "advisor", st
   large: `unconverged work: failure evidence, hypotheses tested, stop condition. "Diagnose the contradictory failures in both modules; return the cause and the smallest fix; stop before editing."`,
   uiDesign: `presentation only, never logic, state, ARIA or keyboard. "Restyle header spacing only; keep markup, copy and logic; return responsive evidence; stop if behavior must change."`,
   vision: `image evidence only, never production or logic. "Read shots/home.png and shots/pricing.png; list every control whose label is clipped and where it sits; say what you could not read; do not change files."`,
+  writing: `public prose and microcopy only, never code, data or identifiers. "Rewrite the release announcement for readers who do not know the project; keep every version, path and command exactly as written; return the text only."`,
   advisor: `advice only, never implementation or tool checks. "Keep sliding expiry? Return the risks and the indispensable missing facts; do not implement."`,
 };
 
@@ -145,6 +148,7 @@ function noImageCapableRoleEverywhere(state: RuntimeState, advisorEnabled: boole
     ...enabledOrdinaryRoles(state.effective),
     ...optionalRoleEntryKeys("uiDesign").filter((key) => state.effective[key] !== undefined),
     ...optionalRoleEntryKeys("vision").filter((key) => state.effective[key] !== undefined),
+    ...optionalRoleEntryKeys("writing").filter((key) => state.effective[key] !== undefined),
   ];
   const readings = keys.map((key) => capabilityText(state, key));
   if (advisorEnabled)
@@ -444,12 +448,13 @@ ${advisorOnlyLimits(advisorTool)} ${LIMITS_RETENTION}
   const restrictions = advisorEnabled ? USER_RESTRICTIONS : DELEGATION_RESTRICTIONS;
   // One paragraph and one line per configured entry; an unconfigured family leaves no trace, and an
   // entry whose model is not available is left out because the launch check refuses it.
-  const entryKeys = (family: "uiDesign" | "vision") =>
+  const entryKeys = (family: OptionalRoleFamily) =>
     optionalRoleEntryKeys(family).filter(
       (key) => effective[key] !== undefined && isAdvertisedOptionalEntry(state, key),
     );
   const visualEntries = entryKeys("uiDesign");
   const visionEntries = entryKeys("vision");
+  const writingEntries = entryKeys("writing");
   const optionalRules = [
     ...(visualEntries.length
       ? [
@@ -457,6 +462,7 @@ ${advisorOnlyLimits(advisorTool)} ${LIMITS_RETENTION}
         ]
       : []),
     ...(visionEntries.length ? [VISION_POLICY] : []),
+    ...(writingEntries.length ? [WRITING_POLICY] : []),
   ];
   const optional = optionalRules.length ? `\n\n${optionalRules.join("\n\n")}` : "";
   const roleLines = enabled
@@ -464,7 +470,7 @@ ${advisorOnlyLimits(advisorTool)} ${LIMITS_RETENTION}
       roleLine(roleName(role), effective[role] as ModelRef, roleThinking(effective.thinking[role])),
     )
     .join("\n");
-  const optionalRoleLines = [...visualEntries, ...visionEntries]
+  const optionalRoleLines = [...visualEntries, ...visionEntries, ...writingEntries]
     .map(
       (key) =>
         `\n${roleLine(ROLE_LABELS[key], effective[key] as ModelRef, roleThinking(effective.thinking[key]))}`,
@@ -474,12 +480,13 @@ ${advisorOnlyLimits(advisorTool)} ${LIMITS_RETENTION}
   // that sees and one that does not is decidable at a glance and says nothing it cannot prove. It
   // lists every model the configuration holds, including an entry this policy would not launch: the
   // line is a fact about the models, not about one launch.
-  const entryKeysOf = (family: "uiDesign" | "vision") =>
+  const entryKeysOf = (family: OptionalRoleFamily) =>
     optionalRoleEntryKeys(family).filter((key) => effective[key] !== undefined);
   const capabilityLine = `Model input (as the host registry reports it): ${[
     ...enabled.map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`),
     ...entryKeysOf("uiDesign").map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`),
     ...entryKeysOf("vision").map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`),
+    ...entryKeysOf("writing").map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`),
     ...(advisorEnabled
       ? effective.advisors.map(
           (_, index) => `Advisor ${index + 1} ${advisorCapabilityText(state, index)}`,
@@ -492,8 +499,8 @@ ${advisorOnlyLimits(advisorTool)} ${LIMITS_RETENTION}
     ? `\n\nNo configured role accepts image input, so image work cannot be delegated until you configure Vision with a model that reads images.`
     : "";
   const enabledLine = `Enabled ordinary roles: ${enabled.map(roleName).join(", ")}.${disabled.length ? ` Disabled ordinary roles: ${disabled.map(roleName).join(", ")}.` : ""}`;
-  const optionalLine = [...visualEntries, ...visionEntries].length
-    ? `Optional roles: ${[...visualEntries, ...visionEntries].map((key) => ROLE_LABELS[key]).join(", ")}.`
+  const optionalLine = [...visualEntries, ...visionEntries, ...writingEntries].length
+    ? `Optional roles: ${[...visualEntries, ...visionEntries, ...writingEntries].map((key) => ROLE_LABELS[key]).join(", ")}.`
     : "";
 
   return `<delegation_policy>
@@ -510,7 +517,7 @@ Model preference: ${effective.preference}. ${preferenceGuidance(effective.prefer
 ${capabilityLine}${optional}${imageFact}
 
 Child briefs:
-${childBriefPolicy(enabled, [...visualEntries, ...visionEntries], advisorEnabled)}
+${childBriefPolicy(enabled, [...visualEntries, ...visionEntries, ...writingEntries], advisorEnabled)}
 
 Launch:
 ${launchPolicy(correction)}

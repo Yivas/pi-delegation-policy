@@ -130,10 +130,9 @@ function copyEntry(entry: RoleEntry): RoleEntry {
 }
 
 export function copyRoleEntries(entries: RoleEntries): RoleEntries {
-  return {
-    uiDesign: entries.uiDesign.map(copyEntry),
-    vision: entries.vision.map(copyEntry),
-  };
+  return Object.fromEntries(
+    OPTIONAL_ROLE_FAMILIES.map((family) => [family, entries[family].map(copyEntry)]),
+  ) as RoleEntries;
 }
 
 /**

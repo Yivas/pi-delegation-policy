@@ -8,7 +8,7 @@
   <a href="https://www.npmjs.com/package/pi-delegation-policy"><img src="https://img.shields.io/npm/l/pi-delegation-policy" alt="License on npm"></a>
 </p>
 
-[Documentation](https://yivas.github.io/pi-delegation-policy/) · Version **0.30.0**
+[Documentation](https://yivas.github.io/pi-delegation-policy/) · Version **0.31.0**
 
 Requires Pi `0.87.1` or later (`>=0.87.1`). Version `0.14.1` supports Pi `0.84.3` or later.
 
@@ -25,7 +25,7 @@ The block also asks for a brief on every child: the bounded outcome and its owne
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.30.0
+pi install npm:pi-delegation-policy@0.31.0
 # restart Pi, or run /reload
 ```
 
@@ -52,7 +52,7 @@ While delegation is active, every ordinary role needs an explicit decision: an e
 
 The policy weighs task fit and then picks the least costly enabled role that can meet the acceptance criteria. When none can, the work stays with the main agent. Preference (`efficient`, `standard`, `intensive`) only breaks ties between Small and Medium, and does nothing when either is disabled.
 
-Visual Design and Vision are optional, hold up to three exact models each, and stay outside the cheapest-role comparison. A configured role adds one rule per family and one line per entry, and the block states which models the host reports as able to read images.
+Visual Design, Vision and Writing are optional, hold up to three models each, and stay outside the cheapest-role comparison. A configured role adds a rule per family and a line per entry, and the block states which models the host reports as able to read images.
 
 Thinking is unset by default, or a fixed level, or an inclusive range. Advisor thinking is not a setting, and the level chosen for one run is never stored. The [configuration reference](https://yivas.github.io/pi-delegation-policy/configuration/#roles-and-validation) covers entries, sidecars, and validation.
 
@@ -86,6 +86,7 @@ ContextShunt is a separate opt-in layer, off by default. `observe` records what 
 /delegate advisor threads status|recover|reset  Inspect, recover or reset threads
 /delegate vision [2|3] PROVIDER/MODEL         Add a Vision entry
 /delegate visual-design 2|3 PROVIDER/MODEL    Add a Visual Design entry
+/delegate writing [2|3] PROVIDER/MODEL        Add a Writing entry
 /delegate context off|observe|enforce|status   Set or inspect ContextShunt
 /delegate context allow TOKEN LINES BYTES     Approve the next blocked read once
 ```

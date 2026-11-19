@@ -197,13 +197,16 @@ before launching only when a new material decision or authorization cannot be in
 session. One emphasis line and one example follow, for each enabled role only, so `off` and
 Advisor-only sessions carry no brief guidance.
 
-## Visual Design and Vision
+## Visual Design, Vision and Writing
 
-Two optional specialists, neither of them an execution tier, and each holds up to three exact models
+Three optional specialists, none of them an execution tier, and each holds up to three exact models
 called entries. Visual Design exists for work whose result is judged by eye: restyling, layout,
 spacing, typography, colour, component styling, matching a mock or a screenshot. Vision exists for
 work that must look at images: screenshots, rendered pages, UI captures, diagrams, charts, scanned
-pages. Judging an image without changing it is Vision; changing how something looks is Visual Design.
+pages. Writing exists for text other people will read: public prose, announcements, release notes,
+issues, documentation prose and interface microcopy, and it changes only the words. Judging an image
+without changing it is Vision; changing how something looks is Visual Design, which keeps the words
+when the same work changes both.
 
 Neither family takes part in the cheapest-role comparison, which covers Small, Medium, and Large only:
 an entry is the model you chose, not a price to beat. With no entries a family leaves no trace in the
@@ -218,20 +221,22 @@ Entries fill in order and never leave a gap, and [commands and status](/commands
 exact forms.
 
 Entries are stored in `delegation-policy.roles.json` next to the delegation defaults, one ordered list
-per family, each entry an exact `provider`/`model` plus an optional thinking policy. The file is
+per family (`uiDesign`, `vision`, `writing`), each entry an exact `provider`/`model` plus an optional
+thinking policy. The file is
 versioned and separate because the policy document rejects unknown keys: a new key there would make
 every installed older version read the whole configuration as invalid. A missing file is the clean
 default, and a file this version cannot parse is reported and ignored rather than overwritten.
 
-Visual Design entry 1 is mirrored into the delegation document as `uiDesign` (with `thinking.uiDesign`),
+A reader older than the Writing role rejects the whole file, not only the unknown family, so remove
+Writing entries before you downgrade. Visual Design entry 1 is mirrored into the delegation document as `uiDesign` (with `thinking.uiDesign`),
 which is what the panel and older versions read. When the two disagree the document wins and the sidecar
 keeps the remaining entries, because the other writer was a version that cannot see this file: the
 document's model takes slot 1 and the sidecar's own slot 1 is not kept. Entry commands therefore write
 the global state only. They are refused while the branch owns a family's first slot, because that value
 belongs to the branch and must not become the shared default. `/delegate … remove` closes the gap, so
 the entry behind the removed one moves up into its slot. Slot 1 of Visual Design is edited in the panel,
-which also offers a row per entry —`Visual Design 2`, `Visual Design 3`, `Vision`, `Vision 2`, `Vision 3`—
-each of them global. Each family's first row is always offered, so a family can be started from the
+which also offers a row per entry —`Visual Design 2`, `Visual Design 3`, `Vision`, `Vision 2`, `Vision 3`, `Writing`, `Writing 2`,
+`Writing 3`—each of them global. Each family's first row is always offered, so a family can be started from the
 panel, and the rest follow the one before them. Those rows write the sidecar themselves; entry thinking
 stays in the file. `vision 1 …` and `visual-design 1 …` are rejected because a slot number is only `2` or
 `3`.

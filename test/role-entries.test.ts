@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { defaultsFromEffectiveState, parseConfig, resolveDelegateState } from "../src/config.ts";
 import { parseCommand } from "../src/index.ts";
+import { buildDelegationPolicy } from "../src/prompt.ts";
 import {
   copyRoleEntries,
   getRoleEntriesPath,
@@ -356,4 +357,31 @@ test("the command parses each entry slot and refuses the legacy first Visual Des
   // Entry 1 of Visual Design is the legacy document key; the panel owns it.
   assert.deepEqual(parseCommand("visual-design example/visual"), { kind: "invalid" });
   assert.deepEqual(parseCommand("vision 4 example/v4"), { kind: "invalid" });
+});
+
+test("the Writing family reaches the effective state and the policy block", () => {
+  const writer = { provider: "example", model: "writer" } as const;
+  const state = resolveDelegateState(defaults, activeSession, {
+    ...emptyRoleEntries(),
+    writing: [{ ...writer, thinking: { level: "high" } }],
+  });
+  assert.deepEqual(state.writing, writer);
+  assert.equal(state.source.roleEntries.writing, "global");
+  assert.deepEqual(state.thinking.writing, { level: "high" });
+  assert.equal(state.writing2, undefined);
+
+  const policy =
+    buildDelegationPolicy({
+      effective: state,
+      diagnostics: [],
+      runtimeErrors: [],
+      advisorEntries: [],
+      advisorWarnings: [],
+      advisorErrors: [],
+      modelStatuses: new Map(),
+      admissions: {},
+    } as never) ?? "";
+  assert.match(policy, /Writing: these entries are the models the user chose for text/);
+  assert.match(policy, /- Writing: exact model base: "example\/writer"/);
+  assert.match(policy, /- Writing: public prose and microcopy only/);
 });
