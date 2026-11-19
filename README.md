@@ -65,10 +65,8 @@ The block also states which configured models the host reports as `text+image`, 
 `unverified`, so image work is never handed to a model that cannot see it. An unusable entry is a
 warning and costs only that entry, never the delegation axis.
 
-Configure the entries with `/delegate vision <provider/model>`, `/delegate vision 2 …`,
-`/delegate vision 3 …`, `/delegate visual-design 2 …`, and `/delegate visual-design 3 …`; the value
-`remove` clears one, entries have no gaps, and Visual Design's first entry stays in the panel because
-it shares the legacy document key an older version still reads.
+Entries are configured from `/delegate`; [commands and status](https://yivas.github.io/pi-delegation-policy/commands-and-status/)
+lists the exact forms.
 
 Thinking is optional for each ordinary role and for every optional entry, and has three states: unset
 (the main agent chooses the level for each launch), a fixed level, or an inclusive range. Advisor thinking

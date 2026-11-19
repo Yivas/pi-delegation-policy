@@ -214,14 +214,8 @@ says so as a fact, so image work is not handed to a model that cannot see it.
 
 ### Entries
 
-```text
-/delegate vision provider/model            # entry 1
-/delegate vision 2 provider/model          # entry 2, only if entry 1 exists
-/delegate vision 3 provider/model
-/delegate visual-design 2 provider/model   # Visual Design entry 2
-/delegate visual-design 3 provider/model
-/delegate vision remove                    # clears the named entry and closes the gap
-```
+Entries fill in order and never leave a gap, and [commands and status](/commands-and-status/) lists the
+exact forms.
 
 Entries are stored in `delegation-policy.roles.json` next to the delegation defaults, one ordered list
 per family, each entry an exact `provider`/`model` plus an optional thinking policy. The file is

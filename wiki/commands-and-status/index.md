@@ -31,7 +31,10 @@ available. The editor requires TUI mode, while these arguments also work in othe
 | `/delegate visual-design 2\|3 PROVIDER/MODEL`       | Set Visual Design entry 2 or 3; `remove` clears it.                       |
 
 Optional-role entries fill in order too, and the first Visual Design entry is edited in the panel
-because it shares the legacy `uiDesign` key in the delegation document. A slot number is only `2` or
+because it shares the legacy `uiDesign` key in the delegation document. The panel has **one row for
+Visual Design and none for Vision or for entries 2 and 3**, so until those rows exist the commands
+above are the only way to configure them; a configured Vision entry appears in the injected block and
+in `launches=`, not in the panel list. A slot number is only `2` or
 `3`, so `vision 1 …` and `visual-design 1 …` are rejected: entry 1 is written without a number, and
 for Visual Design it is the panel's row. While the branch owns a family's first slot
 (`session.uiDesign` or `session.vision`), every entry command for that family is refused rather than
