@@ -173,7 +173,7 @@ example:
 D:AGG intensity=aggressive (session) | preference=standard (default) | small=provider/example-small (global)
 medium=provider/example-medium (global) | large=provider/example-large (global) | ui-design=provider/example-visual (global)
 advisor-mode=with-delegation (global); A:ON | advisor=provider/example-advisor (global) | advisor-launch=role (default)
-advisor-1=provider/example-advisor; profile=pi-delegation-policy.advisor (global)
+advisor-1=provider/example-advisor; profile=pi-delegation-policy.advisor; reading=off (global)
 thinking-small=fixed:high (global) | thinking-medium=range:low..high (session) | thinking-large=unset (default) | thinking-ui-design=unset (default)
 context=off (default) | context-reader-enabled=false (default) | context-reader-role=small (default)
 context-reader-answer-max-bytes=8192 (default); executor checked only on invocation
@@ -182,7 +182,7 @@ launches=41 (Small 12, Medium 0, Large 4, Visual Design 0, Advisor 25)
 
 The source is `default`, `global`, or `session`. The optional role tokens `ui-design=` and `advisor=`
 keep their order. `advisor=` repeats the first configured entry while `advisor-N=` reports each entry
-once with its profile, and `thinking-ui-design=` closes the thinking group. Each thinking policy is reported
+once with its profile and its reading flag, and `thinking-ui-design=` closes the thinking group. Each thinking policy is reported
 as `unset`, `fixed:<level>`, or `range:<min>..<max>`: the token says what the policy allows, not which
 level a launch used, and that per-run choice is never stored. `unset (session)` means the branch keeps
 no policy even when global defaults set one.

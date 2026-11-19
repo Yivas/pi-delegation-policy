@@ -135,7 +135,7 @@ expected behavior, the observed behavior, and a minimal sanitized configuration.
 
 ## Supported versions
 
-Only the latest published version is supported. Version `0.29.0` requires Pi `0.87.1` or later, and
+Only the latest published version is supported. Version `0.30.0` requires Pi `0.87.1` or later, and
 version `0.14.1` requires Pi `0.84.3` or later.
 
 [persistence]: https://yivas.github.io/pi-delegation-policy/configuration/#persistence-and-compatibility

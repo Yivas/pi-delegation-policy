@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.30.0 - 2026-11-19
+
 ### Added
 
 - The optional `Vision` role, for delegated work that must look at image files, with up to three
@@ -45,6 +47,8 @@
   These rows are global settings stored in `delegation-policy.roles.json`, while entry thinking stays in
   that file. A model the host reports as unable to read images still saves, and the panel warns at the
   moment of choosing.
+- The `/delegate status` line reports each Advisor entry's reading flag as `reading=on|off` inside its
+  `advisor-N=` token.
 
 - The per-role `launches=` report in `/delegate status` gains the new role codes: Vision and every
   extra Visual Design entry keep their own row, so a configured entry that was never chosen stays
@@ -87,8 +91,9 @@
   the profile.
 - The state inventory now names `delegation-policy.provider-extensions.json`, and the schema-7 file is
   described as also holding the ContextShunt configuration.
-- The status example follows the real field order and spells out its `advisor-N=` token, and the
-  `Get-Content`/`gc` declared-range form is documented for the `bash` tool as well as `powershell`.
+- The status example follows the real field order and spells out its `advisor-N=` token, including the
+  `reading=` field, and the `Get-Content`/`gc` declared-range form is documented for the `bash` tool as
+  well as `powershell`.
 - `CONTRIBUTING.md` and the pull request template list `npm run pack:check`, the pull request template
   names `consult_advisor` among the explicit launchers, the bug template asks for the operating
   system, and `CODE_OF_CONDUCT.md` is an explicit adaptation of Contributor Covenant 2.1 with a

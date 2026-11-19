@@ -8,7 +8,7 @@ thinking level, or tool permissions, and no hook launches a child. Only explicit
 authorized host executor: `context_shunt_delegate`, and `consult_advisor` when Advisor launch is
 `tool`.
 
-[Documentation](https://yivas.github.io/pi-delegation-policy/) · Version **0.29.0**
+[Documentation](https://yivas.github.io/pi-delegation-policy/) · Version **0.30.0**
 
 - Requires Pi `0.87.1` or later (`>=0.87.1`).
 - Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`). From `0.15.0` the floor is `0.87.1`.
@@ -16,7 +16,7 @@ authorized host executor: `context_shunt_delegate`, and `consult_advisor` when A
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.29.0
+pi install npm:pi-delegation-policy@0.30.0
 # restart Pi, or run /reload
 ```
 
