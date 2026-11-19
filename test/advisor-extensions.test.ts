@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,6 +113,81 @@ test("registration reports only a handle the host actually returned", async () =
     return { registerRequiredChildExtensions: () => ({ dispose: () => undefined }) };
   });
   assert.deepEqual(specifiers, ["pi-subagents/required-child-extensions"]);
+});
+
+test("the host registry fallback fails closed and never replaces another writer", async () => {
+  const key = Symbol.for("pi-subagents.required-child-extensions.v1");
+  const root = globalThis as unknown as Record<symbol, unknown>;
+  const real = join(process.cwd(), "package.json");
+  const missingLoader = async () => {
+    throw new Error("module not exposed to extensions");
+  };
+  const previous = root[key];
+  try {
+    // (a) The host API exists and refuses: nothing is created, nothing is written.
+    delete root[key];
+    const refused = await registerChildExtensions(
+      "session-a",
+      [{ id: "child-ext-1", path: real }],
+      async () => ({
+        registerRequiredChildExtensions: () => {
+          throw new Error("host refused");
+        },
+      }),
+    );
+    assert.equal(refused, undefined);
+    assert.equal(root[key], undefined);
+
+    // (b) A registry this code cannot read belongs to another writer, so it stays untouched.
+    const foreign = { version: 2, bySession: new Map([["other", []]]) };
+    root[key] = foreign;
+    assert.equal(
+      await registerChildExtensions(
+        "session-b",
+        [{ id: "child-ext-1", path: real }],
+        missingLoader,
+      ),
+      undefined,
+    );
+    assert.equal(root[key], foreign);
+
+    // (c) A real path is written canonical, and dispose never removes someone else's entry.
+    delete root[key];
+    const handle = await registerChildExtensions(
+      "session-c",
+      [{ id: "child-ext-1", path: real }],
+      missingLoader,
+    );
+    assert.equal(typeof handle?.dispose, "function");
+    const registry = root[key] as { bySession: Map<string, readonly { path: string }[]> };
+    assert.equal(registry.bySession.get("session-c")?.[0]?.path, realpathSync(real));
+    handle?.dispose();
+    assert.equal(registry.bySession.has("session-c"), false);
+
+    const taken = await registerChildExtensions(
+      "session-d",
+      [{ id: "child-ext-1", path: real }],
+      missingLoader,
+    );
+    registry.bySession.set("session-d", Object.freeze([{ id: "someone-else", path: real }]));
+    taken?.dispose();
+    assert.equal(registry.bySession.has("session-d"), true);
+
+    // (d) A bad path leaves no empty registry behind.
+    delete root[key];
+    assert.equal(
+      await registerChildExtensions(
+        "session-e",
+        [{ id: "child-ext-1", path: join(tmpdir(), "nope", "x.ts") }],
+        missingLoader,
+      ),
+      undefined,
+    );
+    assert.equal(root[key], undefined);
+  } finally {
+    if (previous === undefined) delete root[key];
+    else root[key] = previous;
+  }
 });
 
 test("an empty session list means no launch expects an id the child will not load", () => {

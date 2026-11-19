@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
 export const LAUNCH_PREFLIGHT_TIMEOUT_MS = 5_000;
@@ -61,6 +61,7 @@ export async function registerChildExtensions(
   loadModule: DynamicModuleLoader = (specifier) => import(specifier),
 ): Promise<{ dispose(): void } | undefined> {
   if (!sessionId || !extensions.length) return undefined;
+  let hostApiFound = false;
   try {
     const loaded = (await loadModule("pi-subagents/required-child-extensions")) as {
       registerRequiredChildExtensions?: (input: {
@@ -69,11 +70,75 @@ export async function registerChildExtensions(
       }) => { dispose(): void };
     };
     const register = loaded.registerRequiredChildExtensions;
-    if (typeof register !== "function") return undefined;
-    return register({
-      sessionId,
-      extensions: extensions.map(({ id, path }) => ({ id, path })),
-    });
+    // A host whose module resolves but exposes no registration is an older build over the same
+    // store, so its registry is still the right place for these entries.
+    if (typeof register === "function") {
+      hostApiFound = true;
+      return register({
+        sessionId,
+        extensions: extensions.map(({ id, path }) => ({ id, path })),
+      });
+    }
+  } catch {
+    // A host that refuses this registration is not a host without the API: never paper over it.
+    if (hostApiFound) return undefined;
+    // The host does not always expose its modules to extensions by specifier. Its registry is a
+    // process-wide symbol it reads on every launch, so the fallback below is the same state.
+  }
+  return registerChildExtensionsInHostRegistry(sessionId, extensions);
+}
+
+/** The host's own registry, at the symbol it reads on every launch. */
+const CHILD_EXTENSIONS_REGISTRY = Symbol.for("pi-subagents.required-child-extensions.v1");
+type ChildExtensionEntry = { id: string; path: string };
+type ChildExtensionsRegistry = {
+  version: 1;
+  bySession: Map<string, readonly ChildExtensionEntry[]>;
+};
+
+/**
+ * Last resort: write the host's registry directly. The shape is checked defensively and every path
+ * is canonicalised, because the host canonicalises entries registered through its own API and this
+ * path cannot borrow that check. The registry is created only when the symbol is absent. A registry
+ * that exists in an unknown shape belongs to another writer, so this path fails closed instead of
+ * replacing it and losing whatever sessions it holds.
+ */
+function registerChildExtensionsInHostRegistry(
+  sessionId: string,
+  extensions: readonly ChildExtensionEntry[],
+): { dispose(): void } | undefined {
+  try {
+    // Canonicalise first: a bad path must fail before anything touches the host's global state.
+    const canonical = Object.freeze(
+      extensions.map(({ id, path }) => {
+        // The host's own API rejects anything that is not an importable file, and this path cannot
+        // borrow that check: match it, or the child starts and fails later.
+        const real = realpathSync(path);
+        if (!statSync(real).isFile()) throw new Error(`${path} is not a file`);
+        return Object.freeze({ id, path: real });
+      }),
+    );
+    const root = globalThis as unknown as Record<symbol, unknown>;
+    const existing = root[CHILD_EXTENSIONS_REGISTRY];
+    let registry: ChildExtensionsRegistry;
+    if (existing === undefined) {
+      registry = { version: 1, bySession: new Map() };
+      root[CHILD_EXTENSIONS_REGISTRY] = registry;
+    } else if (
+      typeof existing === "object" &&
+      existing !== null &&
+      (existing as ChildExtensionsRegistry).version === 1 &&
+      (existing as ChildExtensionsRegistry).bySession instanceof Map
+    ) {
+      registry = existing as ChildExtensionsRegistry;
+    } else return undefined;
+    if (registry.bySession.has(sessionId)) return undefined;
+    registry.bySession.set(sessionId, canonical);
+    return {
+      dispose() {
+        if (registry.bySession.get(sessionId) === canonical) registry.bySession.delete(sessionId);
+      },
+    };
   } catch {
     return undefined;
   }
