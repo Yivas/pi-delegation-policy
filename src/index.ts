@@ -72,6 +72,7 @@ import {
   type ReaderThinking,
 } from "./context-shunt-reader.ts";
 import { launchSummaryText, readLaunchCounts } from "./launch-report.ts";
+import { advisorCanRead } from "./advisor-read-mode.ts";
 import {
   copyRoleEntries,
   dropRepeatedRoleEntries,
@@ -447,7 +448,7 @@ export function statusText(state: RuntimeState): string {
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
     ...effective.advisors.map(
       (entry, index) =>
-        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentNameFor(state, entry, index)}${admissionText(entry, state)} (${effective.source.advisors})`,
+        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentNameFor(state, entry, index)}; reading=${advisorCanRead(state.advisorRead, index) ? "on" : "off"}${admissionText(entry, state)} (${effective.source.advisors})`,
     ),
     ...THINKING_ROLE_KEYS.filter((role) => role !== "advisor").map(
       (role) =>
