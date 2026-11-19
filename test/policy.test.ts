@@ -1093,7 +1093,8 @@ test("an entry whose model is unavailable is not advertised as a launch", () => 
   );
   assert.match(
     checkSubagentLaunch({ agent: "worker", task: "t", model: "example/vision:low" }, state) ?? "",
-    /model "example\/vision" is not the model of any enabled role/,
+    // A configured entry this policy refuses is named as such, not as an unknown model.
+    /Vision is configured with "example\/vision" but cannot launch/,
   );
 });
 

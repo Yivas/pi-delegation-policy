@@ -303,11 +303,18 @@ function checkOrdinaryChild(
   );
   if (!candidates.length) {
     const advisor = validAdvisors(state).some(({ setting }) => reference(setting) === base);
+    // A configured entry this policy refuses is not an unknown model: say which, or the caller keeps
+    // retrying the exact form it already used.
+    const blocked = enabledRoles(state).find(
+      (role) => isOptionalEntry(role) && reference(roleSetting(state, role)) === base,
+    );
     return {
       code: "wrong-model",
-      message: advisor
-        ? `model "${base}" belongs only to an Advisor; Advisors launch with their own profile and never execute work`
-        : `model "${base}" is not the model of any enabled role (use the exact provider/model form)`,
+      message: blocked
+        ? `${ROLE_LABELS[blocked]} is configured with "${base}" but cannot launch: its model or thinking policy is unavailable, so check /delegate status`
+        : advisor
+          ? `model "${base}" belongs only to an Advisor; Advisors launch with their own profile and never execute work`
+          : `model "${base}" is not the model of any enabled role (use the exact provider/model form)`,
     };
   }
   // A role passes when its model supports the level and its policy allows it, so the level is
