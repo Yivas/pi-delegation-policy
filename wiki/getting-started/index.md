@@ -9,7 +9,7 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 - Version `0.29.0` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
 - Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
-- An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design and Advisor are optional.
+- An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design, Vision and Advisor are optional.
 
 ## 1. Install and reload
 

@@ -66,8 +66,9 @@ The block also states which configured models the host reports as `text+image`, 
 warning and costs only that entry, never the delegation axis.
 
 `/delegate` offers one row per entry (`Visual Design 2`, `Vision`, `Vision 2`, …). Each family's first
-row is always offered and the rest follow the one before, and each row is removable from its own
-selector. The same values can be set from the command line;
+row is always offered and the rest follow the one before. The rows stored in the sidecar offer
+**Remove entry (global)**; the Visual Design row backed by the delegation document uses its own
+default and disable choices. The same values can be set from the command line;
 [commands and status](https://yivas.github.io/pi-delegation-policy/commands-and-status/) lists the
 exact forms.
 
@@ -231,6 +232,12 @@ credentials, no prompts, and never the thinking level of an individual run.
   (`correct` by default, or `block`).
 - **Advisor reminder**: `delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`remind` by
   default, or `off`).
+- **Optional role entries**: `delegation-policy.roles.json`, schema 1 with one ordered list per family
+  (`uiDesign`, `vision`), each entry an exact `provider`/`model` plus an optional thinking policy.
+  Visual Design entry 1 is mirrored into the global defaults, which is what the panel and older
+  versions read.
+- **Advisor reading**: `delegation-policy.advisor-read.json`, schema 1 with one boolean per Advisor
+  slot. Absent means no Advisor opens files.
 - **Advisor threads**: `delegation-policy.advisor-threads.json`, plus
   `.lock/<parent>`, `.commit.lock`, and `.reclaim.lock` beside it. The journal is private and
   content-free.

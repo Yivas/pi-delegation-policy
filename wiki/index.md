@@ -17,14 +17,14 @@ features:
   - title: Delegation policy
     details: Set an intensity and preference, with explicit model decisions for Small, Medium, and Large.
   - title: Optional roles
-    details: Configure Visual Design and Advisor without changing the ordinary-role minimum.
+    details: Configure Visual Design, Vision and Advisor without changing the ordinary-role minimum.
   - title: Thinking policy
     details: Leave thinking unset per role, fix a level, or configure an inclusive range.
   - title: ContextShunt
     details: Protect recognized oversized context through a separate opt-in layer.
 ---
 
-`pi-delegation-policy` is a local Pi extension that guides the main agent on when delegation is worth it and which exact models to use for Small, Medium, Large, and the optional Visual Design and Advisor roles. It adds guidance to the system prompt, one ephemeral notice after an effective configuration change and an optional Advisor reminder in the request context, and nothing else unless ContextShunt is enabled: it does not route, supervise, or collect delegated work, and it never changes Pi's main model, thinking level, or tool permissions.
+`pi-delegation-policy` is a local Pi extension that guides the main agent on when delegation is worth it and which exact models to use for Small, Medium, Large, and the optional Visual Design, Vision and Advisor roles. It adds guidance to the system prompt, one ephemeral notice after an effective configuration change and an optional Advisor reminder in the request context, and nothing else unless ContextShunt is enabled: it does not route, supervise, or collect delegated work, and it never changes Pi's main model, thinking level, or tool permissions.
 
 ::: warning
 The extension injects guidance only while an active configuration is valid. It cannot guarantee that another system follows a configured role or thinking choice. ContextShunt is off by default, is not a sandbox, and does not create an automatic worker bridge.
@@ -46,7 +46,7 @@ These pages describe Version **0.29.0**.
 ## Configuration at a glance
 
 - **Intensity** — `off`, `normal`, `aggressive`, or `orchestrator`, set globally or per branch.
-- **Roles** — an exact `provider/model` reference or an explicit disabled decision for each ordinary role, plus optional Visual Design and Advisor roles.
+- **Roles** — an exact `provider/model` reference or an explicit disabled decision for each ordinary role, plus the optional Visual Design and Vision roles, each with up to three exact models, and the optional Advisor.
 - **Thinking** — an optional fixed level or inclusive range per role, or no policy so the main agent chooses for each launch.
 - **ContextShunt** — a separate opt-in layer that bounds recognized oversized context without launching a worker.
 

@@ -126,9 +126,34 @@ function capabilityText(state: RuntimeState, key: ModelConfigKey): string {
   return input.includes("image") ? "text+image" : "text only";
 }
 
-/** True when no configured role can open an image, so the block can say so as a fact. */
-function noImageCapableRole(state: RuntimeState, keys: readonly ModelConfigKey[]): boolean {
-  return !keys.some((key) => capabilityText(state, key) === "text+image");
+/** A capability reading for one Advisor slot, from the status the runtime recorded for it. */
+function advisorCapabilityText(state: RuntimeState, slot: number): string {
+  const entry = state.advisorEntries?.find((candidate) => candidate.index === slot);
+  const status = entry?.status;
+  if (!status || status.kind !== "available") return "unverified";
+  const input = status.model.input as readonly string[] | undefined;
+  if (!Array.isArray(input)) return "unverified";
+  return input.includes("image") ? "text+image" : "text only";
+}
+
+/**
+ * True only when every configured model is known to refuse images. `unverified` counts as unknown, not
+ * as blind, because the block may not claim what it cannot prove.
+ */
+function noImageCapableRoleEverywhere(state: RuntimeState, advisorEnabled: boolean): boolean {
+  const keys: ModelConfigKey[] = [
+    ...enabledOrdinaryRoles(state.effective),
+    ...optionalRoleEntryKeys("uiDesign").filter((key) => state.effective[key] !== undefined),
+    ...optionalRoleEntryKeys("vision").filter((key) => state.effective[key] !== undefined),
+  ];
+  const readings = keys.map((key) => capabilityText(state, key));
+  if (advisorEnabled)
+    readings.push(
+      ...state.effective.advisors.map((_, index) => advisorCapabilityText(state, index)),
+    );
+  // `unverified` is not evidence either: the claim is made only when every reading is resolved and
+  // all of them refuse images, so an unusable Advisor cannot turn it into a false statement.
+  return readings.length > 0 && readings.every((reading) => reading === "text only");
 }
 
 /**
@@ -446,19 +471,26 @@ ${advisorOnlyLimits(advisorTool)} ${LIMITS_RETENTION}
     )
     .join("");
   // One verified line instead of repeating the fact on every role line, so the choice between a role
-  // that sees and one that does not is decidable at a glance and says nothing it cannot prove.
+  // that sees and one that does not is decidable at a glance and says nothing it cannot prove. It
+  // lists every model the configuration holds, including an entry this policy would not launch: the
+  // line is a fact about the models, not about one launch.
+  const entryKeysOf = (family: "uiDesign" | "vision") =>
+    optionalRoleEntryKeys(family).filter((key) => effective[key] !== undefined);
   const capabilityLine = `Model input (as the host registry reports it): ${[
-    ...enabled,
-    ...visualEntries,
-    ...visionEntries,
-  ]
-    .map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`)
-    .join(" · ")}.`;
-  // A fact, not a step: with nothing configured that can open an image, no rule could fix it.
-  const imageFact =
-    optional.length && noImageCapableRole(state, [...enabled, ...visualEntries, ...visionEntries])
-      ? `\n\nNo configured role accepts image input, so image work cannot be delegated until you configure Vision with a model that reads images.`
-      : "";
+    ...enabled.map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`),
+    ...entryKeysOf("uiDesign").map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`),
+    ...entryKeysOf("vision").map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`),
+    ...(advisorEnabled
+      ? effective.advisors.map(
+          (_, index) => `Advisor ${index + 1} ${advisorCapabilityText(state, index)}`,
+        )
+      : []),
+  ].join(" · ")}.`;
+  // A fact, not a step: with nothing that can open an image, no rule could fix it, and it must be said
+  // even when no optional role is configured at all.
+  const imageFact = noImageCapableRoleEverywhere(state, advisorEnabled)
+    ? `\n\nNo configured role accepts image input, so image work cannot be delegated until you configure Vision with a model that reads images.`
+    : "";
   const enabledLine = `Enabled ordinary roles: ${enabled.map(roleName).join(", ")}.${disabled.length ? ` Disabled ordinary roles: ${disabled.map(roleName).join(", ")}.` : ""}`;
   const optionalLine = [...visualEntries, ...visionEntries].length
     ? `Optional roles: ${[...visualEntries, ...visionEntries].map((key) => ROLE_LABELS[key]).join(", ")}.`

@@ -184,8 +184,7 @@ export function parseCommand(args: string): CommandAction {
       };
     return { kind: "invalid" };
   }
-  // Optional-role entries are configured here rather than in the panel during this stage: an entry is
-  // an exact model, and giving each family its own rows belongs to the panel redesign.
+  // Optional-role entries can be set here or from the panel rows; both write the same sidecar.
   const entryFamily =
     parts[0] === "vision" ? "vision" : parts[0] === "visual-design" ? "uiDesign" : undefined;
   if (entryFamily) {
@@ -448,7 +447,7 @@ export function statusText(state: RuntimeState): string {
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
     ...effective.advisors.map(
       (entry, index) =>
-        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentNameFor(state, entry, index)}; reading=${advisorCanRead(state.advisorRead, index) ? "on" : "off"}${admissionText(entry, state)} (${effective.source.advisors})`,
+        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentNameFor(state, entry, index)}; reading=${effective.advisorLaunch === "role" && advisorCanRead(state.advisorRead, index) ? "on" : "off"}${admissionText(entry, state)} (${effective.source.advisors})`,
     ),
     ...THINKING_ROLE_KEYS.filter((role) => role !== "advisor").map(
       (role) =>

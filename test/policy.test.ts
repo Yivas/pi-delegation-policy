@@ -4498,6 +4498,9 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // gone, its cheapest-role rule now names Small, Medium and Large only, each optional role has one
   // descriptive rule instead of a gate plus a paragraph, every role line carries its verified input
   // capability, and the child-brief section states that a brief must name the files it needs.
+  // Front 46 regenerated them for the capability line, which lists every model the configuration
+  // holds, Advisors included. The fixture models declare no input, so the image fact stays unproven
+  // and is not emitted, which is why these two hashes are the previous ones.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -5396,4 +5399,48 @@ test("an Advisor on an admitted provider never claims reading", () => {
     onSaveAdvisorRead: async () => "saved",
   });
   assert.doesNotMatch(harness.panel.render(100).join("\n"), /· reads files/);
+});
+
+test("the capability line lists Advisors too, and the image fact is stated when nothing can see", () => {
+  const textOnly = (reference: ModelRef) =>
+    ({
+      ...model(reference),
+      input: ["text"],
+    }) as TestModel;
+  const multimodal = { ...model(advisor), input: ["text", "image"] } as TestModel;
+
+  const blind = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults },
+  );
+  validateRuntime(
+    context({
+      availableModels: [textOnly(small), textOnly(medium), textOnly(large), textOnly(uiDesign)],
+    }),
+    blind,
+  );
+  const blindPolicy = buildDelegationPolicy(blind) ?? "";
+  assert.match(blindPolicy, /Model input \(as the host registry reports it\): Small text only/);
+  // No optional role is configured, and the fact is still true, so it is still said.
+  assert.match(blindPolicy, /No configured role accepts image input/);
+
+  const withAdvisor = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, advisor, advisorMode: "on" },
+  );
+  validateRuntime(
+    context({
+      availableModels: [
+        textOnly(small),
+        textOnly(medium),
+        textOnly(large),
+        textOnly(uiDesign),
+        multimodal,
+      ],
+    }),
+    withAdvisor,
+  );
+  const advisorPolicy = buildDelegationPolicy(withAdvisor) ?? "";
+  assert.match(advisorPolicy, /Advisor 1 text\+image/);
+  assert.doesNotMatch(advisorPolicy, /No configured role accepts image input/);
 });

@@ -87,3 +87,19 @@ test("a flag list with holes is written as a valid file", async () => {
     await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
+
+test("the reading profile declares exactly one tool and no extensions", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const profile = await readFile(
+    new URL("../agents/pi-delegation-policy.advisor-read.md", import.meta.url),
+    "utf8",
+  );
+  const frontmatter = profile.slice(0, profile.indexOf("\n---", 3));
+  assert.match(frontmatter, /^name: pi-delegation-policy\.advisor-read$/m);
+  // One tool, and the host's ambient extensions are not inherited.
+  assert.match(frontmatter, /^tools: read$/m);
+  assert.match(frontmatter, /^extensions:$/m);
+  assert.doesNotMatch(frontmatter, /^tools: .*,/m, "no second tool");
+  assert.match(frontmatter, /^systemPromptMode: replace$/m);
+  assert.match(frontmatter, /^defaultContext: fresh$/m);
+});
