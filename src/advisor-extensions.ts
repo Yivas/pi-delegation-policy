@@ -94,10 +94,17 @@ export async function readAdvisorExtensions(
           message: `Advisor child extension ${packageSource(pkg)} is not installed and configured as admitted; it was ignored.`,
         },
       };
-    // The host accepts a short opaque id: letters, digits, dot, dash and underscore.
-    extensions.push({ id: `child-ext-${extensions.length + 1}`, path: location.entry });
+    extensions.push({ id: childExtensionId(extensions.length + 1), path: location.entry });
   }
   return { extensions };
+}
+
+/**
+ * The host accepts a short opaque id: letters, digits, dot, dash and underscore, at most 128
+ * characters. The package name is not a valid id, so position is the only stable label left.
+ */
+export function childExtensionId(position: number): string {
+  return `child-ext-${position}`;
 }
 
 /**

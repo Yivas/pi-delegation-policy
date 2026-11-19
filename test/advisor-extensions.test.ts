@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  childExtensionId,
   getAdvisorExtensionsPath,
   parseAdvisorExtensions,
   readAdvisorExtensions,
+  sessionChildExtensions,
+  setAdvisorChildExtensions,
 } from "../src/advisor-extensions.ts";
+import { registerChildExtensions } from "../src/agent-launch.ts";
 
 const VALID = { schemaVersion: 1, extensions: [{ package: "prompt-layer", version: "1.2.3" }] };
 
@@ -57,6 +61,66 @@ test("the advisor extension file accepts only exact packages in a short list", (
     },
   ])
     assert.equal(parseAdvisorExtensions(invalid), undefined, JSON.stringify(invalid));
+});
+
+test("registered ids are the short opaque form the host accepts", () => {
+  // Source of the pattern: pi-subagents `src/shared/required-child-extensions.js`, ID_PATTERN.
+  const pattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+  for (const position of [1, 2]) assert.match(childExtensionId(position), pattern);
+  assert.notEqual(childExtensionId(1), childExtensionId(2));
+  assert.doesNotMatch(childExtensionId(1), /[:@/]/);
+});
+
+test("registration reports only a handle the host actually returned", async () => {
+  const entry = { id: childExtensionId(1), path: "/abs/entry.ts" };
+  const calls: unknown[] = [];
+  const registered = await registerChildExtensions("session-1", [entry], async () =>
+    Promise.resolve({
+      registerRequiredChildExtensions: (input: unknown) => {
+        calls.push(input);
+        return { dispose: () => undefined };
+      },
+    }),
+  );
+  assert.equal(typeof registered?.dispose, "function");
+  assert.deepEqual(calls, [{ sessionId: "session-1", extensions: [entry] }]);
+
+  const unsupported = await registerChildExtensions("session-1", [entry], async () =>
+    Promise.resolve({}),
+  );
+  assert.equal(unsupported, undefined);
+
+  const throwing = await registerChildExtensions("session-1", [entry], async () => {
+    throw new Error("import failed");
+  });
+  assert.equal(throwing, undefined);
+
+  // The guard has to skip the host import, not merely end up empty because it failed in this repo.
+  const unused: string[] = [];
+  const unusedLoader = async (specifier: string) => {
+    unused.push(specifier);
+    return {};
+  };
+  assert.equal(await registerChildExtensions("", [entry], unusedLoader), undefined);
+  assert.equal(await registerChildExtensions("session-1", [], unusedLoader), undefined);
+  assert.deepEqual(unused, []);
+
+  // The specifier is the host's public subpath: a rename there must fail here, not at runtime.
+  const specifiers: string[] = [];
+  await registerChildExtensions("session-2", [entry], async (specifier) => {
+    specifiers.push(specifier);
+    return { registerRequiredChildExtensions: () => ({ dispose: () => undefined }) };
+  });
+  assert.deepEqual(specifiers, ["pi-subagents/required-child-extensions"]);
+});
+
+test("an empty session list means no launch expects an id the child will not load", () => {
+  setAdvisorChildExtensions([]);
+  assert.deepEqual(sessionChildExtensions(), []);
+  const entry = { id: childExtensionId(1), path: "/abs/entry.ts" };
+  setAdvisorChildExtensions([entry]);
+  assert.deepEqual(sessionChildExtensions(), [entry]);
+  setAdvisorChildExtensions([]);
 });
 
 test("the sidecar path sits next to the delegation document", () => {
