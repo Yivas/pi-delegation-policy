@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added
+
+- The optional `Vision` role, for delegated work that must look at image files, with up to three
+  exact models. Visual Design accepts up to three too. Entries live in
+  `delegation-policy.roles.json`, a separate versioned file, and are configured with
+  `/delegate vision [2|3] PROVIDER/MODEL` and `/delegate visual-design 2|3 PROVIDER/MODEL`.
+
+### Changed
+
+- The per-role `launches=` report in `/delegate status` gains the new role codes: Vision and every
+  extra Visual Design entry keep their own row, so a configured entry that was never chosen stays
+  visible at zero like the roles that already did.
+- Role selection no longer forwards to Visual Design: the forward reference that produced no launches
+  is gone, and the cheapest-role rule now names Small, Medium and Large only. Optional roles are
+  outside that comparison, because the reason to configure one is the model, not its price.
+- The selection section carries one capability line reporting what the host registry says each
+  configured model accepts: `text+image`, `text only`, or `unverified`. A child brief must name the
+  files and images it needs, because nothing else travels with the launch.
+- An unusable optional entry is a warning that costs only that entry, instead of turning delegation
+  into `D:ERR`. The same holds for an unsupported thinking level on an optional entry, including the
+  mirrored document `thinking.uiDesign` of Visual Design entry 1: that contract now differs from the
+  ordinary roles, where an unsupported level is still a `D:ERR` cause.
+
 ### Documentation
 
 - Remove the duplicated documentation and leave each paragraph with one home. `README.md` covers the

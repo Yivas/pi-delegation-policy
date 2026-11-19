@@ -56,16 +56,29 @@ acceptance criteria and evidence. When none can, the work stays with the main ag
 (`efficient`, `standard`, `intensive`) is a tie-break between Small and Medium only, and it is inert
 when either is disabled.
 
-Visual Design is an optional specialist. It is eligible only when the primary acceptance criterion is
-visual, behavior and data contracts stay unchanged, the surface is bounded, and no logic, data, API,
-route, architecture, or cross-system work is involved. When those conditions hold and the visual
-portion is being delegated, it takes priority over Small, Medium, and Large for that portion.
+Visual Design and Vision are optional specialist roles, and each holds up to three exact models.
+Visual Design exists because you chose those models for work whose result is judged by eye; Vision
+exists because you chose models that can read images. Neither is part of the cheapest-role comparison,
+which covers Small, Medium, and Large only. A configured role adds one rule per family and one line
+per entry: Visual Design produces or changes how something looks, Vision reports what an image shows.
+The block also states which configured models the host reports as `text+image`, `text only`, or
+`unverified`, so image work is never handed to a model that cannot see it. An unusable entry is a
+warning and costs only that entry, never the delegation axis.
 
-Thinking is optional for each ordinary role and for Visual Design, and has three states: unset (the
-main agent chooses the level for each launch), a fixed level, or an inclusive range. Advisor thinking
-is not a setting. A configured level is validated locally against that role's resolved model, and an
-unsupported level is a `D:ERR` cause. The level chosen for one run is never
-stored. With `pi-subagents` the launcher form is `model: "provider/model:LEVEL"`.
+Configure the entries with `/delegate vision <provider/model>`, `/delegate vision 2 …`,
+`/delegate vision 3 …`, `/delegate visual-design 2 …`, and `/delegate visual-design 3 …`; the value
+`remove` clears one, entries have no gaps, and Visual Design's first entry stays in the panel because
+it shares the legacy document key an older version still reads.
+
+Thinking is optional for each ordinary role and for every optional entry, and has three states: unset
+(the main agent chooses the level for each launch), a fixed level, or an inclusive range. Advisor thinking
+is not a setting. The delegation document carries thinking for the ordinary roles and for Visual
+Design entry 1 only; the sidecar is the only place that accepts thinking for the other entries, one
+policy per entry. A configured level is validated locally against that role's resolved model. For an
+ordinary role an unsupported level is a `D:ERR` cause; for an optional entry, including the mirrored
+document `thinking.uiDesign` of Visual Design entry 1, it is a warning that costs only that entry.
+The level chosen for one run is never stored. With `pi-subagents` the launcher form is
+`model: "provider/model:LEVEL"`.
 
 ## Launch check
 

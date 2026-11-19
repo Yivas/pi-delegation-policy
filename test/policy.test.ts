@@ -39,6 +39,7 @@ import {
   writeConfig,
 } from "../src/config.ts";
 import { buildDelegationPolicy, buildPolicyPreview } from "../src/prompt.ts";
+import { checkSubagentLaunch, inspectSubagentLaunch } from "../src/launch-guard.ts";
 import {
   hasRuntimeError,
   hasAdvisorError,
@@ -58,8 +59,10 @@ import {
   writeLaunchCorrectionMode,
 } from "../src/launch-correction-mode.ts";
 import { readProviderAdmissions, writeProviderAdmissions } from "../src/provider-admissions.ts";
+import { getRoleEntriesPath, readRoleEntries } from "../src/role-entries.ts";
 import {
   CURRENT_SCHEMA_VERSION,
+  emptyRoleEntries,
   type GlobalDefaults,
   type ModelRef,
   type SessionDelegateState,
@@ -71,6 +74,8 @@ const small: ModelRef = { provider: "example", model: "small" };
 const medium: ModelRef = { provider: "example", model: "medium" };
 const large: ModelRef = { provider: "example", model: "large" };
 const uiDesign: ModelRef = { provider: "example", model: "ui-design" };
+const vision: ModelRef = { provider: "example", model: "vision" };
+const visionImage: ModelRef = { provider: "example", model: "vision-image" };
 const advisor: ModelRef = { provider: "example", model: "advisor" };
 
 const defaults: GlobalDefaults = {
@@ -668,22 +673,32 @@ test("Visual Design keeps the uiDesign key and participates only when configured
     { ...defaults, uiDesign: { provider: "example", model: "missing-ui" } },
   );
   validateRuntime(context(), enabled);
-  assert.equal(statusLabel(enabled), "D:ERR");
-  assert.equal(buildDelegationPolicy(enabled), undefined);
+  // Front 46: an unusable optional entry is a warning, not a delegation failure. The entry simply
+  // cannot be launched, and every other role keeps working.
+  assert.equal(statusLabel(enabled), "D:NORM");
+  assert.match(
+    (enabled.roleWarnings ?? []).join("\n"),
+    /Visual Design model is (not available|not registered)/,
+  );
+  // Fix 46/2: the launch check refuses that entry, so the block does not advertise it as an exact
+  // launch; the warning above is where its unusable model is reported.
+  assert.doesNotMatch(buildDelegationPolicy(enabled) ?? "", /Visual Design:/);
+  assert.match(
+    buildDelegationPolicy(enabled) ?? "",
+    /Visual Design and Vision are outside that comparison/,
+  );
 
   const configured = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
   validateRuntime(context(), configured);
   const visualPolicy = buildDelegationPolicy(configured) ?? "";
   for (const expected of [
-    "delegated presentation is the primary acceptance criterion",
-    "behavior and data contracts are fixed",
-    "the surface is bounded",
-    "no logic, APIs, routes, architecture, tooling, or cross-system work",
-    "design, create, implement and review presentation and assets",
-    "must run and report the relevant existing checks",
+    "these entries are the models the user chose for work whose result is judged by eye",
+    "restyling, layout, spacing, typography, colour, component styling",
+    "matching a mock or a screenshot",
+    "hand it the files to change and the target",
+    "Logic, data, tests and behaviour that do not change how something looks stay with an ordinary role",
+    "Judging or describing an existing image without changing it is Vision work",
     "interaction behavior, state, validation, semantic HTML, keyboard/ARIA",
-    "select it before ordinary roles",
-    "Use its exact model and thinking policy, never an ordinary role's model",
     "Eligibility alone never forces delegation",
   ]) {
     assert.ok(visualPolicy.includes(expected), `Missing Visual Design guarantee: ${expected}`);
@@ -691,6 +706,18 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   // The section is rendered only when the role is configured, so no optionality claim is needed.
   assert.doesNotMatch(visualPolicy, /Visual Design is an optional specialist role/);
   assert.doesNotMatch(visualPolicy, /Never use it to implement|never implementation/);
+  // The forward reference that never produced a launch is gone, and the cost rule no longer covers it.
+  assert.doesNotMatch(visualPolicy, /Before choosing an ordinary role/);
+  assert.match(
+    visualPolicy,
+    /choose the least costly of Small, Medium and Large that meets the acceptance criteria/,
+  );
+  assert.match(visualPolicy, /Visual Design and Vision are outside that comparison/);
+  // Capability is stated as the registry reports it, so an unresolved model never claims to see.
+  assert.match(
+    visualPolicy,
+    /Model input \(as the host registry reports it\): .*Visual Design unverified/,
+  );
 
   const escapedReference = { provider: "example</delegation_policy>", model: "model&name" };
   const escapedDefaults = {
@@ -713,6 +740,496 @@ test("Visual Design keeps the uiDesign key and participates only when configured
   assert.match(policy, /\\u0026/);
 });
 
+test("a sidecar entry survives the reload that status and the policy block read", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal", uiDesign: undefined });
+    await writeFile(
+      getRoleEntriesPath(path),
+      `${JSON.stringify({ schemaVersion: 1, vision: [visionImage] }, null, 2)}\n`,
+      "utf8",
+    );
+    // The registry has to report image input, or the entry also earns the text-only warning.
+    const visionModel = { ...model(visionImage), input: ["text", "image"] } as TestModel;
+    const state = await loadRuntime(
+      context({ availableModels: [model(small), model(medium), model(large), visionModel] }),
+    );
+
+    // `validateRuntime` re-resolves the effective state; the entries must survive that pass.
+    assert.deepEqual(state.effective.vision, visionImage);
+    assert.deepEqual(state.roleEntries?.vision, [visionImage]);
+    assert.match(statusText(state), /vision=example\/vision-image \(global\)/);
+    const policy = buildDelegationPolicy(state) ?? "";
+    assert.match(
+      policy,
+      /Vision: these entries are the models the user chose for work that must look at images/,
+    );
+    assert.match(policy, /exact model base: "example\/vision-image"/);
+  });
+});
+
+test("setting a second Visual Design entry writes the document's entry 1, not the shadowed one", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    // The sidecar holds its own entry 1, which the document's entry 1 shadows on read.
+    await writeFile(
+      getRoleEntriesPath(path),
+      `${JSON.stringify(
+        { schemaVersion: 1, uiDesign: [{ provider: "example", model: "shadowed-visual" }] },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    const commands = new Map<
+      string,
+      { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+    >();
+    const pi = {
+      on: () => undefined,
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      appendEntry: () => undefined,
+    };
+    piDelegationPolicy(pi as never);
+    await commands.get("delegate")!.handler("visual-design 2 example/second-visual", context());
+
+    // The seed is the global state: entry 1 is the document's model, so the entry the document
+    // shadows is not carried over and the new value lands in slot 2.
+    const entries = (await readRoleEntries(path)).entries;
+    assert.deepEqual(
+      entries.uiDesign.map(({ model }) => model),
+      ["ui-design", "second-visual"],
+      "entry 1 is the document's model and the sidecar's shadowed one is not kept",
+    );
+    const loaded = await readConfig(path);
+    const effective = resolveDelegateState(
+      loaded.defaults,
+      { schemaVersion: CURRENT_SCHEMA_VERSION },
+      entries,
+    );
+    assert.deepEqual(effective.uiDesign, uiDesign);
+    assert.deepEqual(effective.uiDesign2, { provider: "example", model: "second-visual" });
+  });
+});
+
+test("an entry command drops the repeat its own seed creates and names the entry", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    // The sidecar holds the document's entry 1 model in its third slot, so seeding entry 1 from the
+    // document repeats a model the user never typed twice.
+    await writeFile(
+      getRoleEntriesPath(path),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          uiDesign: [
+            { provider: "example", model: "first-visual" },
+            { provider: "example", model: "second-sidecar" },
+            uiDesign,
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    const commands = new Map<
+      string,
+      { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+    >();
+    const pi = {
+      on: () => undefined,
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      appendEntry: () => undefined,
+    };
+    piDelegationPolicy(pi as never);
+    const notices: string[] = [];
+    const commandContext = context();
+    commandContext.ui.notify = (message: string) => notices.push(message);
+
+    await commands
+      .get("delegate")!
+      .handler("visual-design 2 example/second-visual", commandContext);
+
+    assert.match(notices.join("\n"), /Visual Design 2 set to example\/second-visual\./);
+    // The dropped slot is named with the reason, so a refused-looking save is never silent.
+    assert.match(
+      notices.join("\n"),
+      /Visual Design 3 was ignored: example\/ui-design is already configured in this family/,
+    );
+    const entries = (await readRoleEntries(path)).entries;
+    assert.deepEqual(
+      entries.uiDesign.map(({ model }) => model),
+      ["ui-design", "second-visual"],
+      "the written family holds no repeated model",
+    );
+  });
+});
+
+test("an invalid sidecar is a side setting reported in details, never a delegation failure", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    await writeFile(getRoleEntriesPath(path), "{ not json", "utf8");
+
+    const state = await loadRuntime(context());
+    assert.equal(statusLabel(state), "D:NORM");
+    const side = state.diagnostics.filter(({ scope }) => scope === "role-entries");
+    assert.equal(side.length, 1);
+    assert.equal(side[0]!.reportWhenOff, true);
+    assert.match(statusText(state), /details=.*Optional role entries are invalid/);
+  });
+});
+
+test("an optional entry warning shows in status and never accumulates across re-validations", () => {
+  const textOnly = { ...model(vision), input: ["text"] } as TestModel;
+  const state = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
+  state.roleEntries = { ...emptyRoleEntries(), vision: [vision] };
+  const ctx = context({
+    availableModels: [model(small), model(medium), model(large), textOnly],
+  });
+
+  // The guard reloads and re-validates the same state, so a warning must not double up.
+  validateRuntime(ctx, state);
+  validateRuntime(ctx, state);
+  const warnings = (state.roleWarnings ?? []).filter((message) =>
+    /does not accept image input/.test(message),
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(
+    statusText(state),
+    /details=.*Vision model example\/vision does not accept image input/,
+  );
+});
+
+test("an unsupported thinking level on an optional entry is a warning, never D:ERR", () => {
+  // The mirrored document key of Visual Design entry 1 follows the optional-role rule: it costs the
+  // entry, not the delegation axis.
+  const state = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, thinking: { uiDesign: { level: "max" } } },
+  );
+  validateRuntime(context(), state);
+  assert.equal(statusLabel(state), "D:NORM");
+  assert.deepEqual(state.runtimeErrors, []);
+  assert.match(
+    (state.roleWarnings ?? []).join("\n"),
+    /Visual Design thinking level "max" is not supported by example\/ui-design/,
+  );
+});
+
+test("an entry whose own thinking level its model cannot honour is not advertised", () => {
+  // `reasoning: true` without a level map supports up to `high`, so a fixed `max` policy leaves the
+  // entry nothing to launch with: advertising it would name a launch its own guard refuses.
+  const state = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
+  state.roleEntries = {
+    ...emptyRoleEntries(),
+    vision: [{ ...vision, thinking: { level: "max" } }],
+  };
+  validateRuntime(
+    context({ availableModels: [model(small), model(medium), model(large), model(vision)] }),
+    state,
+  );
+
+  assert.equal(statusLabel(state), "D:NORM");
+  assert.equal(state.modelStatuses.get("vision")?.kind, "available");
+  const policy = buildDelegationPolicy(state) ?? "";
+  assert.doesNotMatch(policy, /Exact model base: "example\/vision"/i);
+  assert.doesNotMatch(policy, /Vision: these entries are the models/);
+  const refusal = checkSubagentLaunch({ workflow: true }, state) ?? "";
+  assert.match(refusal, /Allowed launches:/);
+  assert.doesNotMatch(refusal, /Vision/);
+  // An entry that is not offered is not launchable either, by its own name or by its exact model.
+  assert.match(
+    checkSubagentLaunch({ agent: "worker", task: "t", model: "vision" }, state) ?? "",
+    /role "vision" has no thinking level its model supports/,
+  );
+  assert.match(
+    checkSubagentLaunch({ agent: "worker", task: "t", model: "example/vision:max" }, state) ?? "",
+    /Vision: the model does not support thinking "max"/,
+  );
+});
+
+test("a repeated model across the document and the sidecar is reported, not refused", () => {
+  const shared = { provider: "example", model: "shared-visual" };
+  const state = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, uiDesign: shared },
+  );
+  state.roleEntries = {
+    ...emptyRoleEntries(),
+    uiDesign: [{ provider: "example", model: "other-visual" }, shared],
+  };
+  validateRuntime(
+    context({
+      availableModels: [
+        model(small),
+        model(medium),
+        model(large),
+        model(shared),
+        model({ provider: "example", model: "other-visual" }),
+      ],
+    }),
+    state,
+  );
+
+  assert.equal(statusLabel(state), "D:NORM");
+  assert.match(
+    (state.roleWarnings ?? []).join("\n"),
+    /Visual Design 2 entry 2 repeats example\/shared-visual and was ignored\./,
+  );
+});
+
+test("the status line spells each entry as a token the launch check accepts", () => {
+  const visual2 = { provider: "example", model: "visual-2" };
+  const vision2 = { provider: "example", model: "vision-2" };
+  const state = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
+  state.roleEntries = {
+    ...emptyRoleEntries(),
+    uiDesign: [uiDesign, visual2],
+    vision: [vision, vision2],
+  };
+  validateRuntime(
+    context({
+      availableModels: [
+        model(small),
+        model(medium),
+        model(large),
+        model(uiDesign),
+        model(visual2),
+        model(vision),
+        model(vision2),
+      ],
+    }),
+    state,
+  );
+
+  const text = statusText(state);
+  assert.match(text, /ui-design-2=example\/visual-2 \(global\)/);
+  assert.match(text, /vision-2=example\/vision-2 \(global\)/);
+  // Every entry token the status prints has to be a name the launch check resolves.
+  for (const token of ["ui-design", "ui-design-2", "vision", "vision-2"]) {
+    const call = { agent: "worker", task: "t", model: token };
+    assert.equal(inspectSubagentLaunch(call, state).refusal, undefined, token);
+  }
+});
+
+test("a family with three entries keeps one brief emphasis line", () => {
+  const visual2 = { provider: "example", model: "visual-2" };
+  const visual3 = { provider: "example", model: "visual-3" };
+  const vision2 = { provider: "example", model: "vision-2" };
+  const vision3 = { provider: "example", model: "vision-3" };
+  const state = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
+  state.roleEntries = {
+    ...emptyRoleEntries(),
+    uiDesign: [uiDesign, visual2, visual3],
+    vision: [vision, vision2, vision3],
+  };
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large)].concat(
+        [uiDesign, visual2, visual3, vision, vision2, vision3].map((entry) => model(entry)),
+      ),
+    }),
+    state,
+  );
+
+  const policy = buildDelegationPolicy(state) ?? "";
+  const section = policy.slice(policy.indexOf("Child briefs:\n"), policy.indexOf("\nLaunch:"));
+  const labels = section
+    .split("\n")
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2, line.indexOf(": ", 2)));
+  assert.deepEqual(labels, ["Small", "Medium", "Large", "Visual Design", "Vision"]);
+  // The launches themselves stay one line per entry.
+  assert.match(policy, /exact model base: "example\/visual-3"/);
+  assert.match(policy, /exact model base: "example\/vision-3"/);
+});
+
+test("an entry whose model is unavailable is not advertised as a launch", () => {
+  const state = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
+  state.roleEntries = { ...emptyRoleEntries(), vision: [vision] };
+  // Registered, so the entry is recognised, but not offered by the registry.
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large)],
+      registeredModels: [model(small), model(medium), model(large), model(vision)],
+    }),
+    state,
+  );
+
+  assert.equal(state.modelStatuses.get("vision")?.kind, "unavailable");
+  assert.match((state.roleWarnings ?? []).join("\n"), /Vision model is not available\./);
+  assert.match(statusText(state), /details=.*Vision model is not available/);
+  const policy = buildDelegationPolicy(state) ?? "";
+  assert.doesNotMatch(policy, /Exact model base: "example\/vision"/i);
+  assert.doesNotMatch(policy, /Vision: these entries are the models/);
+  // The refusal that lists the accepted launches cannot offer what the guard refuses.
+  const refusal = checkSubagentLaunch({ workflow: true }, state) ?? "";
+  assert.match(refusal, /Allowed launches:/);
+  assert.match(refusal, /- Small: model/);
+  assert.doesNotMatch(refusal, /Vision/);
+  // Neither name launches it: the alias has no available model, and the exact reference is refused as
+  // the model of no launchable role instead of passing with no status to check.
+  assert.match(
+    checkSubagentLaunch({ agent: "worker", task: "t", model: "vision" }, state) ?? "",
+    /role "vision" has no available model/,
+  );
+  assert.match(
+    checkSubagentLaunch({ agent: "worker", task: "t", model: "example/vision:low" }, state) ?? "",
+    /model "example\/vision" is not the model of any enabled role/,
+  );
+});
+
+test("an entry command refuses a branch override instead of writing it to the sidecar", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    const commands = new Map<
+      string,
+      { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+    >();
+    const pi = {
+      on: () => undefined,
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      appendEntry: () => undefined,
+    };
+    piDelegationPolicy(pi as never);
+    const branch = [
+      {
+        type: "custom",
+        customType: SESSION_ENTRY_TYPE,
+        data: {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          intensity: "normal",
+          uiDesign: { provider: "example", model: "branch-visual" },
+        },
+      },
+    ];
+    const notices: string[] = [];
+    const branchContext = context({ branch });
+    branchContext.ui.notify = (message: string) => notices.push(message);
+
+    await commands.get("delegate")!.handler("visual-design 2 example/second-visual", branchContext);
+
+    assert.match(
+      notices.join("\n"),
+      /Clear the session override of Visual Design \(session\.uiDesign\)/,
+    );
+    assert.equal(
+      await readFile(getRoleEntriesPath(path), "utf8").catch(() => "absent"),
+      "absent",
+      "the shared file is left untouched",
+    );
+  });
+});
+
+test("an entry command names the model it refuses as a duplicate", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    const commands = new Map<
+      string,
+      { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+    >();
+    const pi = {
+      on: () => undefined,
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      appendEntry: () => undefined,
+    };
+    piDelegationPolicy(pi as never);
+    await commands.get("delegate")!.handler("vision example/vision", context());
+    const notices: string[] = [];
+    const duplicateContext = context();
+    duplicateContext.ui.notify = (message: string) => notices.push(message);
+
+    await commands.get("delegate")!.handler("vision 2 example/vision", duplicateContext);
+
+    assert.match(
+      notices.join("\n"),
+      /Vision 2 refused: example\/vision is already configured in this family/,
+    );
+    assert.deepEqual((await readRoleEntries(path)).entries.vision, [vision]);
+  });
+});
+
+test("removing an entry compacts the family and the next slot keeps working", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    const commands = new Map<
+      string,
+      { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+    >();
+    const pi = {
+      on: () => undefined,
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      appendEntry: () => undefined,
+    };
+    piDelegationPolicy(pi as never);
+    const commandContext = context();
+    await commands.get("delegate")!.handler("vision example/v1", commandContext);
+    await commands.get("delegate")!.handler("vision 2 example/v2", commandContext);
+    await commands.get("delegate")!.handler("vision 3 example/v3", commandContext);
+    assert.equal((await readRoleEntries(path)).entries.vision.length, 3);
+
+    await commands.get("delegate")!.handler("vision 2 remove", commandContext);
+
+    const compacted = (await readRoleEntries(path)).entries;
+    assert.deepEqual(
+      compacted.vision.map(({ model }) => model),
+      ["v1", "v3"],
+      "the entries behind the removed one move up instead of leaving a gap",
+    );
+    const effective = resolveDelegateState(
+      (await readConfig(path)).defaults,
+      { schemaVersion: CURRENT_SCHEMA_VERSION },
+      compacted,
+    );
+    assert.deepEqual(effective.vision2, { provider: "example", model: "v3" });
+    assert.equal(effective.vision3, undefined);
+
+    // The compacted slot is the one the next command addresses, so it replaces instead of appending.
+    await commands.get("delegate")!.handler("vision 2 example/v4", commandContext);
+    assert.deepEqual(
+      (await readRoleEntries(path)).entries.vision.map(({ model }) => model),
+      ["v1", "v4"],
+    );
+  });
+});
+
 test("Advisor guidance names observable checkpoints and asks for a brief in fresh context", () => {
   const bare = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" });
   validateRuntime(context(), bare);
@@ -720,7 +1237,7 @@ test("Advisor guidance names observable checkpoints and asks for a brief in fres
   assert.doesNotMatch(withoutAdvisor, /Advisor consultation:/);
   assert.doesNotMatch(withoutAdvisor, /pi-delegation-policy\.advisor/);
   assert.doesNotMatch(withoutAdvisor, /Context: (fork|fresh)/);
-  assert.match(withoutAdvisor, /Role selection:\nBefore choosing an ordinary role/);
+  assert.match(withoutAdvisor, /Role selection:\nWeigh demand, ambiguity/);
 
   const disabled = runtime(
     { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal", advisor: null },
@@ -794,31 +1311,22 @@ test("Advisor guidance names observable checkpoints and asks for a brief in fres
   );
 });
 
-test("Visual Design prioritizes eligible delegated work before ordinary roles without expanding normal or aggressive delegation", () => {
+test("an optional role is described without a forward reference and outside the cost rule", () => {
   for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity });
     validateRuntime(context(), current);
     const policy = buildDelegationPolicy(current) ?? "";
-    const visualGate = "Before choosing an ordinary role, check Visual Design below";
-    const ordinarySelection =
-      "weigh demand, ambiguity, dependencies, risk, quantity, and error/review cost";
-
-    const visualGateIndex = policy.indexOf(visualGate);
-    const ordinarySelectionIndex = policy.indexOf(ordinarySelection);
-    assert.notEqual(visualGateIndex, -1, `${intensity} must include the Visual Design gate`);
-    assert.notEqual(
-      ordinarySelectionIndex,
-      -1,
-      `${intensity} must include ordinary role selection`,
+    // The forward reference that never produced a launch is gone in every intensity, and the cost
+    // rule it used to fight now names the ordinary roles only.
+    assert.doesNotMatch(policy, /Before choosing an ordinary role/, intensity);
+    assert.doesNotMatch(policy, /select it before ordinary roles/, intensity);
+    assert.match(
+      policy,
+      /choose the least costly of Small, Medium and Large that meets the acceptance criteria/,
+      intensity,
     );
-    assert.ok(
-      visualGateIndex < ordinarySelectionIndex,
-      `${intensity} must evaluate Visual Design before ordinary role selection`,
-    );
-    assert.match(policy, /select it before ordinary roles/);
-    assert.match(policy, /Use its exact model and thinking policy/);
-    assert.match(policy, /never an ordinary role's model/);
-    assert.match(policy, /Reevaluate each phase and split mixed work/);
+    assert.match(policy, /Visual Design and Vision are outside that comparison/, intensity);
+    assert.match(policy, /Optional roles: Visual Design\./, intensity);
     assert.match(
       policy,
       /Route interaction behavior, state, validation, semantic HTML, keyboard\/ARIA/,
@@ -3103,6 +3611,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/launch-correction-mode.ts",
     "src/launch-guard.ts",
     "src/launch-report.ts",
+    "src/role-entries.ts",
     "src/prompt.ts",
     "src/provider-admissions.ts",
     "src/provider-package.ts",
@@ -3645,7 +4154,11 @@ test("partial role preferences and Visual Design preserve the ordinary-role boun
     { schemaVersion: CURRENT_SCHEMA_VERSION, small, medium: null, large: null },
   );
   validateRuntime(context({ availableModels: [model(small)] }), invalidVisual);
-  assert.equal(statusLabel(invalidVisual), "D:ERR");
+  assert.equal(statusLabel(invalidVisual), "D:NORM");
+  assert.match(
+    (invalidVisual.roleWarnings ?? []).join("\n"),
+    /Visual Design model is (not available|not registered)/,
+  );
 });
 
 test("saving effective defaults preserves ordinary nulls without session writes", async () => {
@@ -3799,7 +4312,9 @@ test("generated guidance states obligations, conditions, and exceptions in a fix
   assert.ok(purposeStart > 0 && advisorStart > purposeStart && roleStart > advisorStart);
   assert.ok(briefStart > roleStart && launchStart > briefStart && rolesStart > launchStart);
   assert.ok(resultsStart > rolesStart && policy.indexOf("Limits:\n") > resultsStart);
-  assert.match(policy, /check Visual Design below/);
+  // Front 46: the role-fit paragraph no longer forwards to Visual Design; the capability line that
+  // replaced it states what each configured model can actually read.
+  assert.match(policy, /Model input \(as the host registry reports it\): Small/);
 
   // The block must stay honest: it refuses only what a call states and cannot judge delegation.
   assert.match(policy, /refuses a call whose model, level, or Advisor profile it cannot settle/);
@@ -3962,7 +4477,11 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // describes continuing a thread with the new question and evidence and names the operative-task
   // boundary, the role-mode paragraph adds the host `resume` form with `output`/`file-only`, and the
   // retention sentence states that only the first turn carries the verified launch contract. No
-  // threshold, permission, ownership rule or role semantic changed.
+  // threshold, permission, ownership rule or role semantic changed. Front 46 regenerated them for
+  // the optional-role revision: the forward reference to Visual Design in the role-fit paragraph is
+  // gone, its cheapest-role rule now names Small, Medium and Large only, each optional role has one
+  // descriptive rule instead of a gate plus a paragraph, every role line carries its verified input
+  // capability, and the child-brief section states that a brief must name the files it needs.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -3971,8 +4490,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "24e75b0613fd25668b5c5ba7dbd2ce46596e694a2005f9ac8511285caa22784b",
-    aggressive: "36e69e1a879ba83fdc478cdd69244d14319c090ba4d816ca9f63218fc79e5814",
+    normal: "bfd301e14a256a31fcf630096e684a8c686670e1a9ef68cc30fc9932ef4de06b",
+    aggressive: "6a44d30ac083d9bf81c7e26e01e18cc6372ff5024f49f764cf949deaea8bab0f",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);
@@ -4480,5 +4999,70 @@ test("the status command reports the launch counts from the guard's own log", as
     await commands.get("delegate")?.handler("status", current);
 
     assert.match(messages.at(-1) ?? "", /launches=1 \(Small 1\)/);
+  });
+});
+
+test("the launch counts attribute a child to the optional entry code that named it", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    await writeFile(
+      getRoleEntriesPath(path),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        vision: [{ provider: "example", model: "vision-entry" }],
+      })}\n`,
+      "utf8",
+    );
+    const loaded = await loadRuntime(
+      context({
+        availableModels: [
+          model(small),
+          model(medium),
+          model(large),
+          model(uiDesign),
+          { provider: "example", id: "vision-entry", name: "vision-entry", reasoning: true },
+        ],
+      }),
+    );
+    // The code the guard records for a launch that names the entry, not a hand-written role string.
+    const check = inspectSubagentLaunch({ agent: "worker", task: "t", model: "vision" }, loaded);
+    assert.equal(check.refusal, undefined);
+    assert.deepEqual(check.children, ["vision"]);
+    await writeFile(
+      join(directory, "delegation-policy.events.jsonl"),
+      `${JSON.stringify({ event: "launch", outcome: "allowed", roles: check.children })}\n`,
+      "utf8",
+    );
+    const handlers = new Map<
+      string,
+      (event: Record<string, unknown>, ctx: ExtensionContext) => unknown
+    >();
+    const commands = new Map<
+      string,
+      { handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+    >();
+    const messages: string[] = [];
+    const pi = {
+      on: (name: string, handler: typeof handlers extends Map<string, infer H> ? H : never) =>
+        handlers.set(name, handler),
+      registerTool: () => undefined,
+      getAllTools: () => [],
+      registerCommand: (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+      ) => commands.set(name, options),
+      registerShortcut: () => undefined,
+      appendEntry: () => undefined,
+    };
+    const current = context({ branch: [] });
+    current.ui.notify = (message: string) => messages.push(message);
+
+    piDelegationPolicy(pi as never);
+    await handlers.get("session_start")?.({ type: "session_start" }, current);
+    await commands.get("delegate")?.handler("status", current);
+
+    // One row per entry code, so an entry that ran is not folded into its family's first slot.
+    assert.match(messages.at(-1) ?? "", /launches=1 \(.*Vision 1/);
   });
 });

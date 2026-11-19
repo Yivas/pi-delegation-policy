@@ -80,6 +80,7 @@ export async function openDelegateEditor(
                 ...state.runtimeErrors,
                 ...(state.advisorErrors ?? []),
                 ...(state.advisorWarnings ?? []),
+                ...(state.roleWarnings ?? []),
                 ...advisorNotices,
               ],
         hasRuntimeError: hasRuntimeError(state),
@@ -132,6 +133,8 @@ export async function openDelegateEditor(
           state.runtimeErrors = refreshed.runtimeErrors;
           state.advisorErrors = refreshed.advisorErrors;
           state.advisorWarnings = refreshed.advisorWarnings;
+          state.roleEntries = refreshed.roleEntries;
+          state.roleWarnings = refreshed.roleWarnings;
           state.advisorEntries = refreshed.advisorEntries;
           state.admissions = refreshed.admissions;
           state.launchCorrection = refreshed.launchCorrection;

@@ -96,13 +96,16 @@ following produces `D:ERR` and removes execution-delegation guidance:
 - an ordinary role with no value;
 - an enabled reference that is missing, unavailable, out of scope, or unauthenticated;
 - no enabled ordinary role;
-- a configured thinking level the role's resolved model does not support, reported with the role, the
-  level, and the model.
+- a configured thinking level an ordinary role's resolved model does not support, reported with the
+  role, the level, and the model.
 
 Disabled roles are not validated, and a configured Visual Design reference is validated whenever it
-is configured. The extension has no model fallback and never substitutes a role, model, or level. A
-policy set for a disabled or not configured role is stored and inert until that role is enabled again,
-and adds no error.
+is configured. Every optional entry is validated too, but an unusable or non-image entry is a warning
+that costs only that entry, never the delegation axis. A thinking level an optional entry's model does
+not support is one of those warnings, and so is the mirrored document `thinking.uiDesign` of Visual
+Design entry 1: neither produces `D:ERR`. The extension has no model fallback and never
+substitutes a role, model, or level. A policy set for a disabled or not configured role is stored and
+inert until that role is enabled again, and adds no error.
 
 ## Thinking
 
@@ -194,20 +197,54 @@ before launching only when a new material decision or authorization cannot be in
 session. One emphasis line and one example follow, for each enabled role only, so `off` and
 Advisor-only sessions carry no brief guidance.
 
-## Visual Design
+## Visual Design and Vision
 
-Visual Design is an optional specialist, not a fourth execution tier. Use it only when the primary
-acceptance criterion is visual or user experience, behavior and data contracts remain unchanged, the
-patch is bounded, and no logic, data flow, APIs, routes, architecture, tooling, or cross-system
-coordination is involved. When it is configured, evaluate those four conditions before ordinary-role
-selection for every task or phase. If they hold and the visual portion is being delegated by the
-main agent's decision or required by the active intensity, Visual Design takes priority over Small,
-Medium, and Large for that portion; reevaluate when the task or phase changes. The priority does not
-require delegation in `normal` or `aggressive`. It may design, create, implement, and review scoped
-presentation code and assets, including visual accessibility, and run its relevant checks. It does
-not own interaction behavior, state, validation, semantic accessibility, persistence, test
-infrastructure, or integration mechanics. When it is disabled, an enabled ordinary role handles
-eligible visual work by task fit.
+Two optional specialists, neither of them an execution tier, and each holds up to three exact models
+called entries. Visual Design exists for work whose result is judged by eye: restyling, layout,
+spacing, typography, colour, component styling, matching a mock or a screenshot. Vision exists for
+work that must look at images: screenshots, rendered pages, UI captures, diagrams, charts, scanned
+pages. Judging an image without changing it is Vision; changing how something looks is Visual Design.
+
+Neither family takes part in the cheapest-role comparison, which covers Small, Medium, and Large only:
+an entry is the model you chose, not a price to beat. With no entries a family leaves no trace in the
+injected block. With entries, the block carries one rule per family, one line per entry with its exact
+model and thinking policy, and one line stating what the host registry reports for each configured
+model: `text+image`, `text only`, or `unverified`. When nothing configured can read an image the block
+says so as a fact, so image work is not handed to a model that cannot see it.
+
+### Entries
+
+```text
+/delegate vision provider/model            # entry 1
+/delegate vision 2 provider/model          # entry 2, only if entry 1 exists
+/delegate vision 3 provider/model
+/delegate visual-design 2 provider/model   # Visual Design entry 2
+/delegate visual-design 3 provider/model
+/delegate vision remove                    # clears the named entry and closes the gap
+```
+
+Entries are stored in `delegation-policy.roles.json` next to the delegation defaults, one ordered list
+per family, each entry an exact `provider`/`model` plus an optional thinking policy. The file is
+versioned and separate because the policy document rejects unknown keys: a new key there would make
+every installed older version read the whole configuration as invalid. A missing file is the clean
+default, and a file this version cannot parse is reported and ignored rather than overwritten.
+
+Visual Design entry 1 is mirrored into the delegation document as `uiDesign` (with `thinking.uiDesign`),
+which is what the panel and older versions read. When the two disagree the document wins and the sidecar
+keeps the remaining entries, because the other writer was a version that cannot see this file: the
+document's model takes slot 1 and the sidecar's own slot 1 is not kept. Entry commands therefore write
+the global state only. They are refused while the branch owns a family's first slot, because that value
+belongs to the branch and must not become the shared default. `/delegate … remove` closes the gap, so
+the entry behind the removed one moves up into its slot. Slot 1 of Visual Design is edited in the panel;
+`vision 1 …` and `visual-design 1 …` are rejected because a slot number is only `2` or `3`.
+
+### Validation
+
+Every configured entry is validated against the host registry. An entry whose model is missing,
+outside the scope, unauthenticated, or whose thinking level is unsupported is reported as a warning
+and simply cannot be launched; it never turns delegation into `D:ERR` and never affects the other
+roles. A vision entry whose model does not accept image input is reported the same way: the role keeps
+its place, and the block already says that model cannot see.
 
 ## Advisor
 

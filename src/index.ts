@@ -73,6 +73,12 @@ import {
   type ReaderThinking,
 } from "./context-shunt-reader.ts";
 import { launchSummaryText, readLaunchCounts } from "./launch-report.ts";
+import {
+  copyRoleEntries,
+  dropRepeatedRoleEntries,
+  writeRoleEntries,
+  getRoleEntriesPath,
+} from "./role-entries.ts";
 import { advisorRoleLines, buildDelegationPolicy } from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
@@ -96,9 +102,14 @@ import {
   CONTEXT_SHUNT_MODES,
   type ContextShuntMode,
   CURRENT_SCHEMA_VERSION,
+  emptyRoleEntries,
   INTENSITIES,
   type Intensity,
   MAX_ADVISORS,
+  optionalRoleEntryKeys,
+  OPTIONAL_ROLE_ENTRY_KEYS,
+  ROLE_LABELS,
+  type OptionalRoleEntryKey,
   THINKING_ROLE_KEYS,
   type ThinkingPolicy,
 } from "./types.ts";
@@ -118,6 +129,7 @@ export type CommandAction =
   | { kind: "context-mode"; mode: ContextShuntMode }
   | { kind: "context-status" }
   | { kind: "context-allow"; token: string; maxLines: number; maxBytes: number }
+  | { kind: "role-entry"; key: OptionalRoleEntryKey; values: string[] }
   | { kind: "invalid" };
 export const ADVISOR_THREADS_ACTIONS = ["status", "recover", "reset"] as const;
 export type AdvisorThreadsAction = (typeof ADVISOR_THREADS_ACTIONS)[number];
@@ -171,6 +183,24 @@ export function parseCommand(args: string): CommandAction {
       };
     return { kind: "invalid" };
   }
+  // Optional-role entries are configured here rather than in the panel during this stage: an entry is
+  // an exact model, and giving each family its own rows belongs to the panel redesign.
+  const entryFamily =
+    parts[0] === "vision" ? "vision" : parts[0] === "visual-design" ? "uiDesign" : undefined;
+  if (entryFamily) {
+    // A bare number names a slot; anything outside 2 and 3 is a mistake, not a model.
+    if (parts[1] !== undefined && /^\d+$/.test(parts[1]) && parts[1] !== "2" && parts[1] !== "3")
+      return { kind: "invalid" };
+    const slot = parts[1] === "2" || parts[1] === "3" ? Number(parts[1]) : 1;
+    const key = (slot === 1 ? entryFamily : `${entryFamily}${slot}`) as OptionalRoleEntryKey;
+    // The first Visual Design entry is the legacy document key the panel and older versions share.
+    if (key === "uiDesign") return { kind: "invalid" };
+    const values = args
+      .trim()
+      .split(/\s+/)
+      .slice(slot === 1 ? 1 : 2);
+    return values.length ? { kind: "role-entry", key, values } : { kind: "invalid" };
+  }
   if (parts[0] === "status" && parts.length === 1) return { kind: "status" };
   if (parts[0] === "reset" && parts.length === 1) return { kind: "reset" };
   if (parts.length === 1 && INTENSITIES.includes(parts[0] as Intensity))
@@ -186,6 +216,11 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
     ...ADVISOR_LAUNCH_MODES.map((mode) => `advisor launch ${mode}`),
     ...ADVISOR_THREADS_ACTIONS.map((action) => `advisor threads ${action}`),
     ...Array.from({ length: MAX_ADVISORS }, (_, index) => `advisor ${index + 1} model`),
+    "vision model",
+    "vision 2 model",
+    "vision 3 model",
+    "visual-design 2 model",
+    "visual-design 3 model",
     "context off",
     "context observe",
     "context enforce",
@@ -384,6 +419,13 @@ export function launchRoleCodes(state: RuntimeState): LaunchChildRole[] {
   ];
 }
 
+/** Status tokens spell the slot the way the command and the docs do: `ui-design-2`, `vision-2`. */
+function entryStatusToken(key: OptionalRoleEntryKey): string {
+  const family = key.startsWith("uiDesign") ? "uiDesign" : "vision";
+  const slot = key.slice(family.length);
+  return `${family === "uiDesign" ? "ui-design" : family}${slot ? `-${slot}` : ""}`;
+}
+
 export function statusText(state: RuntimeState): string {
   const { effective } = state;
   const context = effective.contextShunt;
@@ -394,6 +436,12 @@ export function statusText(state: RuntimeState): string {
     `medium=${formatModelRef(effective.medium)} (${effective.source.medium})`,
     `large=${formatModelRef(effective.large)} (${effective.source.large})`,
     `ui-design=${effective.uiDesign ? formatModelRef(effective.uiDesign) : "disabled"} (${effective.source.uiDesign})`,
+    ...OPTIONAL_ROLE_ENTRY_KEYS.filter(
+      (key) => key !== "uiDesign" && effective[key] !== undefined,
+    ).map(
+      (key) =>
+        `${entryStatusToken(key)}=${formatModelRef(effective[key]!)} (${effective.source.roleEntries[key]})`,
+    ),
     `advisor-mode=${effective.advisorMode} (${effective.source.advisorMode}); ${advisorStatusLabel(state)}`,
     `advisor=${effective.advisor ? formatModelRef(effective.advisor) : "disabled"} (${effective.source.advisor})`,
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
@@ -420,6 +468,7 @@ export function statusText(state: RuntimeState): string {
             ...state.runtimeErrors,
             ...(state.advisorErrors ?? []),
             ...(state.advisorWarnings ?? []),
+            ...(state.roleWarnings ?? []),
           ].filter((message) => !diagnosticMessages.includes(message)),
         ];
   if (errors.length) details.push(`details=${errors.join("; ")}`);
@@ -1327,6 +1376,123 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           );
           return;
         }
+        if (action.kind === "role-entry") {
+          const family = action.key.startsWith("uiDesign") ? "uiDesign" : "vision";
+          const current = await loadRuntime(ctx);
+          if (current.diagnostics.some(({ scope }) => scope === "role-entries")) {
+            ctx.ui.notify(
+              `Fix ${getRoleEntriesPath()} before adding entries; it is currently ignored.`,
+              "error",
+            );
+            return;
+          }
+          // A branch value applies to this session only and cannot be written to the global sidecar,
+          // so an entry command refuses instead of persisting it as "the global default".
+          const firstKey = optionalRoleEntryKeys(family)[0]!;
+          if (Object.hasOwn(current.session, firstKey)) {
+            ctx.ui.notify(
+              `Clear the session override of ${ROLE_LABELS[firstKey]} (session.${firstKey}) before configuring the global entries.`,
+              "error",
+            );
+            return;
+          }
+          // Seed from the global state only: entry 1 of Visual Design may live only in the policy
+          // document, so a sidecar-only seed would drop it, and the resolved state may carry this
+          // branch's own values, which must never reach the shared file.
+          const index = optionalRoleEntryKeys(family).indexOf(action.key);
+          const documentEntry = current.global.uiDesign;
+          let next = copyRoleEntries(current.roleEntries ?? emptyRoleEntries());
+          if (family === "uiDesign" && documentEntry) {
+            const first = next.uiDesign[0];
+            if (
+              !first ||
+              first.provider !== documentEntry.provider ||
+              first.model !== documentEntry.model
+            )
+              next.uiDesign = [{ ...documentEntry }, ...next.uiDesign.slice(1)];
+          }
+          // That seed alone can hold one `provider/model` twice: the document's entry 1 carries the
+          // model a later sidecar entry already holds, and the writer rejects the list its reader would
+          // refuse. The earlier slot keeps the model and the dropped entries are named below.
+          const seeded = dropRepeatedRoleEntries(next);
+          next = seeded.entries;
+          const dropped = seeded.dropped;
+          const value = action.values.length === 1 ? action.values[0] : undefined;
+          const slash = value?.indexOf("/") ?? -1;
+          if (!value) {
+            ctx.ui.notify("Use one exact provider/model, or remove.", "error");
+            return;
+          }
+          if (value === "remove") {
+            if (index >= next[family].length) {
+              ctx.ui.notify(`${ROLE_LABELS[action.key]} is not configured.`, "error");
+              return;
+            }
+            next[family].splice(index, 1);
+          } else {
+            if (slash <= 0 || slash === value.length - 1) {
+              ctx.ui.notify("Use one exact provider/model, or remove.", "error");
+              return;
+            }
+            // No gaps: an entry may replace or append, never leave a hole behind it.
+            if (index > next[family].length) {
+              ctx.ui.notify(
+                `Configure ${ROLE_LABELS[optionalRoleEntryKeys(family)[index - 1]!]} first.`,
+                "error",
+              );
+              return;
+            }
+            const entry = { provider: value.slice(0, slash), model: value.slice(slash + 1) };
+            if (next[family][index]) next[family][index] = entry;
+            else next[family].push(entry);
+            // A value the user stated twice in one family is a mistake the seed drop above cannot
+            // explain, so it is refused with the value the user typed instead of being dropped.
+            const occurrences = next[family].filter(
+              (candidate) => `${candidate.provider}/${candidate.model}` === value,
+            ).length;
+            if (occurrences > 1) {
+              ctx.ui.notify(
+                `${ROLE_LABELS[action.key]} refused: ${value} is already configured in this family, and one family cannot hold the same model twice; the previous entries were left in place.`,
+                "error",
+              );
+              return;
+            }
+          }
+          const result = await writeRoleEntries(next);
+          if (result === "saved" || result === "unchanged") {
+            const state = rememberRuntime(await loadRuntime(ctx));
+            updateStatus(ctx, state);
+            // An entry dropped from the seed is reported: the list on disk is not the list the user
+            // built, and silence would leave a different model in the family unexplained.
+            const ignored = dropped.length
+              ? ` ${dropped
+                  .map(
+                    (entry) =>
+                      `${ROLE_LABELS[entry.key]} was ignored: ${entry.provider}/${entry.model} is already configured in this family, and one family cannot hold the same model twice.`,
+                  )
+                  .join(" ")}`
+              : "";
+            ctx.ui.notify(
+              value === "remove"
+                ? `${ROLE_LABELS[action.key]} removed.${ignored}`
+                : `${ROLE_LABELS[action.key]} set to ${value}.${ignored}`,
+              "info",
+            );
+          } else if (result === "unknown-state") {
+            ctx.ui.notify(
+              `Could not read ${getRoleEntriesPath()}; the previous file was left in place.`,
+              "error",
+            );
+          } else {
+            // The writer refuses any list its own reader would reject, so nothing invalid reaches the
+            // disk; the value the user stated is checked above, so this is an unexpected state.
+            ctx.ui.notify(
+              "Optional role entry refused; the previous entries were left in place.",
+              "error",
+            );
+          }
+          return;
+        }
         if (action.kind === "reset") {
           invalidateReaderAuthorization();
           const state = rememberRuntime(await resetSession(pi, ctx));
@@ -1464,7 +1630,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           return;
         }
         ctx.ui.notify(
-          "Usage: /delegate [off|normal|aggressive|orchestrator|status|reset|advisor off|on|with-delegation|context off|observe|enforce|status|allow TOKEN MAX_LINES MAX_BYTES]",
+          "Usage: /delegate [off|normal|aggressive|orchestrator|status|reset|advisor off|on|with-delegation|vision [2|3] PROVIDER/MODEL|visual-design 2|3 PROVIDER/MODEL|context off|observe|enforce|status|allow TOKEN MAX_LINES MAX_BYTES]",
           "error",
         );
       },

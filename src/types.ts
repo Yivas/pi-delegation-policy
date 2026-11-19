@@ -14,23 +14,68 @@ export const PREFERENCES = ["efficient", "standard", "intensive"] as const;
 export type Preference = (typeof PREFERENCES)[number];
 export const MODEL_ROLES = ["small", "medium", "large"] as const;
 export type ModelRole = (typeof MODEL_ROLES)[number];
-export type ModelConfigKey = ModelRole | "uiDesign" | "advisor";
-export type OptionalRoleKey = "uiDesign" | "advisor";
+/**
+ * Optional roles keep up to three entries each. Every entry is its own key, so the launch guard, the
+ * thinking policy and the status line keep addressing one concrete model instead of a list index that
+ * a removal in the panel would silently shift.
+ */
+export const OPTIONAL_ROLE_FAMILIES = ["uiDesign", "vision"] as const;
+export type OptionalRoleFamily = (typeof OPTIONAL_ROLE_FAMILIES)[number];
+export const OPTIONAL_ROLE_ENTRY_LIMIT = 3 as const;
+export const OPTIONAL_ROLE_ENTRY_KEYS = [
+  "uiDesign",
+  "uiDesign2",
+  "uiDesign3",
+  "vision",
+  "vision2",
+  "vision3",
+] as const;
+export type OptionalRoleEntryKey = (typeof OPTIONAL_ROLE_ENTRY_KEYS)[number];
+/** The entry keys of one family, in preference order. */
+export function optionalRoleEntryKeys(family: OptionalRoleFamily): OptionalRoleEntryKey[] {
+  return OPTIONAL_ROLE_ENTRY_KEYS.filter((key) => key.startsWith(family));
+}
+export type ModelConfigKey = ModelRole | OptionalRoleEntryKey | "advisor";
 export const ROLE_LABELS: Record<ModelConfigKey, string> = {
   small: "Small",
   medium: "Medium",
   large: "Large",
   uiDesign: "Visual Design",
+  uiDesign2: "Visual Design 2",
+  uiDesign3: "Visual Design 3",
+  vision: "Vision",
+  vision2: "Vision 2",
+  vision3: "Vision 3",
   advisor: "Advisor",
 };
 
 export type ModelRef = { provider: string; model: string };
 export type OrdinaryRoleSetting = ModelRef | null;
+/**
+ * Keys a saved document may carry a thinking policy for. Deliberately narrower than
+ * `ModelConfigKey`: the policy document rejects unknown keys, so a new key there would break every
+ * older reader. Entry thinking lives in its own file.
+ */
 export const THINKING_ROLE_KEYS: readonly ModelConfigKey[] = [
   ...MODEL_ROLES,
   "uiDesign",
   "advisor",
 ];
+/** One configured entry of an optional role: an exact model plus its optional thinking policy. */
+export type RoleEntry = ModelRef & { thinking?: ThinkingPolicy };
+export type RoleEntries = Record<OptionalRoleFamily, RoleEntry[]>;
+/**
+ * An entry the merge dropped because the same provider/model already occupies an earlier slot of its
+ * family. The sidecar rejects that list, so it can only appear when the document and the sidecar each
+ * contribute one of the two entries.
+ */
+export type RepeatedRoleEntry = {
+  key: OptionalRoleEntryKey;
+  /** The 1-based position the dropped entry held in the merged family. */
+  index: number;
+  provider: string;
+  model: string;
+};
 /** Level names the host recognizes. Single canonical copy for the whole product. */
 export const THINKING_LEVEL_NAMES = [
   "off",
@@ -125,6 +170,15 @@ export type EffectiveDelegateState = {
   medium?: OrdinaryRoleSetting;
   large?: OrdinaryRoleSetting;
   uiDesign?: ModelRef;
+  uiDesign2?: ModelRef;
+  uiDesign3?: ModelRef;
+  vision?: ModelRef;
+  vision2?: ModelRef;
+  vision3?: ModelRef;
+  /** The configured entries per optional role, in preference order. */
+  roleEntries: RoleEntries;
+  /** Entries the document/sidecar merge dropped; reported as warnings, never as a failure. */
+  repeatedRoleEntries: RepeatedRoleEntry[];
   advisor?: ModelRef;
   advisors: AdvisorSetting[];
   advisorLaunch: AdvisorLaunch;
@@ -138,6 +192,7 @@ export type EffectiveDelegateState = {
     medium: ValueSource;
     large: ValueSource;
     uiDesign: ValueSource;
+    roleEntries: Record<OptionalRoleEntryKey, ValueSource>;
     advisor: ValueSource;
     advisorMode: ValueSource;
     advisors: ValueSource;
@@ -154,6 +209,9 @@ export type ModelStatus =
 
 export function emptyGlobalDefaults(): GlobalDefaults {
   return { schemaVersion: CURRENT_SCHEMA_VERSION };
+}
+export function emptyRoleEntries(): RoleEntries {
+  return { uiDesign: [], vision: [] };
 }
 export function emptySessionState(): SessionDelegateState {
   return { schemaVersion: CURRENT_SCHEMA_VERSION };

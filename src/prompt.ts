@@ -3,18 +3,21 @@ import {
   enabledOrdinaryRoles,
   hasRuntimeError,
   hasAdvisorError,
+  isAdvertisedOptionalEntry,
   validAdvisors,
   isAdvisorEnabled,
   isRoleDisabled,
   type RuntimeState,
 } from "./runtime.ts";
-import { ROLE_LABELS } from "./types.ts";
+import { OPTIONAL_ROLE_FAMILIES, optionalRoleEntryKeys, ROLE_LABELS } from "./types.ts";
 import type {
   AdvisorLaunch,
   EffectiveDelegateState,
   ModelConfigKey,
   ModelRef,
   ModelRole,
+  OptionalRoleEntryKey,
+  OptionalRoleFamily,
   Preference,
   ThinkingPolicy,
 } from "./types.ts";
@@ -44,9 +47,14 @@ const USER_RESTRICTIONS =
 const DELEGATION_RESTRICTIONS =
   "User restrictions on launches or destructive operations still apply; delegation never authorizes execution.";
 
-/** The Visual Design gate is a forward reference, so it is emitted only when that role is configured. */
-function roleFitPolicy(visualDesign: boolean): string {
-  return `${visualDesign ? "Before choosing an ordinary role, check Visual Design below. Otherwise weigh" : "Weigh"} demand, ambiguity, dependencies, risk, quantity, and error/review cost together, and choose the least costly enabled role that meets the acceptance criteria and evidence; if none can, keep the work. A more capable enabled role may cover a disabled role's work on the same acceptance and evidence; never choose a less capable one because it is the only one enabled. Agent type does not determine the model role.`;
+/**
+ * Cost is scoped to the ordinary roles on purpose: an optional role exists because the user chose a
+ * particular model for presentation or for reading images, so comparing those by price argues against
+ * the only reason they are configured. This replaced a forward reference to Visual Design that never
+ * produced a launch and fought this very sentence.
+ */
+function roleFitPolicy(): string {
+  return "Weigh demand, ambiguity, dependencies, risk, quantity, and error/review cost together, and choose the least costly of Small, Medium and Large that meets the acceptance criteria and evidence; if none can, keep the work. Visual Design and Vision are outside that comparison: their reason is the model the user chose, not its price. A more capable enabled role may cover a disabled role's work on the same acceptance and evidence; never choose a less capable one because it is the only one enabled. Agent type does not determine the model role.";
 }
 
 const SMALL_ROLE_POLICY =
@@ -60,38 +68,66 @@ const LARGE_COVERS_MEDIUM_POLICY =
 const LARGE_CAPABLE_POLICY =
   "Large: planning, unresolved ambiguity, cross-module synthesis, stuck diagnosis, and defined execution a disabled role would take, only on the same acceptance and evidence; as the capable enabled candidate it is not limited to exceptional blockers. Diagnose before patching; reevaluate fit after planning.";
 
+/** One rule per optional role, in the same shape: what it does, when to use it, what the brief carries. */
 const VISUAL_DESIGN_POLICY =
-  "Visual Design: when the delegated presentation is the primary acceptance criterion, behavior and data contracts are fixed, the surface is bounded, and no logic, APIs, routes, architecture, tooling, or cross-system work is needed, select it before ordinary roles. It may design, create, implement and review presentation and assets, including contrast and focus visibility, and must run and report the relevant existing checks. Use its exact model and thinking policy, never an ordinary role's model. Reevaluate each phase and split mixed work.";
-const VISUAL_DESIGN_ROUTING_LEGACY =
+  "Visual Design: these entries are the models the user chose for work whose result is judged by eye — restyling, layout, spacing, typography, colour, component styling, or matching a mock or a screenshot. Use the first entry that fits, hand it the files to change and the target (the mock or screenshot path, or a written description), and let it run the existing checks. Logic, data, tests and behaviour that do not change how something looks stay with an ordinary role. Judging or describing an existing image without changing it is Vision work.";
+const VISION_POLICY =
+  "Vision: these entries are the models the user chose for work that must look at images — screenshots, rendered pages, UI captures, diagrams, charts or scanned pages. Use the first entry that fits whenever the answer depends on what an image shows and cannot be taken from text; an entry marked text only cannot do this. A child sees only its brief, so name every image path and what to extract from it, and ask the child to separate what it saw from what it inferred and to say what it could not read. Changing how something looks is Visual Design work.";
+const OPTIONAL_ROLE_ROUTING_LEGACY =
   "Route interaction behavior, state, validation, semantic HTML, keyboard/ARIA, authentication, permissions, persistence, test infrastructure and behavior tests to an enabled ordinary role that fits, or keep them with the main agent. Eligibility alone never forces delegation.";
-const VISUAL_DESIGN_ROUTING_ORCHESTRATOR =
+const OPTIONAL_ROLE_ROUTING_ORCHESTRATOR =
   "Route interaction behavior, state, validation, semantic HTML, keyboard/ARIA, authentication, permissions, persistence, test infrastructure and behavior tests to a capable enabled ordinary role. Apply the all-transferable rule: you retain cross-domain integration responsibility and final acceptance, but delegate transferable integration mechanics and detailed review.";
 
-const CHILD_BRIEF_POLICY = `Write each child's brief before launching it: bounded outcome and owner; decided context and invariants; scope, permissions and exclusions; verification and acceptance; return format and destination; stop and ask conditions. An unresolved decision stays a question the child may answer, never a settled invariant. Forbid edits during a review or search, implementation during a plan, and changes outside the scope. Tests establish named expected behaviors, not a coverage count. Apply this to host workers and reviewers: an agent name does not stand in for the model role or grant permission. A missing heading alone never blocks a launch; ask only when a material decision or authorization cannot be inferred from the session.`;
+const CHILD_BRIEF_POLICY = `Write each child's brief before launching it: bounded outcome and owner; decided context and invariants; scope, permissions and exclusions; verification and acceptance; return format and destination; stop and ask conditions. An unresolved decision stays a question the child may answer, never a settled invariant. Forbid edits during a review or search, implementation during a plan, and changes outside the scope. Tests establish named expected behaviors, not a coverage count. Apply this to host workers and reviewers: an agent name does not stand in for the model role or grant permission. A child sees only the brief: if the answer depends on a file or an image, name its path, because nothing you did not write travels with the launch. A missing heading alone never blocks a launch; ask only when a material decision or authorization cannot be inferred from the session.`;
 
-/** One short emphasis and example per role; only enabled roles are rendered. */
-const BRIEF_ROLE_EMPHASIS: Record<ModelConfigKey, string> = {
+/** One short emphasis and example per role family; only enabled roles are rendered. */
+const BRIEF_ROLE_EMPHASIS: Record<ModelRole | OptionalRoleFamily | "advisor", string> = {
   small: `defined execution. "Add SameSite=Lax in session.ts; keep expiry; return the patch and the attribute test; stop if expiry must change."`,
   medium: `the open question the child must resolve. "Compare the three stores and recommend one; return the trade-offs and the files each step touches; do not change the public API."`,
   large: `unconverged work: failure evidence, hypotheses tested, stop condition. "Diagnose the contradictory failures in both modules; return the cause and the smallest fix; stop before editing."`,
   uiDesign: `presentation only, never logic, state, ARIA or keyboard. "Restyle header spacing only; keep markup, copy and logic; return responsive evidence; stop if behavior must change."`,
+  vision: `image evidence only, never production or logic. "Read shots/home.png and shots/pricing.png; list every control whose label is clipped and where it sits; say what you could not read; do not change files."`,
   advisor: `advice only, never implementation or tool checks. "Keep sliding expiry? Return the risks and the indispensable missing facts; do not implement."`,
 };
 
 function childBriefPolicy(
   enabled: readonly ModelRole[],
-  visualDesign: boolean,
+  optional: readonly OptionalRoleEntryKey[],
   advisor: boolean,
 ): string {
-  const keys: ModelConfigKey[] = [
+  // One line per family: the entries of a family share their brief, so three entries do not print
+  // the same emphasis three times.
+  const families = OPTIONAL_ROLE_FAMILIES.filter((family) =>
+    optional.some((key) => key.startsWith(family)),
+  );
+  const keys: Array<ModelRole | OptionalRoleFamily | "advisor"> = [
     ...enabled,
-    ...(visualDesign ? (["uiDesign"] as const) : []),
+    ...families,
     ...(advisor ? (["advisor"] as const) : []),
   ];
   return [
     CHILD_BRIEF_POLICY,
     ...keys.map((key) => `- ${ROLE_LABELS[key]}: ${BRIEF_ROLE_EMPHASIS[key]}`),
   ].join("\n");
+}
+
+/**
+ * What a model can actually read, taken from the host registry: the one fact that decides whether image
+ * work can go to a role at all. Unknown is not the same as text only, so an entry whose provider has not
+ * loaded says so instead of silently claiming it cannot see.
+ */
+function capabilityText(state: RuntimeState, key: ModelConfigKey): string {
+  const status = state.modelStatuses.get(key);
+  if (status?.kind !== "available") return "unverified";
+  // A registry entry without a declared input list proves nothing either way.
+  const input = status.model.input as readonly string[] | undefined;
+  if (!Array.isArray(input)) return "unverified";
+  return input.includes("image") ? "text+image" : "text only";
+}
+
+/** True when no configured role can open an image, so the block can say so as a fact. */
+function noImageCapableRole(state: RuntimeState, keys: readonly ModelConfigKey[]): boolean {
+  return !keys.some((key) => capabilityText(state, key) === "text+image");
 }
 
 /**
@@ -312,8 +348,8 @@ export function advisorRoleLines(state: RuntimeState): string {
 }
 
 /** The role rules are generated only for the enabled subset; a disabled role never gains a rule. */
-function roleRules(enabled: readonly ModelRole[], visualDesign: boolean): string {
-  const rules = [roleFitPolicy(visualDesign)];
+function roleRules(enabled: readonly ModelRole[]): string {
+  const rules = [roleFitPolicy()];
   if (enabled.includes("small")) rules.push(SMALL_ROLE_POLICY);
   if (enabled.includes("medium")) rules.push(MEDIUM_ROLE_POLICY);
   if (enabled.includes("large")) {
@@ -348,7 +384,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
     return `<delegation_policy>
 <!-- pi-delegation-policy:owned -->
 Purpose
-Delegation intensity: ${effective.intensity}${hasRuntimeError(state) ? " (unavailable)" : ""}. Advisor: on. Only consultation guidance is active: this policy requests no execution delegation, ordinary or Visual Design role selection, or ContextShunt. Keep execution with the main agent unless other applicable instructions require otherwise. Host permissions and user restrictions still apply.${advisorSection}
+Delegation intensity: ${effective.intensity}${hasRuntimeError(state) ? " (unavailable)" : ""}. Advisor: on. Only consultation guidance is active: this policy requests no execution delegation, optional role selection, or ContextShunt. Keep execution with the main agent unless other applicable instructions require otherwise. Host permissions and user restrictions still apply.${advisorSection}
 
 Roles:${advisorRoleLine}
 
@@ -368,18 +404,52 @@ ${advisorOnlyLimits(advisorTool)} ${LIMITS_RETENTION}
   const orchestrator = effective.intensity === "orchestrator";
   const ownership = orchestrator ? "" : ` ${LEGACY_OWNERSHIP}`;
   const restrictions = advisorEnabled ? USER_RESTRICTIONS : DELEGATION_RESTRICTIONS;
-  const visualDesign = effective.uiDesign
-    ? `\n\n${VISUAL_DESIGN_POLICY} ${orchestrator ? VISUAL_DESIGN_ROUTING_ORCHESTRATOR : VISUAL_DESIGN_ROUTING_LEGACY}`
-    : "";
-  const visualDesignLine = effective.uiDesign
-    ? `\n${roleLine("Visual Design", effective.uiDesign, roleThinking(effective.thinking.uiDesign))}`
-    : "";
+  // One paragraph and one line per configured entry; an unconfigured family leaves no trace, and an
+  // entry whose model is not available is left out because the launch check refuses it.
+  const entryKeys = (family: "uiDesign" | "vision") =>
+    optionalRoleEntryKeys(family).filter(
+      (key) => effective[key] !== undefined && isAdvertisedOptionalEntry(state, key),
+    );
+  const visualEntries = entryKeys("uiDesign");
+  const visionEntries = entryKeys("vision");
+  const optionalRules = [
+    ...(visualEntries.length
+      ? [
+          `${VISUAL_DESIGN_POLICY} ${orchestrator ? OPTIONAL_ROLE_ROUTING_ORCHESTRATOR : OPTIONAL_ROLE_ROUTING_LEGACY}`,
+        ]
+      : []),
+    ...(visionEntries.length ? [VISION_POLICY] : []),
+  ];
+  const optional = optionalRules.length ? `\n\n${optionalRules.join("\n\n")}` : "";
   const roleLines = enabled
     .map((role) =>
       roleLine(roleName(role), effective[role] as ModelRef, roleThinking(effective.thinking[role])),
     )
     .join("\n");
+  const optionalRoleLines = [...visualEntries, ...visionEntries]
+    .map(
+      (key) =>
+        `\n${roleLine(ROLE_LABELS[key], effective[key] as ModelRef, roleThinking(effective.thinking[key]))}`,
+    )
+    .join("");
+  // One verified line instead of repeating the fact on every role line, so the choice between a role
+  // that sees and one that does not is decidable at a glance and says nothing it cannot prove.
+  const capabilityLine = `Model input (as the host registry reports it): ${[
+    ...enabled,
+    ...visualEntries,
+    ...visionEntries,
+  ]
+    .map((key) => `${ROLE_LABELS[key]} ${capabilityText(state, key)}`)
+    .join(" · ")}.`;
+  // A fact, not a step: with nothing configured that can open an image, no rule could fix it.
+  const imageFact =
+    optional.length && noImageCapableRole(state, [...enabled, ...visualEntries, ...visionEntries])
+      ? `\n\nNo configured role accepts image input, so image work cannot be delegated until you configure Vision with a model that reads images.`
+      : "";
   const enabledLine = `Enabled ordinary roles: ${enabled.map(roleName).join(", ")}.${disabled.length ? ` Disabled ordinary roles: ${disabled.map(roleName).join(", ")}.` : ""}`;
+  const optionalLine = [...visualEntries, ...visionEntries].length
+    ? `Optional roles: ${[...visualEntries, ...visionEntries].map((key) => ROLE_LABELS[key]).join(", ")}.`
+    : "";
 
   return `<delegation_policy>
 <!-- pi-delegation-policy:owned -->
@@ -390,18 +460,19 @@ Do it yourself?
 Intensity: ${effective.intensity}. ${intensityPolicy}${orchestrator ? "" : ` ${TINY_EDIT}`}${ownership} ${restrictions}${advisorSection}
 
 Role selection:
-${roleRules(enabled, Boolean(effective.uiDesign))}
-Model preference: ${effective.preference}. ${preferenceGuidance(effective.preference, enabled)}${visualDesign}
+${roleRules(enabled)}
+Model preference: ${effective.preference}. ${preferenceGuidance(effective.preference, enabled)}
+${capabilityLine}${optional}${imageFact}
 
 Child briefs:
-${childBriefPolicy(enabled, Boolean(effective.uiDesign), advisorEnabled)}
+${childBriefPolicy(enabled, [...visualEntries, ...visionEntries], advisorEnabled)}
 
 Launch:
 ${launchPolicy(correction)}
 
 Roles:
-${enabledLine}
-${roleLines}${visualDesignLine}${advisorRoleLine}
+${enabledLine}${optionalLine ? `\n${optionalLine}` : ""}
+${roleLines}${optionalRoleLines}${advisorRoleLine}
 
 Results:
 ${RESULTS_POLICY}${orchestrator ? ORCHESTRATOR_RESULTS : ""}

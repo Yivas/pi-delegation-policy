@@ -34,6 +34,11 @@ const ROLE_CODES = {
   medium: true,
   large: true,
   uiDesign: true,
+  uiDesign2: true,
+  uiDesign3: true,
+  vision: true,
+  vision2: true,
+  vision3: true,
   advisor: true,
   unknown: true,
 } satisfies Record<LaunchChildRole, true>;

@@ -11,17 +11,21 @@ import { DEFAULT_LAUNCH_CORRECTION_MODE } from "./launch-correction-mode.ts";
 import {
   enabledOrdinaryRoles,
   hasRuntimeError,
+  isAdvertisedOptionalEntry,
   isAdvisorEnabled,
+  isOptionalEntryModelUsable,
   isRoleEnabled,
   type RuntimeState,
   validAdvisors,
 } from "./runtime.ts";
 import {
+  OPTIONAL_ROLE_ENTRY_KEYS,
   ROLE_LABELS,
   THINKING_LEVEL_NAMES,
   type AdvisorSetting,
   type ModelRef,
   type ModelRole,
+  type OptionalRoleEntryKey,
   type ThinkingLevelName,
   type ThinkingPolicy,
 } from "./types.ts";
@@ -47,13 +51,30 @@ const ROLE_ALIASES: ReadonlyMap<string, { role: Role } | { advisor: number }> = 
   ["visual-design", { role: "uiDesign" }],
   ["ui-design", { role: "uiDesign" }],
   ["uidesign", { role: "uiDesign" }],
+  ["visual-design-2", { role: "uiDesign2" }],
+  ["visual-design-3", { role: "uiDesign3" }],
+  // `/delegate status` prints the family as `ui-design-2`, so that spelling launches too.
+  ["ui-design-2", { role: "uiDesign2" }],
+  ["ui-design-3", { role: "uiDesign3" }],
+  ["vision", { role: "vision" }],
+  ["vision-2", { role: "vision2" }],
+  ["vision-3", { role: "vision3" }],
   ["advisor", { advisor: 0 }],
   ["advisor-1", { advisor: 0 }],
   ["advisor-2", { advisor: 1 }],
   ["advisor-3", { advisor: 2 }],
 ]);
 
-type Role = ModelRole | "uiDesign";
+type Role = ModelRole | OptionalRoleEntryKey;
+
+/**
+ * A stated role name is matched case-insensitively and with spaces for dashes, because the block
+ * prints labels such as "Vision 2" or "Visual Design 2" while the alias set is spelled in dashes.
+ * Every dash spelling keeps working unchanged.
+ */
+function roleAlias(base: string): { role: Role } | { advisor: number } | undefined {
+  return ROLE_ALIASES.get(base.trim().toLowerCase().replace(/\s+/g, "-"));
+}
 
 /** Closed causes a launch is refused for; the local log records the code, never the message. */
 export type LaunchRefusalCode =
@@ -141,12 +162,15 @@ function policyText(policy: ThinkingPolicy | undefined): string {
   return "level" in policy ? policy.level : `LEVEL in ${policy.min}..${policy.max}`;
 }
 
-/** The roles a launch could name right now: the enabled ordinary ones plus a configured Visual
- * Design. Exported so a report of what was launched agrees with the guard instead of restating it. */
+/**
+ * The roles a launch could name right now: the enabled ordinary ones plus every configured optional
+ * entry, including one whose model the launch checks refuse. Exported so a report of what was
+ * launched agrees with the guard instead of restating it.
+ */
 export function enabledRoles(state: RuntimeState): Role[] {
   return [
     ...enabledOrdinaryRoles(state.effective),
-    ...(state.effective.uiDesign ? ["uiDesign" as const] : []),
+    ...OPTIONAL_ROLE_ENTRY_KEYS.filter((key) => state.effective[key] !== undefined),
   ];
 }
 
@@ -164,14 +188,26 @@ function unavailableAdvisorLines(state: RuntimeState): string[] {
   );
 }
 
-/** The exact launches this policy accepts, so a refusal tells the model how to retry. */
+function isOptionalEntry(role: Role): role is OptionalRoleEntryKey {
+  return OPTIONAL_ROLE_ENTRY_KEYS.some((key) => key === role);
+}
+
+/**
+ * The exact launches this policy accepts, so a refusal tells the model how to retry. An optional entry
+ * appears only while it could launch: the same guard refuses one whose model resolved to a
+ * non-available status, so listing it would contradict the refusal.
+ */
 function allowedLines(state: RuntimeState, delegation: boolean): string {
   const lines = [
     ...(delegation
-      ? enabledRoles(state).map(
-          (role) =>
-            `- ${ROLE_LABELS[role]}: model "${reference(roleSetting(state, role))}:${policyText(state.effective.thinking[role])}"`,
-        )
+      ? enabledRoles(state)
+          // An entry whose model this guard refuses is not an allowed launch; an ordinary role keeps
+          // its line, because an invalid configuration is already reported as the reason.
+          .filter((role) => !isOptionalEntry(role) || isAdvertisedOptionalEntry(state, role))
+          .map(
+            (role) =>
+              `- ${ROLE_LABELS[role]}: model "${reference(roleSetting(state, role))}:${policyText(state.effective.thinking[role])}"`,
+          )
       : []),
     ...validAdvisors(state).map(
       ({ index, setting }) =>
@@ -256,8 +292,12 @@ function checkOrdinaryChild(
   base: string,
   level?: ThinkingLevelName,
 ): Refusal | undefined {
+  // An optional entry with a known non-available status cannot launch, so its exact model must fall
+  // through to the refusal below instead of passing as an ordinary role with nothing to check.
   const candidates = enabledRoles(state).filter(
-    (role) => reference(roleSetting(state, role)) === base,
+    (role) =>
+      reference(roleSetting(state, role)) === base &&
+      (!isOptionalEntry(role) || isOptionalEntryModelUsable(state, role)),
   );
   if (!candidates.length) {
     const advisor = validAdvisors(state).some(({ setting }) => reference(setting) === base);
@@ -392,7 +432,7 @@ type ModelCorrection =
  */
 function correctModel(state: RuntimeState, stated: string): ModelCorrection {
   const { base, level } = splitModel(stated);
-  const alias = ROLE_ALIASES.get(base.toLowerCase());
+  const alias = roleAlias(base);
 
   if (alias && "role" in alias) {
     const role = alias.role;

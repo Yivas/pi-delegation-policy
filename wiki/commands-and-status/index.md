@@ -27,6 +27,17 @@ available. The editor requires TUI mode, while these arguments also work in othe
 | `/delegate context enforce`                         | Enforce recognized budgets and bounded recovery.                          |
 | `/delegate context status`                          | Show the effective ContextShunt state.                                    |
 | `/delegate context allow TOKEN MAX_LINES MAX_BYTES` | Approve the next matching blocked read once.                              |
+| `/delegate vision [2\|3] PROVIDER/MODEL`            | Set a Vision entry; `remove` clears it.                                   |
+| `/delegate visual-design 2\|3 PROVIDER/MODEL`       | Set Visual Design entry 2 or 3; `remove` clears it.                       |
+
+Optional-role entries fill in order too, and the first Visual Design entry is edited in the panel
+because it shares the legacy `uiDesign` key in the delegation document. A slot number is only `2` or
+`3`, so `vision 1 …` and `visual-design 1 …` are rejected: entry 1 is written without a number, and
+for Visual Design it is the panel's row. While the branch owns a family's first slot
+(`session.uiDesign` or `session.vision`), every entry command for that family is refused rather than
+saved: the command writes the shared file, and a branch value would otherwise be persisted as the
+global default. `remove` clears the named entry and closes the gap, so the next entry moves up into
+that slot with its own thinking policy.
 
 Advisor configuration also works without the panel:
 

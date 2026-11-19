@@ -26,9 +26,11 @@ import {
   readAdvisorReminderMode,
   type AdvisorReminderMode,
 } from "./advisor-reminders.ts";
+import { readRoleEntries } from "./role-entries.ts";
 import {
   type AdvisorSetting,
   MODEL_ROLES,
+  OPTIONAL_ROLE_ENTRY_KEYS,
   ROLE_LABELS,
   type EffectiveDelegateState,
   type GlobalDefaults,
@@ -37,7 +39,9 @@ import {
   type ModelRole,
   type ModelStatus,
   type OrdinaryRoleSetting,
+  type RoleEntries,
   type SessionDelegateState,
+  THINKING_LEVEL_NAMES,
   type ThinkingLevelName,
   type ThinkingPolicy,
 } from "./types.ts";
@@ -46,9 +50,13 @@ export type RuntimeState = {
   effective: EffectiveDelegateState;
   global: GlobalDefaults;
   session: SessionDelegateState;
+  /** Optional-role entries as the sidecar resolved them; kept so a re-validation cannot drop them. */
+  roleEntries?: RoleEntries;
   diagnostics: ConfigDiagnostic[];
   modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
+  /** Non-blocking notes about optional entries; an entry never invalidates the delegation axis. */
+  roleWarnings?: string[];
   advisorErrors?: string[];
   /** Global provider-extension admissions; absent means none. */
   admissions?: ProviderAdmissions;
@@ -93,6 +101,45 @@ export function isRoleDisabled(setting: OrdinaryRoleSetting | undefined): settin
 
 export function enabledOrdinaryRoles(effective: EffectiveDelegateState): ModelRole[] {
   return MODEL_ROLES.filter((role) => isRoleEnabled(effective[role]));
+}
+
+/**
+ * Whether a model can honour a thinking policy: a fixed level must be one the model supports, and a
+ * range needs at least one supported level inside it, which is exactly what the launch check accepts.
+ */
+function thinkingSatisfiable(model: Model<Api>, policy: ThinkingPolicy | undefined): boolean {
+  if (!policy) return true;
+  const supported = getSupportedThinkingLevels(model);
+  if ("level" in policy) return supported.includes(policy.level);
+  const order = THINKING_LEVEL_NAMES as readonly string[];
+  return supported.some(
+    (level) =>
+      order.indexOf(level) >= order.indexOf(policy.min) &&
+      order.indexOf(level) <= order.indexOf(policy.max),
+  );
+}
+
+/**
+ * Whether an optional entry's model resolved to a usable status. An absent status means no validation
+ * has run, so the entry is unverified rather than refused; a known non-available status cannot launch.
+ */
+export function isOptionalEntryModelUsable(state: RuntimeState, key: ModelConfigKey): boolean {
+  const status = state.modelStatuses.get(key);
+  return status === undefined || status.kind === "available";
+}
+
+/**
+ * An optional entry is offered only while it could launch: a model that resolved to a non-available
+ * status is refused by the launch check, and so is an entry whose own thinking policy its model cannot
+ * honour, so the policy block and the allowed list must not name either as an exact launch. An absent
+ * status means no validation has run, and the entry stays listed as unverified.
+ */
+export function isAdvertisedOptionalEntry(state: RuntimeState, key: ModelConfigKey): boolean {
+  const status = state.modelStatuses.get(key);
+  if (status === undefined) return true;
+  return (
+    status.kind === "available" && thinkingSatisfiable(status.model, state.effective.thinking[key])
+  );
 }
 
 function matchesReference(model: Model<Api>, reference: ModelRef): boolean {
@@ -218,13 +265,16 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
   const admissions = await readProviderAdmissions(getProviderAdmissionsPath(path));
   const correction = await readLaunchCorrectionMode(getLaunchCorrectionPath(path));
   const reminder = await readAdvisorReminderMode(getAdvisorRemindersPath(path));
+  const roleFiles = await readRoleEntries(path);
   const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
-    effective: resolveDelegateState(loaded.defaults, restored.session),
+    effective: resolveDelegateState(loaded.defaults, restored.session, roleFiles.entries),
     global: loaded.defaults,
     session: restored.session,
+    roleEntries: roleFiles.entries,
     diagnostics: [
       ...loaded.diagnostics,
+      ...roleFiles.diagnostics,
       ...restored.diagnostics,
       ...(admissions.diagnostic ? [admissions.diagnostic] : []),
       ...(correction.diagnostic ? [correction.diagnostic] : []),
@@ -246,14 +296,17 @@ const SIDE_SETTING_SCOPES: ReadonlySet<string> = new Set([
   "advisor-extension",
   "launch-correction",
   "advisor-reminder",
+  "role-entries",
 ]);
 
 export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): void {
-  state.effective = resolveDelegateState(state.global, state.session);
+  // Re-resolving must keep the sidecar entries; without them every optional role disappears.
+  state.effective = resolveDelegateState(state.global, state.session, state.roleEntries);
   state.modelStatuses.clear();
   state.runtimeErrors = [];
   state.advisorErrors = [];
   state.advisorWarnings = [];
+  state.roleWarnings = [];
 
   const advisorEnabled = isAdvisorEnabled(state.effective);
   for (const diagnostic of state.diagnostics) {
@@ -313,8 +366,43 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
   if (enabledOrdinaryRoles(state.effective).length === 0) {
     state.runtimeErrors.push("At least one ordinary role must be enabled.");
   }
-  if (state.effective.uiDesign)
-    validateEnabledRole(ctx, state, "uiDesign", state.effective.uiDesign);
+  // Optional entries never touch the delegation axis: an unusable entry is reported as a warning and
+  // simply cannot be launched, while every other role keeps working.
+  // A merge that dropped a repeat is reported for the same reason: the list on disk is not the list
+  // the roles resolve to, and the writer would refuse to save it back without saying why.
+  for (const repeated of state.effective.repeatedRoleEntries) {
+    state.roleWarnings.push(
+      `${ROLE_LABELS[repeated.key]} entry ${repeated.index} repeats ${repeated.provider}/${repeated.model} and was ignored.`,
+    );
+  }
+  for (const key of OPTIONAL_ROLE_ENTRY_KEYS) {
+    const reference = state.effective[key];
+    if (!reference) continue;
+    const status = validateModelReference(ctx, reference);
+    state.modelStatuses.set(key, status);
+    if (status.kind !== "available") {
+      state.roleWarnings.push(`${ROLE_LABELS[key]} model ${statusDetail(status)}.`);
+    }
+    const policy = state.effective.thinking[key];
+    if (policy && status.kind === "available") {
+      const supported = getSupportedThinkingLevels(status.model);
+      for (const level of policyLevels(policy)) {
+        if (supported.includes(level)) continue;
+        state.roleWarnings.push(
+          `${ROLE_LABELS[key]} thinking level "${level}" is not supported by ${reference.provider}/${reference.model}.`,
+        );
+      }
+    }
+    // The point of a vision entry is that it can see; a text-only model defeats the role.
+    if (key.startsWith("vision") && status.kind === "available") {
+      const input = status.model.input as readonly string[] | undefined;
+      if (Array.isArray(input) && !input.includes("image")) {
+        state.roleWarnings.push(
+          `${ROLE_LABELS[key]} model ${reference.provider}/${reference.model} does not accept image input.`,
+        );
+      }
+    }
+  }
 
   const readerDiagnostic = readerRoleDiagnostic(state);
   if (readerDiagnostic) state.runtimeErrors.push(readerDiagnostic);

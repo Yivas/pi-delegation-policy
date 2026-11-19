@@ -6,7 +6,12 @@ import { ANTHROPIC_ADVISOR_AGENT } from "../src/advisor-anthropic-provider.ts";
 import { PROVIDER_EXTENSION_ADVISOR_AGENT } from "../src/advisor-provider-extension.ts";
 import { resolveDelegateState } from "../src/config.ts";
 import type { RuntimeState } from "../src/runtime.ts";
-import { CURRENT_SCHEMA_VERSION, type GlobalDefaults } from "../src/types.ts";
+import {
+  CURRENT_SCHEMA_VERSION,
+  emptyRoleEntries,
+  type GlobalDefaults,
+  type RoleEntries,
+} from "../src/types.ts";
 
 const small = { provider: "example", model: "small-model" };
 const large = { provider: "other", model: "large-model" };
@@ -20,7 +25,10 @@ const model = (ref: { provider: string; model: string }) => ({
   thinkingLevels: thinking,
 });
 
-function state(overrides: Partial<GlobalDefaults> = {}): RuntimeState {
+function state(
+  overrides: Partial<GlobalDefaults> = {},
+  roleEntries: RoleEntries = emptyRoleEntries(),
+): RuntimeState {
   const global: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "aggressive",
@@ -41,7 +49,7 @@ function state(overrides: Partial<GlobalDefaults> = {}): RuntimeState {
   return {
     global,
     session,
-    effective: resolveDelegateState(global, session),
+    effective: resolveDelegateState(global, session, roleEntries),
     diagnostics: [],
     modelStatuses: new Map([
       ["small", available(small)],
@@ -319,6 +327,19 @@ test("a thinking level passes while any role sharing the model accepts it", () =
     ) ?? "";
   assert.match(refused, /Small: thinking "medium" is outside the role policy/);
   assert.match(refused, /Large: thinking "medium" is outside the role policy/);
+});
+
+test("a spaced role label the block prints launches as the entry it names", () => {
+  const first = { provider: "eyes", model: "vision-one" };
+  const second = { provider: "eyes", model: "vision-two" };
+  const current = state({}, { ...emptyRoleEntries(), vision: [first, second] });
+  current.modelStatuses.set("vision2", { kind: "available", model: model(second) as never });
+
+  // The block prints `Vision 2`, and the alias set is spelled in dashes: the label must still name
+  // the entry instead of being refused as an unknown model.
+  const call = { agent: "worker", task: "t", model: "Vision 2" };
+  assert.equal(inspectSubagentLaunch(call, current).refusal, undefined);
+  assert.match(call.model, /^eyes\/vision-two:(minimal|low|medium|high|off)$/);
 });
 
 test("delegation off checks only Advisor launches, and both axes off check nothing", () => {

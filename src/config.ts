@@ -15,6 +15,7 @@ import {
   type EffectiveContextShunt,
   type EffectiveDelegateState,
   emptyGlobalDefaults,
+  emptyRoleEntries,
   emptySessionState,
   type GlobalDefaults,
   INTENSITIES,
@@ -24,8 +25,14 @@ import {
   type ModelConfigKey,
   type ModelRef,
   type ModelRole,
-  type OptionalRoleKey,
+  type OptionalRoleEntryKey,
+  optionalRoleEntryKeys,
+  OPTIONAL_ROLE_ENTRY_KEYS,
+  OPTIONAL_ROLE_FAMILIES,
   type OrdinaryRoleSetting,
+  type RepeatedRoleEntry,
+  type RoleEntries,
+  type RoleEntry,
   type Preference,
   type SessionDelegateState,
   type SessionThinkingSettings,
@@ -78,7 +85,8 @@ const MAX_ANSWER_MAX_BYTES = 16384;
 export type ConfigDiagnostic = {
   message: string;
   reportWhenOff?: boolean;
-  scope?: "advisor" | "advisor-extension" | "launch-correction" | "advisor-reminder";
+  scope?:
+    "advisor" | "advisor-extension" | "launch-correction" | "advisor-reminder" | "role-entries";
 };
 export type LoadedDefaults = {
   defaults: GlobalDefaults;
@@ -1035,25 +1043,121 @@ function resolveAdvisorMode(defaults: GlobalDefaults, session: SessionDelegateSt
   return defaults.advisorMode ?? "with-delegation";
 }
 /**
- * An optional specialist role resolves like an ordinary one, except that only a session override may
- * disable it and an absent global key stays unconfigured.
+ * The entries an optional role resolves to, in preference order. The sidecar holds the global lists;
+ * a session `uiDesign` replaces entry 1 for the branch and a session `null` clears the whole family.
+ * Entry 1 of Visual Design also honours the single legacy key in the policy document, which is the copy
+ * an older version still reads and writes; when the two disagree the document wins, because the other
+ * writer was a version that cannot see this file. That merge can give entry 1 the model the sidecar
+ * holds in a later slot, so a repeat is dropped here rather than written back as a list the sidecar
+ * itself would reject.
  */
-function resolveOptionalRole(
+function resolveRoleEntries(
   defaults: GlobalDefaults,
   session: SessionDelegateState,
-  key: OptionalRoleKey,
-): ModelRef | undefined {
-  const local = session[key];
-  if (local !== undefined) return local === null ? undefined : { ...local };
-  const global = defaults[key];
-  return global ? { ...global } : undefined;
+  entries: RoleEntries,
+): {
+  lists: RoleEntries;
+  sources: Record<OptionalRoleEntryKey, ValueSource>;
+  repeated: RepeatedRoleEntry[];
+} {
+  const sources = Object.fromEntries(
+    OPTIONAL_ROLE_ENTRY_KEYS.map((key) => [key, "default" as ValueSource]),
+  ) as Record<OptionalRoleEntryKey, ValueSource>;
+  const lists = emptyRoleEntries();
+  const legacy = session.uiDesign !== undefined ? session.uiDesign : defaults.uiDesign;
+  let visual = entries.uiDesign.map(copyRoleEntry);
+  // Entry 1 is the legacy document key, so its provenance is the document's or the sidecar's;
+  // entries 2 and 3 are the sidecar's own whatever the branch says about entry 1.
+  const familySource: ValueSource = entries.uiDesign.length ? "global" : "default";
+  const firstVisualSource: ValueSource =
+    session.uiDesign !== undefined
+      ? "session"
+      : entries.uiDesign.length || defaults.uiDesign !== undefined
+        ? "global"
+        : "default";
+  if (session.uiDesign === null) visual = [];
+  else if (session.uiDesign) visual = [{ ...session.uiDesign }, ...visual.slice(1)];
+  else if (legacy && visual.length) {
+    const first = visual[0]!;
+    if (first.provider !== legacy.provider || first.model !== legacy.model) {
+      visual = [
+        { ...legacy, thinking: defaults.thinking?.uiDesign ?? first.thinking },
+        ...visual.slice(1),
+      ];
+    }
+  } else if (legacy && !visual.length) {
+    visual = [
+      {
+        ...legacy,
+        ...(defaults.thinking?.uiDesign ? { thinking: defaults.thinking.uiDesign } : {}),
+      },
+    ];
+  }
+  lists.uiDesign = visual;
+  lists.vision = entries.vision.map(copyRoleEntry);
+  // Entry 1's thinking policy is the document's `thinking.uiDesign`, which wins on read, so the entry
+  // list never carries a value the effective state ignores.
+  const firstVisual = lists.uiDesign[0];
+  if (firstVisual) lists.uiDesign[0] = { provider: firstVisual.provider, model: firstVisual.model };
+  const repeated: RepeatedRoleEntry[] = [];
+  for (const family of OPTIONAL_ROLE_FAMILIES) {
+    const keys = optionalRoleEntryKeys(family);
+    const kept: RoleEntry[] = [];
+    for (const entry of lists[family]) {
+      const index = kept.length + 1;
+      if (kept.some((seen) => seen.provider === entry.provider && seen.model === entry.model)) {
+        repeated.push({
+          key: keys[index - 1]!,
+          index,
+          provider: entry.provider,
+          model: entry.model,
+        });
+        continue;
+      }
+      kept.push(entry);
+    }
+    lists[family] = kept;
+  }
+  const visionSource: ValueSource = entries.vision.length ? "global" : "default";
+  // A branch `null` suppressed the family, so every one of its slots is the branch's decision;
+  // reporting `default` there would suggest nothing had been configured.
+  const visualDisabled = session.uiDesign === null;
+  for (const [index, key] of optionalRoleEntryKeys("uiDesign").entries()) {
+    if (!lists.uiDesign[index]) {
+      if (visualDisabled) sources[key] = "session";
+      continue;
+    }
+    sources[key] = index === 0 ? firstVisualSource : familySource;
+  }
+  // `source.uiDesign` describes that same first entry, including a branch that disabled it.
+  sources.uiDesign = firstVisualSource;
+  for (const [index, key] of optionalRoleEntryKeys("vision").entries()) {
+    if (lists.vision[index]) sources[key] = visionSource;
+  }
+  return { lists, sources, repeated };
 }
+
+function copyRoleEntry(entry: RoleEntry): RoleEntry {
+  return {
+    provider: entry.provider,
+    model: entry.model,
+    ...(entry.thinking ? { thinking: copyPolicy(entry.thinking) } : {}),
+  };
+}
+
 export function resolveDelegateState(
   defaults: GlobalDefaults,
   session: SessionDelegateState,
+  roleEntries: RoleEntries = emptyRoleEntries(),
 ): EffectiveDelegateState {
   const intensity = session.intensity ?? defaults.intensity ?? "off";
-  const uiDesign = resolveOptionalRole(defaults, session, "uiDesign");
+  const resolvedEntries = resolveRoleEntries(defaults, session, roleEntries);
+  const entryModel = (key: OptionalRoleEntryKey): ModelRef | undefined => {
+    const family = key.startsWith("uiDesign") ? "uiDesign" : "vision";
+    const entry = resolvedEntries.lists[family][optionalRoleEntryKeys(family).indexOf(key)];
+    return entry ? { provider: entry.provider, model: entry.model } : undefined;
+  };
+  const uiDesign = entryModel("uiDesign");
   const localAdvisors = configuredAdvisors(session);
   const advisors =
     localAdvisors !== undefined ? (localAdvisors ?? []) : (configuredAdvisors(defaults) ?? []);
@@ -1068,6 +1172,16 @@ export function resolveDelegateState(
   const { thinking, source: thinkingSource } = resolveThinking(defaults, session);
   // Parsed documents never carry it; a state built in memory must not resurrect it either.
   delete thinking.advisor;
+  // Entry thinking comes from the entry, never from the document, whose key set is closed. Entry 1 of
+  // Visual Design is the exception: its model *and* its thinking are the legacy document key, so the
+  // policy resolved above stands and any thinking a sidecar entry carries for it is ignored.
+  for (const key of OPTIONAL_ROLE_ENTRY_KEYS) {
+    if (key === "uiDesign") continue;
+    const family = key.startsWith("uiDesign") ? "uiDesign" : "vision";
+    const entry = resolvedEntries.lists[family][optionalRoleEntryKeys(family).indexOf(key)];
+    if (entry?.thinking) thinking[key] = copyPolicy(entry.thinking);
+    else delete thinking[key];
+  }
   return {
     intensity,
     preference: session.preference ?? defaults.preference ?? "standard",
@@ -1075,6 +1189,13 @@ export function resolveDelegateState(
     ...(medium !== undefined ? { medium } : {}),
     ...(large !== undefined ? { large } : {}),
     ...(uiDesign ? { uiDesign } : {}),
+    ...(entryModel("uiDesign2") ? { uiDesign2: entryModel("uiDesign2") } : {}),
+    ...(entryModel("uiDesign3") ? { uiDesign3: entryModel("uiDesign3") } : {}),
+    ...(entryModel("vision") ? { vision: entryModel("vision") } : {}),
+    ...(entryModel("vision2") ? { vision2: entryModel("vision2") } : {}),
+    ...(entryModel("vision3") ? { vision3: entryModel("vision3") } : {}),
+    roleEntries: resolvedEntries.lists,
+    repeatedRoleEntries: resolvedEntries.repeated,
     ...(advisor ? { advisor } : {}),
     advisors,
     advisorLaunch: session.advisorLaunch ?? defaults.advisorLaunch ?? "role",
@@ -1087,7 +1208,8 @@ export function resolveDelegateState(
       small: source(session, defaults.small, "small"),
       medium: source(session, defaults.medium, "medium"),
       large: source(session, defaults.large, "large"),
-      uiDesign: source(session, defaults.uiDesign, "uiDesign"),
+      uiDesign: resolvedEntries.sources.uiDesign,
+      roleEntries: resolvedEntries.sources,
       advisor:
         localAdvisors !== undefined
           ? "session"
@@ -1110,6 +1232,13 @@ export function defaultsFromEffectiveState(state: EffectiveDelegateState): Globa
   const role = (value: OrdinaryRoleSetting | undefined) =>
     value === undefined ? {} : { value: copyRole(value) };
   const context = state.contextShunt;
+  // Only the keys a document may carry: an entry's thinking lives in the sidecar, and the document
+  // rejects unknown keys, so an entry key here would make the saved file invalid.
+  const documentThinking = Object.fromEntries(
+    Object.entries(copyThinking(state.thinking)).filter(
+      ([key]) => key !== "advisor" && THINKING_ROLE_KEYS.includes(key as ModelConfigKey),
+    ),
+  ) as ThinkingSettings;
   const hasConfiguredContext =
     context.configuredMode !== "off" ||
     Object.values(context.source).some((source) => source !== "default");
@@ -1124,13 +1253,7 @@ export function defaultsFromEffectiveState(state: EffectiveDelegateState): Globa
     ...(state.advisors.length ? { advisors: structuredClone(state.advisors) } : {}),
     advisorMode: state.advisorMode,
     advisorLaunch: state.advisorLaunch,
-    ...(Object.keys(state.thinking).some((key) => key !== "advisor")
-      ? {
-          thinking: Object.fromEntries(
-            Object.entries(copyThinking(state.thinking)).filter(([key]) => key !== "advisor"),
-          ),
-        }
-      : {}),
+    ...(Object.keys(documentThinking).length ? { thinking: documentThinking } : {}),
     ...(hasConfiguredContext
       ? {
           contextShunt: {
