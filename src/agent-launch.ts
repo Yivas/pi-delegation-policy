@@ -49,6 +49,36 @@ export type AgentLaunchEventBus = Readonly<{
   on(event: string, listener: (payload: unknown) => void): () => void;
   emit(event: string, payload: unknown): void;
 }>;
+/**
+ * Registers the operator's extra child extensions for one session, so every Advisor launch in it
+ * loads them. The host canonicalises each path and refuses a second registration for the same
+ * session, so the caller disposes the previous one first. Unavailable host support is not an error:
+ * the list stays empty and the launches proceed with the profile's own set.
+ */
+export async function registerChildExtensions(
+  sessionId: string,
+  extensions: readonly { id: string; path: string }[],
+  loadModule: DynamicModuleLoader = (specifier) => import(specifier),
+): Promise<{ dispose(): void } | undefined> {
+  if (!sessionId || !extensions.length) return undefined;
+  try {
+    const loaded = (await loadModule("pi-subagents/required-child-extensions")) as {
+      registerRequiredChildExtensions?: (input: {
+        sessionId: string;
+        extensions: readonly { id: string; path: string }[];
+      }) => { dispose(): void };
+    };
+    const register = loaded.registerRequiredChildExtensions;
+    if (typeof register !== "function") return undefined;
+    return register({
+      sessionId,
+      extensions: extensions.map(({ id, path }) => ({ id, path })),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 export type AgentLaunchHost = Readonly<{
   cwd: string;
   /** Parent session whose host-required child extensions the preflight must see. */
@@ -170,6 +200,12 @@ export type AgentLaunchDefinition<Request extends AgentLaunchRequest, Value> = R
   internalTools: readonly string[];
   /** Exact configured entries admitted only by this profile, never by the shared reader. */
   configuredExtensions?: readonly string[];
+  /**
+   * Extra extensions the host loads for this child on top of the profile's own set, for example an
+   * operator's prompt layer. The list is read at contract time and must match what the host
+   * registered for this session: an id the child will not load is a rejected launch.
+   */
+  requiredExtensions?: () => readonly { id: string; path: string }[];
   buildTask: (request: Request) => string;
   result: AgentLaunchResultExpectation<Request, Value>;
 }>;
@@ -503,6 +539,7 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
     )
       return false;
 
+    const requiredExtensions = definition.requiredExtensions?.() ?? [];
     if (
       !isRecord(contract.tools) ||
       contract.tools.explicitAllowlist !== true ||
@@ -515,7 +552,10 @@ function validateLaunchContract<Request extends AgentLaunchRequest, Value>(
       !exactStrings(contract.tools.effectiveMcpTools, []) ||
       !exactStrings(contract.tools.toolExtensionPaths, []) ||
       !exactStrings(contract.tools.configuredExtensions, definition.configuredExtensions ?? []) ||
-      !exactStrings(contract.tools.requiredExtensionIds, []) ||
+      !exactStrings(
+        contract.tools.requiredExtensionIds,
+        requiredExtensions.map((extension) => extension.id),
+      ) ||
       contract.tools.disableAmbientExtensions !== true ||
       contract.tools.fanoutAuthorized !== false ||
       "capabilityCeiling" in contract.tools ||

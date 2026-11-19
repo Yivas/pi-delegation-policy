@@ -540,6 +540,27 @@ axis, and is reported instead of overwritten until you fix or remove it; the row
 `Unavailable/Suspended · global`, because a suspension is not a value you chose. The replacement is a
 temporary-file write, so a failure leaves the previous file in place.
 
+## Advisor child extensions {#advisor-child-extensions}
+
+An Advisor child runs with its own system prompt and without the session's ambient extensions. To add
+a personal one anyway, name it in `delegation-policy.advisor-extensions.json` beside the delegation
+document:
+
+```json
+{ "schemaVersion": 1, "extensions": [{ "package": "example-prompt-layer", "version": "1.2.3" }] }
+```
+
+Admission is as strict as a provider admission: an exact `package@version`, listed unfiltered in your
+own settings, installed by Pi, with one extension entry inside the package. Up to two entries. The
+host loads them for every child of the session, Advisors included, while an Advisor is enabled. That is
+the only granularity the host offers, so the ContextShunt reader loads them too and its contract
+expects the same ids. An invalid file, or a package that no longer passes the check, is ignored with a
+warning and the Advisors keep working without it.
+
+These extensions run as trusted host code in the child, with your files and network, and they can
+change the Advisor's prompt. The child does not revalidate them. A prompt layer that prepends text
+means the advice comes from the Advisor role plus your own instructions, in that order.
+
 ## Persistence and compatibility
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7: intensity, preference, the

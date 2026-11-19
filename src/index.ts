@@ -37,7 +37,8 @@ import {
   unclosedAdvisorTask,
 } from "./advisor-threads.ts";
 import { AdvisorResumeClient } from "./advisor-resume.ts";
-import type { AgentLaunchEventBus } from "./agent-launch.ts";
+import { registerChildExtensions, type AgentLaunchEventBus } from "./agent-launch.ts";
+import { readAdvisorExtensions, setAdvisorChildExtensions } from "./advisor-extensions.ts";
 import { admissionFor } from "./provider-admissions.ts";
 import {
   enabledRoles,
@@ -1647,12 +1648,52 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           continuityFor(ctx),
         ),
     });
+    let advisorChildExtensionsDispose: { dispose(): void } | undefined;
+    /**
+     * Registers the operator's extra Advisor child extensions for the session. The host keeps them
+     * per session id, so a branch change registers them again and the previous registration is
+     * released first. Anything that does not resolve leaves the list empty, never a launch that
+     * expects an extension the child will not load.
+     */
+    const applyAdvisorChildExtensions = async (ctx: ExtensionContext): Promise<void> => {
+      // Clear the contract's expectation before releasing the registration, and never let a host
+      // failure skip the rest of a shutdown: a stale list would reject every later launch.
+      const previous = advisorChildExtensionsDispose;
+      advisorChildExtensionsDispose = undefined;
+      setAdvisorChildExtensions([]);
+      try {
+        previous?.dispose();
+      } catch {
+        // The host owns that cleanup. The session list is already empty, so launches stay valid.
+      }
+      // Nothing is read, registered or injected while no Advisor can be consulted.
+      if (!latestRuntime || !isAdvisorEnabled(latestRuntime.effective)) return;
+      const loaded = await readAdvisorExtensions(ctx.cwd);
+      if (!loaded.extensions.length) {
+        if (loaded.diagnostic) ctx.ui.notify(loaded.diagnostic.message, "warning");
+        return;
+      }
+      const sessionId = currentSessionId(ctx);
+      const registration = sessionId
+        ? await registerChildExtensions(sessionId, loaded.extensions)
+        : undefined;
+      if (!registration) {
+        ctx.ui.notify(
+          "Advisor child extensions could not be registered for this session and were ignored.",
+          "warning",
+        );
+        return;
+      }
+      advisorChildExtensionsDispose = registration;
+      setAdvisorChildExtensions(loaded.extensions);
+    };
     pi.on("session_start", async (_event, ctx) => {
       taskToken = undefined;
       advisorReminder.closeTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
       startConfigBaseline(await refreshRuntime(ctx));
+      await applyAdvisorChildExtensions(ctx);
     });
     pi.on("session_tree", async (_event, ctx) => {
       readerEpoch += 1;
@@ -1668,6 +1709,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorReminder.closeTask();
       taskMetrics = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
+      await applyAdvisorChildExtensions(ctx);
     });
     // The host emits this after every `session_start` handler has run, so a model catalog another
     // extension fills during its own start handler is visible here and the footer stops reporting an
@@ -1940,6 +1982,16 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       runOutcome = undefined;
       executor.close();
       advisorExecutor.close();
+      {
+        const previous = advisorChildExtensionsDispose;
+        advisorChildExtensionsDispose = undefined;
+        setAdvisorChildExtensions([]);
+        try {
+          previous?.dispose();
+        } catch {
+          // See above: the contract expectation is already empty.
+        }
+      }
       await invalidateThreads(ctx);
       await advisorLog.close();
       await shunt.close();

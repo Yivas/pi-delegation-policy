@@ -3610,6 +3610,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/agent-launch.ts",
     "src/advisor-anthropic-provider.ts",
     "src/advisor-executor.ts",
+    "src/advisor-extensions.ts",
     "src/advisor-log.ts",
     "src/advisor-read-mode.ts",
     "src/advisor-provider-extension.ts",

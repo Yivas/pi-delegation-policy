@@ -189,6 +189,16 @@ independent reader can run alongside it (at most four children). Abort, branch c
 detected authorization changes cancel the tool group. Partial results preserve a successful answer.
 Local timeouts and cancellation do not cap external generation, retries or cost.
 
+### Operator extensions in the Advisor child {#advisor-child-extensions}
+
+An [Advisor child extension](/configuration/#advisor-child-extensions) is operator-chosen, exact-version
+admission only, and the parent registers it for the session before any launch. Once registered it runs
+as trusted host code inside the child, with your files and network, and nothing in the child checks it
+again. A prompt layer can prepend its own text to the Advisor's system prompt, so the advice then
+reflects both the Advisor role and your instructions. Removing the file or the package stops the
+registration on the next session start, and a launch never expects an extension the host did not
+register.
+
 ### Optional provider extension
 
 The separate `pi-delegation-policy.advisor-anthropic-auth` profile can load the exact managed-user

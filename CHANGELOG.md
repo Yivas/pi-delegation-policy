@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- An Advisor child can load the operator's own extensions. `delegation-policy.advisor-extensions.json`
+  names up to two exact `package@version` entries, admitted like a provider extension, and the host
+  loads them for every child of the session while an Advisor is enabled, the ContextShunt reader
+  included, because the host offers no finer granularity. The launch contract accepts exactly the ids
+  that were registered, so an invalid file is ignored with a warning instead of starting a child that
+  expects an extension it will not load.
+
 ## 0.30.0 - 2026-11-19
 
 ### Added

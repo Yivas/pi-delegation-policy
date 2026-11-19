@@ -27,6 +27,7 @@ import {
   PINNED_PACKAGE,
   PROVIDER_EXTENSION_ADVISOR_AGENT,
 } from "./advisor-provider-extension.ts";
+import { sessionChildExtensions } from "./advisor-extensions.ts";
 import { admissionFor, type ProviderAdmissions } from "./provider-admissions.ts";
 import { packageSource } from "./provider-package.ts";
 import {
@@ -207,6 +208,9 @@ const DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
     fileURLToPath(new URL("../agents/pi-delegation-policy.advisor.md", import.meta.url)),
   ),
   internalTools: [],
+  // An operator's extra child extensions, registered for the session before any launch of this
+  // profile. Empty until the host accepts them.
+  requiredExtensions: sessionChildExtensions,
   buildTask: (request) => JSON.stringify({ question: request.question, brief: request.brief }),
   result: {
     variant: "text",

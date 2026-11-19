@@ -15,6 +15,7 @@ import {
   type AgentLaunchModules,
   type AgentLaunchResult,
 } from "./agent-launch.ts";
+import { sessionChildExtensions } from "./advisor-extensions.ts";
 import type { SourceSnapshot } from "./context-shunt.ts";
 import type { ReaderAnswer, ReaderThinking } from "./context-shunt-reader.ts";
 
@@ -109,6 +110,10 @@ const READER_LAUNCH = {
   agentName: CONTEXT_SHUNT_READER_AGENT_NAME,
   agentPath: CONTEXT_SHUNT_READER_AGENT_PATH,
   internalTools: ["structured_output"],
+  // The host applies the operator's extra child extensions to every child of the session, so the
+  // reader's contract must expect the same ids the advisors do. Otherwise it stays rejected while
+  // a sidecar exists.
+  requiredExtensions: sessionChildExtensions,
   buildTask: buildReaderTask,
   result: {
     variant: "structured",
