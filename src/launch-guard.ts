@@ -4,7 +4,7 @@ import {
   type Api,
   type Model,
 } from "@earendil-works/pi-ai";
-import { ADVISOR_AGENT_NAME, advisorAgentName } from "./advisor-executor.ts";
+import { ADVISOR_AGENT_NAME, ADVISOR_READ_AGENT_NAME } from "./advisor-executor.ts";
 import { ANTHROPIC_ADVISOR_AGENT } from "./advisor-anthropic-provider.ts";
 import { PROVIDER_EXTENSION_ADVISOR_AGENT } from "./advisor-provider-extension.ts";
 import { DEFAULT_LAUNCH_CORRECTION_MODE } from "./launch-correction-mode.ts";
@@ -12,6 +12,7 @@ import {
   enabledOrdinaryRoles,
   hasRuntimeError,
   isAdvertisedOptionalEntry,
+  advisorAgentNameFor,
   isAdvisorEnabled,
   isOptionalEntryModelUsable,
   isRoleEnabled,
@@ -32,6 +33,7 @@ import {
 
 const ADVISOR_AGENTS: ReadonlySet<string> = new Set([
   ADVISOR_AGENT_NAME,
+  ADVISOR_READ_AGENT_NAME,
   ANTHROPIC_ADVISOR_AGENT,
   PROVIDER_EXTENSION_ADVISOR_AGENT,
 ]);
@@ -211,7 +213,7 @@ function allowedLines(state: RuntimeState, delegation: boolean): string {
       : []),
     ...validAdvisors(state).map(
       ({ index, setting }) =>
-        `- Advisor ${index + 1}: agent "${advisorAgentName(setting, state.admissions)}", model "${reference(setting)}:LEVEL"`,
+        `- Advisor ${index + 1}: agent "${advisorAgentNameFor(state, setting, index)}", model "${reference(setting)}:LEVEL"`,
     ),
   ];
   const unavailable = unavailableAdvisorLines(state);
@@ -255,8 +257,8 @@ function checkAdvisorChild(
   level?: ThinkingLevelName,
 ): Refusal | undefined {
   const match = validAdvisors(state).find(
-    ({ setting }) =>
-      reference(setting) === base && advisorAgentName(setting, state.admissions) === agent,
+    ({ setting, index }) =>
+      reference(setting) === base && advisorAgentNameFor(state, setting, index) === agent,
   );
   if (!isAdvisorEnabled(state.effective))
     return {
@@ -422,6 +424,8 @@ type ModelCorrection =
       role?: Role;
       /** The Advisor the call named, which settles the profile without a further match. */
       advisor?: AdvisorSetting;
+      /** That Advisor's slot, so two Advisors sharing a model keep their own reading flag. */
+      advisorSlot?: number;
       corrections: LaunchCorrection[];
     };
 
@@ -476,6 +480,7 @@ function correctModel(state: RuntimeState, stated: string): ModelCorrection {
       kind: "resolved",
       model,
       advisor: advisor.setting,
+      advisorSlot: advisor.index,
       corrections: [{ code: "role-alias", roleName: base, applied: model }],
     };
   }
@@ -530,12 +535,13 @@ function correctAgent(
   model: string,
   agent: string,
   named?: AdvisorSetting,
+  namedSlot?: number,
 ): AgentCorrection {
   const { base } = splitModel(model);
   const matches = validAdvisors(state).filter(({ setting }) => reference(setting) === base);
   if (!matches.length) return { kind: "resolved", agent, corrections: [] };
   if (named) {
-    const profile = advisorAgentName(named, state.admissions);
+    const profile = advisorAgentNameFor(state, named, namedSlot);
     return agent === profile
       ? { kind: "resolved", agent, corrections: [] }
       : {
@@ -546,7 +552,7 @@ function correctAgent(
   }
   if (enabledRoles(state).some((role) => reference(roleSetting(state, role)) === base))
     return { kind: "resolved", agent, corrections: [] };
-  if (matches.some(({ setting }) => advisorAgentName(setting, state.admissions) === agent))
+  if (matches.some(({ setting, index }) => advisorAgentNameFor(state, setting, index) === agent))
     return { kind: "resolved", agent, corrections: [] };
   if (matches.length > 1)
     return {
@@ -558,7 +564,7 @@ function correctAgent(
     };
   const only = matches[0];
   if (!only) return { kind: "resolved", agent, corrections: [] };
-  const profile = advisorAgentName(only.setting, state.admissions);
+  const profile = advisorAgentNameFor(state, only.setting, only.index);
   return {
     kind: "resolved",
     agent: profile,
@@ -593,7 +599,7 @@ function planChild(
         message: `${ROLE_LABELS[model.role]} runs with an ordinary agent profile, never an Advisor profile`,
       },
     };
-  const profile = correctAgent(state, model.model, agent, model.advisor);
+  const profile = correctAgent(state, model.model, agent, model.advisor, model.advisorSlot);
   if (profile.kind === "refused") return profile;
   return {
     kind: "resolved",

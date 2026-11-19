@@ -1234,7 +1234,10 @@ test("Context advanced stages reader enabled, role, answer cap, and reset with k
     wideSettings.some((line) => line.includes("Context protectionenforce")),
     false,
   );
-  for (let index = 0; index < 7; index += 1) panel.handleInput("\x1b[B");
+  // The focus is resolved by name: a row appears or disappears with the configuration.
+  panel.handleInput("\x1b[H");
+  for (let step = 0; step < panel.visibleFields().indexOf("contextAdvanced"); step += 1)
+    panel.handleInput("\x1b[B");
   panel.handleInput("\r");
   assert.match(panel.render(100).join("\n"), /Reader enabled: off/);
   assert.match(panel.render(100).join("\n"), /Reader answer max bytes: 8192/);
@@ -1269,7 +1272,9 @@ test("Context advanced stages reader enabled, role, answer cap, and reset with k
   panel.handleInput("\r");
   assert.equal(panel.getDraft().contextShunt?.answerMaxBytes, 8193);
 
-  for (let index = 0; index < 9; index += 1) panel.handleInput("\x1b[B");
+  // Back to the Context protection row, whose first choice is the built-in default.
+  panel.handleInput("\x1b[A");
+  panel.handleInput("\x1b[A");
   panel.handleInput("\r");
   assert.equal(panel.getDraft().contextShunt, undefined);
 });
@@ -1309,7 +1314,9 @@ test("Use global default for Context protection preserves advanced session field
     onDone: () => undefined,
   });
   panel.focused = true;
-  for (let index = 0; index < 6; index += 1) panel.handleInput("\x1b[B");
+  panel.handleInput("\x1b[H");
+  for (let step = 0; step < panel.visibleFields().indexOf("contextShunt"); step += 1)
+    panel.handleInput("\x1b[B");
   panel.handleInput("\r");
   for (let index = 0; index < 3; index += 1) panel.handleInput("\x1b[A");
   panel.handleInput("\r");

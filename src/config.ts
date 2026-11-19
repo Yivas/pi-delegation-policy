@@ -86,7 +86,12 @@ export type ConfigDiagnostic = {
   message: string;
   reportWhenOff?: boolean;
   scope?:
-    "advisor" | "advisor-extension" | "launch-correction" | "advisor-reminder" | "role-entries";
+    | "advisor"
+    | "advisor-extension"
+    | "launch-correction"
+    | "advisor-reminder"
+    | "role-entries"
+    | "advisor-read";
 };
 export type LoadedDefaults = {
   defaults: GlobalDefaults;

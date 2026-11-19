@@ -65,8 +65,17 @@ The block also states which configured models the host reports as `text+image`, 
 `unverified`, so image work is never handed to a model that cannot see it. An unusable entry is a
 warning and costs only that entry, never the delegation axis.
 
-Entries are configured from `/delegate`; [commands and status](https://yivas.github.io/pi-delegation-policy/commands-and-status/)
-lists the exact forms.
+`/delegate` offers one row per entry (`Visual Design 2`, `Vision`, `Vision 2`, …). Each family's first
+row is always offered and the rest follow the one before, and each row is removable from its own
+selector. The same values can be set from the command line;
+[commands and status](https://yivas.github.io/pi-delegation-policy/commands-and-status/) lists the
+exact forms.
+
+With a role launch, an Advisor reads nothing by default. After you choose its model, the panel offers
+**Advisor N reading**; turned on, that slot launches a profile whose only tool is `read`, so it can open
+a file or an image the brief names. The tool is not a path boundary: the host decides what `read` may
+reach. Reading applies to role launches only: `consult_advisor` always runs the packaged profile, which
+has no tools. [Security](SECURITY.md) states the exposure.
 
 Thinking is optional for each ordinary role and for every optional entry, and has three states: unset
 (the main agent chooses the level for each launch), a fixed level, or an inclusive range. Advisor thinking

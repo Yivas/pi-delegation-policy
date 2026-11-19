@@ -12,6 +12,8 @@ import { DelegatePanel, type DelegatePanelResult } from "./delegate-panel.ts";
 import { getProviderAdmissionsPath, writeProviderAdmissions } from "./provider-admissions.ts";
 import { getLaunchCorrectionPath, writeLaunchCorrectionMode } from "./launch-correction-mode.ts";
 import { getAdvisorRemindersPath, writeAdvisorReminderMode } from "./advisor-reminders.ts";
+import { writeRoleEntries } from "./role-entries.ts";
+import { trimAdvisorRead, writeAdvisorRead } from "./advisor-read-mode.ts";
 import { listProviderExtensionCandidates } from "./provider-package.ts";
 import {
   hasRuntimeError,
@@ -86,6 +88,8 @@ export async function openDelegateEditor(
         hasRuntimeError: hasRuntimeError(state),
         hasAdvisorError: hasAdvisorError(state),
         admissions: state.admissions ?? {},
+        roleEntries: state.roleEntries,
+        advisorRead: state.advisorRead,
         launchCorrection: state.launchCorrection,
         advisorReminder: state.advisorReminder,
         advisorReminderInvalid: state.advisorReminderInvalid,
@@ -105,6 +109,18 @@ export async function openDelegateEditor(
           );
           state.admissions = admissions;
           return true;
+        },
+        onSaveAdvisorRead: async (flags) => {
+          const result = await writeAdvisorRead(flags, getGlobalConfigPath());
+          // The runtime carries what the file holds, never the longer list a re-read would shorten.
+          if (result === "saved" || result === "unchanged")
+            state.advisorRead = trimAdvisorRead(flags);
+          return result;
+        },
+        onSaveRoleEntries: async (entries) => {
+          const result = await writeRoleEntries(entries, getGlobalConfigPath());
+          if (result === "saved" || result === "unchanged") state.roleEntries = entries;
+          return result;
         },
         onSaveLaunchCorrection: async (mode) => {
           const result = await writeLaunchCorrectionMode(
@@ -135,6 +151,7 @@ export async function openDelegateEditor(
           state.advisorWarnings = refreshed.advisorWarnings;
           state.roleEntries = refreshed.roleEntries;
           state.roleWarnings = refreshed.roleWarnings;
+          state.advisorRead = refreshed.advisorRead;
           state.advisorEntries = refreshed.advisorEntries;
           state.admissions = refreshed.admissions;
           state.launchCorrection = refreshed.launchCorrection;

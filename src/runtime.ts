@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { locateAdvisorAnthropicProvider } from "./advisor-anthropic-provider.ts";
+import { advisorAgentName } from "./advisor-executor.ts";
 import {
   admissionFor,
   getProviderAdmissionsPath,
@@ -28,6 +29,12 @@ import {
 } from "./advisor-reminders.ts";
 import { readRoleEntries } from "./role-entries.ts";
 import {
+  advisorCanRead,
+  advisorReadDiagnostic,
+  readAdvisorRead,
+  type AdvisorRead,
+} from "./advisor-read-mode.ts";
+import {
   type AdvisorSetting,
   MODEL_ROLES,
   OPTIONAL_ROLE_ENTRY_KEYS,
@@ -52,6 +59,8 @@ export type RuntimeState = {
   session: SessionDelegateState;
   /** Optional-role entries as the sidecar resolved them; kept so a re-validation cannot drop them. */
   roleEntries?: RoleEntries;
+  /** One flag per Advisor slot: whether that Advisor may open the files its brief names. */
+  advisorRead?: AdvisorRead;
   diagnostics: ConfigDiagnostic[];
   modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
@@ -75,6 +84,29 @@ export type RuntimeState = {
     errors: string[];
   }>;
 };
+
+/**
+ * The profile a launch must name for this Advisor: the packaged one, or its reading variant when the user
+ * turned reading on for that slot. Every caller that prints or checks a profile goes through here.
+ * Reading belongs to a role launch; `consult_advisor` always runs the packaged profile, so a flag set
+ * there is never reported as a capability the launch has.
+ */
+export function advisorAgentNameFor(
+  state: RuntimeState,
+  setting: AdvisorSetting,
+  slot?: number,
+): string {
+  // The slot wins when the caller knows it: two Advisors may share one model, and a lookup by
+  // reference would then give the second slot the first slot's flag.
+  const index =
+    slot ??
+    state.effective.advisors.findIndex(
+      (candidate) => candidate.provider === setting.provider && candidate.model === setting.model,
+    );
+  const reads =
+    state.effective.advisorLaunch === "role" && advisorCanRead(state.advisorRead, index);
+  return advisorAgentName(setting, state.admissions, reads);
+}
 
 export function isAdvisorEnabled(effective: EffectiveDelegateState): boolean {
   return (
@@ -266,15 +298,20 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
   const correction = await readLaunchCorrectionMode(getLaunchCorrectionPath(path));
   const reminder = await readAdvisorReminderMode(getAdvisorRemindersPath(path));
   const roleFiles = await readRoleEntries(path);
+  const advisorReading = await readAdvisorRead(path);
   const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
     effective: resolveDelegateState(loaded.defaults, restored.session, roleFiles.entries),
     global: loaded.defaults,
     session: restored.session,
     roleEntries: roleFiles.entries,
+    advisorRead: advisorReading.read,
     diagnostics: [
       ...loaded.diagnostics,
       ...roleFiles.diagnostics,
+      ...(advisorReadDiagnostic(advisorReading.invalid)
+        ? [advisorReadDiagnostic(advisorReading.invalid)!]
+        : []),
       ...restored.diagnostics,
       ...(admissions.diagnostic ? [admissions.diagnostic] : []),
       ...(correction.diagnostic ? [correction.diagnostic] : []),
@@ -294,6 +331,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
 /** Scopes that report a side setting and never invalidate the delegation axis. */
 const SIDE_SETTING_SCOPES: ReadonlySet<string> = new Set([
   "advisor-extension",
+  "advisor-read",
   "launch-correction",
   "advisor-reminder",
   "role-entries",

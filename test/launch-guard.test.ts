@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { checkSubagentLaunch, inspectSubagentLaunch } from "../src/launch-guard.ts";
-import { ADVISOR_AGENT_NAME } from "../src/advisor-executor.ts";
+import { ADVISOR_AGENT_NAME, ADVISOR_READ_AGENT_NAME } from "../src/advisor-executor.ts";
 import { ANTHROPIC_ADVISOR_AGENT } from "../src/advisor-anthropic-provider.ts";
 import { PROVIDER_EXTENSION_ADVISOR_AGENT } from "../src/advisor-provider-extension.ts";
 import { resolveDelegateState } from "../src/config.ts";
@@ -624,4 +624,81 @@ test("an ordinary role name never runs as an Advisor consultation", () => {
   const ordinary = { agent: "worker", task: "t", model: "visual-design:low" };
   assert.equal(inspectSubagentLaunch(ordinary, collision(anthropicAdvisor)).refusal, undefined);
   assert.equal(ordinary.model, "visual/visual-model:low");
+});
+
+test("a reading Advisor launches under its own profile and is refused with another model", () => {
+  const reading = (overrides: Partial<RuntimeState> = {}): RuntimeState => {
+    const current = state();
+    current.advisorRead = [true];
+    return { ...current, ...overrides };
+  };
+  // Both correction modes accept the exact profile with its exact model, and leave the call alone.
+  for (const launchCorrection of ["correct", "block"] as const) {
+    const active = reading({ launchCorrection });
+    const accepted = {
+      agent: ADVISOR_READ_AGENT_NAME,
+      task: "q",
+      model: "advice/advisor-model:medium",
+    };
+    const before = structuredClone(accepted);
+    const check = inspectSubagentLaunch(accepted, active);
+    assert.equal(check.refusal, undefined, launchCorrection);
+    assert.deepEqual(
+      accepted,
+      before,
+      `a conformant reading launch stays as sent in ${launchCorrection}`,
+    );
+    assert.deepEqual(check.children, ["advisor"], launchCorrection);
+
+    // The reading profile is an Advisor profile, so it never executes work as an ordinary model.
+    const wrongModel = {
+      agent: ADVISOR_READ_AGENT_NAME,
+      task: "q",
+      model: "example/small-model:low",
+    };
+    const refused = inspectSubagentLaunch(wrongModel, active);
+    assert.equal(refused.refusal?.code, "advisor-mismatch", launchCorrection);
+    assert.match(refused.refusal?.message ?? "", /is not a configured Advisor/, launchCorrection);
+  }
+  // Advisor-only mode checks an Advisor child too: a reading launch with no model is refused
+  // instead of passing as an unknown child that names no ordinary role.
+  const advisorOnly = reading();
+  advisorOnly.effective.intensity = "off";
+  assert.equal(
+    inspectSubagentLaunch({ agent: ADVISOR_READ_AGENT_NAME, task: "q" }, advisorOnly).refusal?.code,
+    "missing-model",
+  );
+});
+
+test("a reading Advisor is refused when the call asks the host to branch the session", () => {
+  const active = state();
+  active.advisorRead = [true];
+  for (const input of [
+    {
+      agent: ADVISOR_READ_AGENT_NAME,
+      task: "q",
+      model: "advice/advisor-model:medium",
+      context: "fork",
+    },
+    {
+      agent: ADVISOR_READ_AGENT_NAME,
+      task: "q",
+      model: "advice/advisor-model:medium",
+      options: { context: "fork" },
+    },
+  ]) {
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, active);
+    assert.equal(refused.refusal?.code, "advisor-fork-context", JSON.stringify(input));
+    assert.match(refused.refusal?.message ?? "", /fresh context with its brief/);
+    assert.deepEqual(input, before, "the call is inspected, never rewritten");
+  }
+  // The same reading launch without a fork is accepted, so the refusal is specific to the context.
+  assert.equal(
+    inspectSubagentLaunch(
+      { agent: ADVISOR_READ_AGENT_NAME, task: "q", model: "advice/advisor-model:medium" },
+      active,
+    ).refusal,
+    undefined,
+  );
 });

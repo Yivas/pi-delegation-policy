@@ -39,6 +39,7 @@ import {
   writeConfig,
 } from "../src/config.ts";
 import { buildDelegationPolicy, buildPolicyPreview } from "../src/prompt.ts";
+import { advisorAgentNameFor } from "../src/runtime.ts";
 import { checkSubagentLaunch, inspectSubagentLaunch } from "../src/launch-guard.ts";
 import {
   hasRuntimeError,
@@ -60,6 +61,7 @@ import {
 } from "../src/launch-correction-mode.ts";
 import { readProviderAdmissions, writeProviderAdmissions } from "../src/provider-admissions.ts";
 import { getRoleEntriesPath, readRoleEntries } from "../src/role-entries.ts";
+import { getAdvisorReadPath } from "../src/advisor-read-mode.ts";
 import {
   CURRENT_SCHEMA_VERSION,
   emptyRoleEntries,
@@ -1527,7 +1529,8 @@ test("enabled readers fail closed for unavailable roles while reader-off and del
       contextShunt: { readerEnabled: true, readerRole: "small" },
     },
   });
-  sendKeys(panel.panel, ...Array.from({ length: 7 }, () => KEY_DOWN), KEY_ENTER);
+  focusField(panel.panel, "contextAdvanced");
+  sendKeys(panel.panel, KEY_ENTER);
   assert.match(
     panel.panel.render(120).join("\n"),
     /Reader role Small is disabled; choose an enabled ordinary role\./,
@@ -1984,6 +1987,18 @@ async function waitForRenderedText(component: InteractiveComponent, text: string
   return view;
 }
 
+/**
+ * Move the focus to a named field. Rows appear and disappear with the configuration, so a test that
+ * counts keystrokes breaks the moment a row is added; the panel reports what it is showing.
+ */
+function focusField(panel: DelegatePanel, field: string): void {
+  sendKeys(panel, KEY_HOME);
+  const fields = panel.visibleFields() as string[];
+  const target = fields.indexOf(field);
+  if (target < 0) throw new Error(`the panel does not show ${field}: ${fields.join(", ")}`);
+  sendKeys(panel, ...Array.from({ length: target }, () => KEY_DOWN));
+}
+
 function createPanelHarness(
   options: {
     rows?: number;
@@ -2003,6 +2018,10 @@ function createPanelHarness(
     continuityStatus?: DelegatePanelOptions["continuityStatus"];
     onRecoverContinuity?: DelegatePanelOptions["onRecoverContinuity"];
     onResetContinuity?: DelegatePanelOptions["onResetContinuity"];
+    roleEntries?: DelegatePanelOptions["roleEntries"];
+    onSaveRoleEntries?: DelegatePanelOptions["onSaveRoleEntries"];
+    advisorRead?: DelegatePanelOptions["advisorRead"];
+    onSaveAdvisorRead?: DelegatePanelOptions["onSaveAdvisorRead"];
   } = {},
 ) {
   const terminal = { rows: options.rows ?? 30 };
@@ -2036,6 +2055,10 @@ function createPanelHarness(
     continuityStatus: options.continuityStatus,
     onRecoverContinuity: options.onRecoverContinuity,
     onResetContinuity: options.onResetContinuity,
+    roleEntries: options.roleEntries,
+    onSaveRoleEntries: options.onSaveRoleEntries,
+    advisorRead: options.advisorRead,
+    onSaveAdvisorRead: options.onSaveAdvisorRead,
     onDone: (result) => done.push(result),
   });
   panel.focused = true;
@@ -2394,12 +2417,9 @@ test("the editor keeps an ordinary diagnostic visible when only Advisor is activ
   });
 });
 
-test("the advisor rows end the settings list and stage the same tri-state", () => {
+test("the advisor rows stage the same tri-state and cost no row when empty", () => {
   const harness = createPanelHarness({ rows: 30 });
-  const focus = (index: number) =>
-    sendKeys(harness.panel, KEY_HOME, ...Array.from({ length: index }, () => KEY_DOWN));
-
-  focus(14);
+  focusField(harness.panel, "advisor");
   const advisorRow = harness.panel.render(100).join("\n");
   assert.match(advisorRow, /^> Advisor 1\s+disabled\s*$/m);
   assert.match(advisorRow, /First advice model; executes no work/);
@@ -2415,7 +2435,7 @@ test("the advisor rows end the settings list and stage the same tri-state", () =
   assert.equal(harness.panel.isDirty(), true);
 
   const configured = createPanelHarness({ rows: 30, global: { ...defaults, advisor } });
-  sendKeys(configured.panel, KEY_HOME, ...Array.from({ length: 15 }, () => KEY_DOWN));
+  focusField(configured.panel, "advisor2");
   const secondRow = configured.panel.render(100).join("\n");
   assert.match(secondRow, /^> Advisor 2\s+not configured\s*$/m);
   assert.doesNotMatch(secondRow, /^. Advisor (3|thinking)/m);
@@ -2697,7 +2717,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
 test("the settings list keeps one row per field and one hint block that follows the focus", () => {
   const harness = createPanelHarness({ rows: 24 });
   const item =
-    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design |Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
+    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design|Vision|Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
   const view = (steps: number) => {
     for (let step = 0; step < steps; step += 1) sendKeys(harness.panel, KEY_DOWN);
     const lines = harness.panel.render(80);
@@ -2712,7 +2732,7 @@ test("the settings list keeps one row per field and one hint block that follows 
   assert.equal(first.rows, 13, "one row per field");
   assert.match(first.body, /When delegation is worth considering/);
 
-  const context = view(6);
+  const context = view(8);
   assert.equal(context.rows, first.rows, "a longer hint does not resize the list viewport");
   assert.match(context.body, /Off, observe, or enforce bounded context protection/);
   assert.match(context.body, /reader off; role small; answer 8192 bytes/);
@@ -2760,6 +2780,7 @@ test("the panel exposes Advisor continuity with status, recover, reset and back"
 
   // Back returns to the settings list, which keeps its pinned rows.
   sendKeys(panel, KEY_DOWN, KEY_ENTER);
+  sendKeys(panel, KEY_END);
   assert.match(panel.render(80).join("\n"), /Apply changes/);
 });
 
@@ -3036,21 +3057,11 @@ test("a saved admission is named when the correction step fails", async () => {
       onSaveLaunchCorrection: (mode) => writeLaunchCorrectionMode(mode, correctionPath),
     });
     // Advisor 1 row, its model selector, then the provider-extension step: admit the package.
-    sendKeys(harness.panel, KEY_HOME);
-    for (let index = 0; index < 14; index += 1) sendKeys(harness.panel, KEY_DOWN);
+    focusField(harness.panel, "advisor");
     sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_DOWN, KEY_ENTER);
     // Then the global correction row, staged to block, and Apply.
-    sendKeys(
-      harness.panel,
-      KEY_END,
-      KEY_UP,
-      KEY_UP,
-      KEY_UP,
-      KEY_UP,
-      KEY_ENTER,
-      KEY_DOWN,
-      KEY_ENTER,
-    );
+    focusField(harness.panel, "launchCorrection");
+    sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
     sendKeys(harness.panel, "a");
     await waitForRenderedText(harness.panel, "Could not save the launch correction mode");
     // A wide render keeps the whole message: the 80-column wait truncates it.
@@ -3292,7 +3303,8 @@ test("reader settings inherit independently and persist through guarded Apply an
       contextShunt: { readerEnabled: true, readerRole: "large", answerMaxBytes: 16384 },
     },
   });
-  sendKeys(reset.panel, ...Array.from({ length: 7 }, () => KEY_DOWN), KEY_ENTER);
+  focusField(reset.panel, "contextAdvanced");
+  sendKeys(reset.panel, KEY_ENTER);
   sendKeys(reset.panel, KEY_ENTER, KEY_HOME, KEY_ENTER);
   assert.deepEqual(reset.panel.getDraft().contextShunt, {
     readerRole: "large",
@@ -3335,7 +3347,8 @@ test("reader settings inherit independently and persist through guarded Apply an
         draft,
       ) === "success",
   });
-  sendKeys(apply.panel, ...Array.from({ length: 7 }, () => KEY_DOWN), KEY_ENTER);
+  focusField(apply.panel, "contextAdvanced");
+  sendKeys(apply.panel, KEY_ENTER);
   sendKeys(apply.panel, KEY_ENTER, KEY_END, KEY_ENTER);
   sendKeys(apply.panel, KEY_DOWN, KEY_ENTER, KEY_END, KEY_ENTER);
   sendKeys(apply.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER, "1", "6", "3", "8", "4", KEY_ENTER);
@@ -3586,6 +3599,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "SECURITY.md",
     "agents/pi-delegation-policy.advisor-anthropic-auth.md",
     "agents/pi-delegation-policy.advisor-provider-extension.md",
+    "agents/pi-delegation-policy.advisor-read.md",
     "agents/pi-delegation-policy.advisor.md",
     "agents/pi-delegation-policy.bulk-reader.md",
     "agents/pi-delegation-policy.context-shunt-inline-reader.md",
@@ -3596,6 +3610,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/advisor-anthropic-provider.ts",
     "src/advisor-executor.ts",
     "src/advisor-log.ts",
+    "src/advisor-read-mode.ts",
     "src/advisor-provider-extension.ts",
     "src/advisor-reminders.ts",
     "src/advisor-resume.ts",
@@ -4823,8 +4838,10 @@ test("the thinking field sets fixed, sets a range, normalizes one level, and ret
   const { panel, terminal } = createPanelHarness({
     session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
   });
-  const openSmallThinking = () =>
-    sendKeys(panel, KEY_HOME, ...Array.from({ length: 8 }, () => KEY_DOWN), KEY_ENTER);
+  const openSmallThinking = () => {
+    focusField(panel, "thinkingSmall");
+    sendKeys(panel, KEY_ENTER);
+  };
 
   openSmallThinking();
   const modes = panel.render(100).join("\n");
@@ -4887,7 +4904,8 @@ test("the thinking selector lists only the role model's supported levels and exp
   const plain = createPanelHarness({
     candidates: [nonReasoning, model(medium), model(large), model(uiDesign)],
   });
-  sendKeys(plain.panel, KEY_HOME, ...Array.from({ length: 8 }, () => KEY_DOWN), KEY_ENTER);
+  focusField(plain.panel, "thinkingSmall");
+  sendKeys(plain.panel, KEY_ENTER);
   sendKeys(plain.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   const plainLevels = plain.panel.render(100).join("\n");
   assert.match(plainLevels, /^[> ] off\s*$/m);
@@ -4897,7 +4915,8 @@ test("the thinking selector lists only the role model's supported levels and exp
   const mapped = createPanelHarness({
     candidates: [withMax, model(medium), model(large), model(uiDesign)],
   });
-  sendKeys(mapped.panel, KEY_HOME, ...Array.from({ length: 8 }, () => KEY_DOWN), KEY_ENTER);
+  focusField(mapped.panel, "thinkingSmall");
+  sendKeys(mapped.panel, KEY_ENTER);
   sendKeys(mapped.panel, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   assert.match(mapped.panel.render(100).join("\n"), /^[> ] max\s*$/m);
 
@@ -4905,7 +4924,8 @@ test("the thinking selector lists only the role model's supported levels and exp
     global: { ...defaults, small: null },
     session: { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
   });
-  sendKeys(disabledRole.panel, KEY_HOME, ...Array.from({ length: 8 }, () => KEY_DOWN), KEY_ENTER);
+  focusField(disabledRole.panel, "thinkingSmall");
+  sendKeys(disabledRole.panel, KEY_ENTER);
   const disabledView = disabledRole.panel.render(100).join("\n");
   assert.match(disabledView, /Small is disabled; levels cannot be listed\./);
   assert.match(disabledView, /Unset for this session \(no policy\)/);
@@ -4914,7 +4934,8 @@ test("the thinking selector lists only the role model's supported levels and exp
   const missingModel = createPanelHarness({
     candidates: [model(medium), model(large), model(uiDesign)],
   });
-  sendKeys(missingModel.panel, KEY_HOME, ...Array.from({ length: 8 }, () => KEY_DOWN), KEY_ENTER);
+  focusField(missingModel.panel, "thinkingSmall");
+  sendKeys(missingModel.panel, KEY_ENTER);
   assert.match(
     missingModel.panel.render(100).join("\n"),
     /Small model example\/small is not available; levels cannot be listed\./,
@@ -5065,4 +5086,313 @@ test("the launch counts attribute a child to the optional entry code that named 
     // One row per entry code, so an entry that ran is not folded into its family's first slot.
     assert.match(messages.at(-1) ?? "", /launches=1 \(.*Vision 1/);
   });
+});
+
+test("the panel shows one row per optional entry and hides the ones without their anchor", () => {
+  const harness = createPanelHarness({ rows: 30 });
+  const fields = () => harness.panel.visibleFields() as string[];
+  // Visual Design comes from the document, so its second row is offered; Vision starts empty, so only
+  // its first row is there and the family can be started from the panel.
+  assert.ok(fields().includes("uiDesign2"), "entry 2 of a configured family is offered");
+  assert.ok(!fields().includes("uiDesign3"), "entry 3 waits for entry 2");
+  assert.ok(fields().includes("vision"), "the Vision family is startable");
+  assert.ok(!fields().includes("vision2"), "entry 2 waits for entry 1");
+  assert.ok(!fields().includes("vision3"), "entry 3 waits for entry 2");
+});
+
+test("an entry row writes the sidecar through its own callback and never the session", async () => {
+  const saved: unknown[] = [];
+  const harness = createPanelHarness({
+    rows: 30,
+    onSaveRoleEntries: async (entries) => {
+      saved.push(entries);
+      return "saved";
+    },
+  });
+  focusField(harness.panel, "vision");
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+  // The row reads the staged model with its global provenance before anything is written.
+  assert.match(harness.panel.render(100).join("\n"), /^> Vision\s+example\/\S+\s+· global/m);
+  assert.equal(harness.panel.getDraft().uiDesign, undefined, "the session draft is untouched");
+  sendKeys(harness.panel, "a");
+  await new Promise((resolve) => setImmediate(resolve));
+  const written = saved.at(-1) as { vision: Array<{ provider: string; model: string }> };
+  assert.equal(written.vision.length, 1, "one entry was staged");
+  assert.equal(written.vision[0]!.provider, "example");
+});
+
+test("removing an entry closes the gap and hides the rows that depended on it", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    // The removal is a write, so the row refuses it without a writer; this test is about the gap.
+    onSaveRoleEntries: async () => "saved",
+    roleEntries: {
+      uiDesign: [],
+      vision: [
+        { provider: "example", model: "vision-one" },
+        { provider: "example", model: "ui-design" },
+      ],
+    },
+  });
+  const fields = () => harness.panel.visibleFields() as string[];
+  assert.ok(fields().includes("vision2"), "a configured second entry has its row");
+  focusField(harness.panel, "vision");
+  // The first choice of an entry selector is the removal itself; going up clamps there.
+  sendKeys(harness.panel, KEY_ENTER, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_ENTER);
+  // The entry behind it moved into slot 1, and the next empty slot is offered again.
+  assert.match(harness.panel.render(100).join("\n"), /^> Vision\s+example\/ui-design\s+· global/m);
+  assert.ok(fields().includes("vision2"), "one entry is left, so slot 2 is offered");
+  assert.ok(!fields().includes("vision3"), "slot 3 waits for slot 2");
+});
+
+test("a vision entry that cannot read images still saves and the panel says so", async () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    candidates: [
+      { provider: "example", id: "ui-design", name: "Designer", reasoning: true, input: ["text"] },
+    ] as never,
+    onSaveRoleEntries: async () => "saved",
+  });
+  focusField(harness.panel, "vision");
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+  // The warning appears when the model is chosen, while it can still be changed.
+  assert.match(harness.panel.render(100).join("\n"), /not accept image input/);
+});
+
+test("the reading step is offered after an Advisor model and writes its flag", async () => {
+  const saved: boolean[][] = [];
+  const harness = createPanelHarness({
+    rows: 30,
+    global: { ...defaults, advisor, advisorMode: "on" },
+    onSaveAdvisorRead: async (flags) => {
+      saved.push(flags);
+      return "saved";
+    },
+  });
+  focusField(harness.panel, "advisor");
+  // Open the selector, skip "global" and "disable", choose a plain model: reading follows.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  assert.match(harness.panel.render(100).join("\n"), /Advisor 1 reading/);
+  sendKeys(harness.panel, KEY_DOWN, KEY_ENTER);
+  assert.match(harness.panel.render(100).join("\n"), /^> Advisor 1\s+example\/\S+ · reads files/m);
+  sendKeys(harness.panel, "a");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(saved.at(-1), [true]);
+});
+
+test("the block names the reading profile in both places and never claims a read it cannot do", () => {
+  const advisorGlobal = (overrides: Partial<GlobalDefaults> = {}): GlobalDefaults => ({
+    ...defaults,
+    advisors: [advisor],
+    advisorMode: "on",
+    advisorLaunch: "role",
+    ...overrides,
+  });
+  const readingState = (overrides: Partial<GlobalDefaults> = {}, read = [true]): RuntimeState => {
+    const current = runtime(
+      { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+      advisorGlobal(overrides),
+    );
+    current.advisorRead = read;
+    current.modelStatuses.set("advisor", { kind: "available", model: model(advisor) as never });
+    return current;
+  };
+
+  // With reading on, the role line names the reading profile and the consultation sentence points at
+  // that line instead of naming a profile of its own.
+  const reading = buildDelegationPolicy(readingState()) ?? "";
+  assert.match(reading, /agent profile: "pi-delegation-policy\.advisor-read"/);
+  assert.match(reading, /reading: on, open only the paths the brief names/);
+  assert.match(
+    reading,
+    /using the exact packaged agent profile specified in each Advisor role line/,
+  );
+  assert.doesNotMatch(reading, /using agent "pi-delegation-policy\.advisor" exactly/);
+  // The plain profile is not named anywhere, so no second sentence contradicts the role line.
+  assert.doesNotMatch(reading, /"pi-delegation-policy\.advisor"/);
+
+  // A provider-dependent profile keeps its identity, so the slot cannot read even with the flag on.
+  const dependent = buildDelegationPolicy(
+    readingState({ advisors: [{ ...advisor, providerExtension: "anthropic-auth" }] }),
+  );
+  assert.match(dependent ?? "", /agent profile: "pi-delegation-policy\.advisor-anthropic-auth"/);
+  assert.doesNotMatch(dependent ?? "", /reading: on/);
+  assert.match(
+    dependent ?? "",
+    /using the exact packaged agent profile specified in each Advisor role line/,
+  );
+
+  // Tool launch always runs the packaged, tool-free profile: the flag is not a capability it has.
+  const tool = buildDelegationPolicy(readingState({ advisorLaunch: "tool" })) ?? "";
+  assert.match(tool, /agent profile: "pi-delegation-policy\.advisor"/);
+  assert.doesNotMatch(tool, /reading: on/);
+});
+
+test("an invalid Advisor reading file costs only reading and leaves the block active", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    await writeFile(getAdvisorReadPath(path), "{ broken", "utf8");
+    const state = await loadRuntime(context());
+    // The sidecar is reported where a side setting is reported, never as `D:ERR`.
+    assert.ok(state.diagnostics.some(({ scope }) => scope === "advisor-read"));
+    assert.equal(hasRuntimeError(state), false);
+    assert.equal(statusLabel(state), "D:NORM");
+    const policy = buildDelegationPolicy(state) ?? "";
+    assert.match(policy, /pi-delegation-policy:owned/);
+    assert.match(policy, /Enabled ordinary roles: Small, Medium, Large/);
+  });
+});
+
+test("an entry selector refuses a model its family already holds", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    onSaveRoleEntries: async () => "saved",
+  });
+  focusField(harness.panel, "uiDesign2");
+  // Search narrows the list to the document's own entry 1, which the family already holds.
+  sendKeys(harness.panel, KEY_ENTER);
+  sendKeys(harness.panel, "u", "i", "-", "d", "e", "s", "i", "g", "n");
+  sendKeys(harness.panel, KEY_DOWN, KEY_ENTER);
+  assert.match(
+    harness.panel.render(120).join("\n"),
+    /Visual Design 2 refused: example\/ui-design is already configured in this family/,
+  );
+  assert.equal(harness.panel.isDirty(), false, "nothing was staged for the writer");
+});
+
+test("an entry edit is refused while the branch owns the family's first slot", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION, uiDesign: { ...uiDesign } },
+    onSaveRoleEntries: async () => "saved",
+  });
+  focusField(harness.panel, "uiDesign2");
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+  assert.match(
+    harness.panel.render(120).join("\n"),
+    /Clear the session override of Visual Design \(session\.uiDesign\) before configuring the global entries\./,
+  );
+  assert.equal(harness.panel.isDirty(), false, "the branch value never becomes a global entry");
+});
+
+test("tool launch offers no reading step, because it always runs the tool-free profile", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    global: { ...defaults, advisor, advisorMode: "on", advisorLaunch: "tool" },
+    onSaveAdvisorRead: async () => "saved",
+  });
+  focusField(harness.panel, "advisor");
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  assert.doesNotMatch(harness.panel.render(100).join("\n"), /Advisor 1 reading/);
+  // The model is staged and the selector closed: only the reading step is missing.
+  assert.deepEqual(harness.panel.getDraft().advisors, [{ provider: "example", model: "large" }]);
+  assert.match(harness.panel.render(100).join("\n"), /^> Advisor 1\s+example\/large\s*$/m);
+});
+
+test("two entry edits in one session build on each other", () => {
+  const saved: unknown[] = [];
+  const harness = createPanelHarness({
+    rows: 30,
+    onSaveRoleEntries: async (entries) => {
+      saved.push(entries);
+      return "saved";
+    },
+  });
+  // Entry 1, then entry 2, both staged before anything is written.
+  focusField(harness.panel, "vision");
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+  assert.match(harness.panel.render(100).join("\n"), /^> Vision\s+example\/\S+\s+· global/m);
+  focusField(harness.panel, "vision2");
+  assert.match(harness.panel.render(100).join("\n"), /^> Vision 2\s+disabled · global/m);
+  // A different model: the same one twice in a family is refused on purpose.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  assert.match(harness.panel.render(100).join("\n"), /^> Vision 2\s+example\/\S+\s+· global/m);
+  sendKeys(harness.panel, "a");
+  return new Promise<void>((resolve) =>
+    setImmediate(() => {
+      const written = saved.at(-1) as { vision: unknown[] };
+      assert.equal(written.vision.length, 2, "both staged entries reach the file");
+      resolve();
+    }),
+  );
+});
+
+test("removing an Advisor moves its reading flag with it", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    global: {
+      ...defaults,
+      advisors: [advisor, { ...advisor, model: "second" }, { ...advisor, model: "third" }],
+      advisorMode: "on",
+    },
+    advisorRead: [false, true, false],
+    onSaveAdvisorRead: async () => "saved",
+  });
+  focusField(harness.panel, "advisor2");
+  // "Disable for this session" is the second choice: Advisor 3 moves up without inheriting its flag.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+  focusField(harness.panel, "advisor2");
+  const row = harness.panel.render(100).join("\n");
+  assert.doesNotMatch(row, /^> Advisor 2\s+example\/third · reads files/m);
+});
+
+test("a tool-launch configuration never shows the reading row claim", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    global: { ...defaults, advisor, advisorMode: "on", advisorLaunch: "tool" },
+    advisorRead: [true],
+    onSaveAdvisorRead: async () => "saved",
+  });
+  assert.doesNotMatch(harness.panel.render(100).join("\n"), /· reads files/);
+});
+
+test("two Advisors that share a model keep their own reading flag", () => {
+  const shared = { provider: "example", model: "advisor" };
+  const state = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, advisors: [shared, { ...shared }], advisorMode: "on" },
+  );
+  state.advisorRead = [true, false];
+  assert.equal(advisorAgentNameFor(state, shared, 0).includes("advisor-read"), true);
+  assert.equal(advisorAgentNameFor(state, shared, 1).includes("advisor-read"), false);
+});
+
+test("changing an entry model keeps that entry's thinking policy", () => {
+  const saved: unknown[] = [];
+  const harness = createPanelHarness({
+    rows: 30,
+    roleEntries: {
+      uiDesign: [],
+      vision: [{ provider: "example", model: "vision-one", thinking: { level: "low" } }],
+    },
+    onSaveRoleEntries: async (entries) => {
+      saved.push(entries);
+      return "saved";
+    },
+  });
+  focusField(harness.panel, "vision");
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+  sendKeys(harness.panel, "a");
+  return new Promise<void>((resolve) =>
+    setImmediate(() => {
+      const written = saved.at(-1) as {
+        vision: Array<{ model: string; thinking?: { level?: string } }>;
+      };
+      assert.equal(written.vision[0]!.model !== "vision-one", true, "the model changed");
+      assert.deepEqual(written.vision[0]!.thinking, { level: "low" });
+      resolve();
+    }),
+  );
+});
+
+test("an Advisor on an admitted provider never claims reading", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    global: { ...defaults, advisor, advisorMode: "on" },
+    admissions: { example: { package: "some-ext", version: "1.0.0" } },
+    advisorRead: [true],
+    onSaveAdvisorRead: async () => "saved",
+  });
+  assert.doesNotMatch(harness.panel.render(100).join("\n"), /· reads files/);
 });

@@ -21,7 +21,6 @@ import {
   AdvisorExecutor,
   advisorContinuityText,
   advisorThinking,
-  advisorAgentName,
   advisorProfile,
   type AdvisorGroupOutcome,
   type AdvisorSlotPlan,
@@ -83,6 +82,7 @@ import { advisorRoleLines, buildDelegationPolicy } from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
   advisorSlots,
+  advisorAgentNameFor,
   advisorStatusLabel,
   validAdvisors,
   hasAdvisorError,
@@ -302,7 +302,7 @@ function advisorChildren(
   return (statedChildren(input)?.children ?? []).flatMap(({ entry, model }) => {
     if (!entry) return [];
     return advisors.some(
-      ({ setting }) => entry.agent === advisorAgentName(setting, state.admissions),
+      ({ setting, index }) => entry.agent === advisorAgentNameFor(state, setting, index),
     )
       ? [{ ...entry, ...(model === undefined ? {} : { model }) }]
       : [];
@@ -447,7 +447,7 @@ export function statusText(state: RuntimeState): string {
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
     ...effective.advisors.map(
       (entry, index) =>
-        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentName(entry, state.admissions)}${admissionText(entry, state)} (${effective.source.advisors})`,
+        `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentNameFor(state, entry, index)}${admissionText(entry, state)} (${effective.source.advisors})`,
     ),
     ...THINKING_ROLE_KEYS.filter((role) => role !== "advisor").map(
       (role) =>
@@ -958,7 +958,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             slot.setting.model,
             slot.setting.providerExtension ?? "",
             slot.model ? advisorThinking(slot.model) : "",
-            advisorAgentName(slot.setting, state.admissions),
+            advisorAgentNameFor(state, slot.setting, slot.index),
             admission ? `${admission.package}@${admission.version}` : "",
             ADVISOR_PACKAGE_VERSION,
             slot.unavailable ?? "",
@@ -1140,7 +1140,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               provider: slot.setting.provider,
               model: slot.setting.model,
               thinking,
-              profile: advisorAgentName(slot.setting, state.admissions),
+              profile: advisorAgentNameFor(state, slot.setting, slot.index),
               admission: admission ? `${admission.package}@${admission.version}` : "",
               packageVersion: ADVISOR_PACKAGE_VERSION,
               epoch: authorizationEpoch,

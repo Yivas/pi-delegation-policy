@@ -478,8 +478,16 @@ test("Advisor mode supports keyboard selection, inheritance, bounded render and 
     home = "\x1b[H",
     end = "\x1b[F",
     up = "\x1b[A";
+  // A row appears or disappears with the configuration, so the focus is resolved by name.
+  const focus = (field: string) => {
+    send(home);
+    const fields = panel.visibleFields();
+    const target = fields.indexOf(field as never);
+    assert.ok(target >= 0, `the panel shows ${field}: ${fields.join(", ")}`);
+    send(...Array.from({ length: target }, () => down));
+  };
   panel.render(100);
-  send(home, ...Array.from({ length: 12 }, () => down));
+  focus("advisorMode");
   assert.match(panel.render(100).join("\n"), /^> Advisor mode\s+with-delegation/m);
   send(enter, down, down, enter);
   assert.equal(panel.getDraft().advisorMode, "on");
@@ -494,7 +502,8 @@ test("Advisor mode supports keyboard selection, inheritance, bounded render and 
   assert.equal(panel.isDirty(), false);
   send(enter, down, down, enter);
   assert.equal(panel.getDraft().advisorMode, "on");
-  send(home, ...Array.from({ length: 14 }, () => down), enter, home, down, enter);
+  focus("advisor");
+  send(enter, home, down, enter);
   assert.equal(panel.getDraft().advisors, null);
   assert.equal(panel.getDraft().advisorMode, "off");
   send(end, up, enter);
@@ -789,17 +798,13 @@ test("panel removing Advisor 1 clears both entries and turns Advisor off", () =>
     const down = "\u001b[B",
       up = "\u001b[A",
       enter = "\r";
-    for (const key of [
-      "\u001b[H",
-      ...Array.from({ length: 14 }, () => down),
-      enter,
-      up,
-      up,
-      up,
-      down,
-      enter,
-    ])
-      panel.handleInput(key);
+    // The focus is resolved by name: a row appears or disappears with the configuration.
+    panel.handleInput("\u001b[H");
+    const fields = panel.visibleFields();
+    const advisorRow = fields.indexOf("advisor" as never);
+    assert.ok(advisorRow >= 0, `the panel shows advisor: ${fields.join(", ")}`);
+    for (const _ of Array.from({ length: advisorRow }, () => down)) panel.handleInput(_);
+    for (const key of [enter, up, up, up, down, enter]) panel.handleInput(key);
     assert.equal(panel.getDraft().advisors, null);
     assert.equal(panel.getDraft().advisorMode, "off");
     const state = runtime({ ...empty, advisors, advisorMode: "on" }, panel.getDraft());
@@ -844,17 +849,23 @@ test("Advisors 2 and 3 appear in order, pick their profile with the model and st
   const send = (...keys: string[]) => {
     for (const key of keys) panel.handleInput(key);
   };
-  const focus = (index: number) => send(home, ...Array.from({ length: index }, () => down));
+  const focus = (field: string) => {
+    send(home);
+    const fields = panel.visibleFields();
+    const target = fields.indexOf(field as never);
+    assert.ok(target >= 0, `the panel shows ${field}: ${fields.join(", ")}`);
+    send(...Array.from({ length: target }, () => down));
+  };
   const view = () => panel.render(100).join(String.fromCharCode(10));
   const claude = { provider: "anthropic", model: "claude" };
   panel.render(100);
-  focus(15);
+  focus("advisor2");
   assert.match(view(), /^> Advisor 2\s+not configured\s*$/m);
   assert.doesNotMatch(view(), /^. Advisor (3|thinking)/m);
-  // A non-Anthropic model needs no profile step.
-  send(enter, down, down, down, down, enter);
+  // A non-Anthropic model needs no profile step, and the reading step accepts its default Off.
+  send(enter, down, down, down, down, enter, enter);
   assert.deepEqual(panel.getDraft().advisors, [advisor, ordinary]);
-  focus(16);
+  focus("advisor3");
   assert.match(view(), /^> Advisor 3\s+not configured\s*$/m);
   send(enter, down, down, enter);
   assert.match(view(), /Advisor 3 profile/);
@@ -865,11 +876,11 @@ test("Advisors 2 and 3 appear in order, pick their profile with the model and st
     { ...claude, providerExtension: "anthropic-auth" },
   ]);
   assert.match(view(), /^> Advisor 3\s+anthropic\/claude · Anthropic auth\s*$/m);
-  focus(13);
+  focus("advisorLaunch");
   send(enter, down, down, enter);
   assert.equal(panel.getDraft().advisorLaunch, "tool");
   // Removing Advisor 2 moves Advisor 3 up together with its profile.
-  focus(15);
+  focus("advisor2");
   const up = String.fromCharCode(27) + "[A";
   send(enter, up, up, up, enter);
   assert.deepEqual(panel.getDraft().advisors, [

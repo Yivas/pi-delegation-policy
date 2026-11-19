@@ -86,7 +86,20 @@ A per-Advisor `providerExtension: "anthropic-auth"` opt-in selects the separate
 `@gotgenes/pi-anthropic-auth` 3.4.3, 3.4.4, or 3.6.0 with the exact manifest, a single internal entry,
 and the canonical path, and it inherits no ambient extensions. The provider's normal configuration,
 startup hook, aliases, and account diagnostic command are trusted code with normal authentication and
-filesystem access. Zero model tools is not a sandbox. The diagnostic is never invoked during
+filesystem access. Zero model tools is not a sandbox.
+
+**Advisor reading.** Reading is off by default and turned on per Advisor slot, stored in
+`delegation-policy.advisor-read.json`. It applies to role launches: `consult_advisor`, the tool launch,
+always runs the packaged no-tools profile, so a flag set there changes nothing. In a role launch, when it
+is on, that Advisor launches through
+`pi-delegation-policy.advisor-read`, a separate profile whose only tool is `read`; there is no shell,
+write, network, MCP, extension, or nested agent. The profile is not a path boundary: this extension
+grants the tool and the host's permission rules decide what `read` may reach, so a brief that names a
+sensitive path can expose it to the Advisor's provider. The profile instructs the Advisor to open only
+the paths the brief names, to refuse credentials, keys, and personal files, and to say when it cannot
+see an image instead of describing it, but that is guidance, not enforcement. File content reaches the
+Advisor's provider with the same retention as the brief. Provider-dependent Advisor profiles keep their
+own identity and stay tool-free, so reading is never available on them. The diagnostic is never invoked during
 initialization, and failed initialization keeps a closed dispatch guard rather than falling back to
 builtin transport. Version labels are not signatures, and the resolution-to-load race remains. A saved
 opt-in silences every Advisor on downgrade to `0.22.2`, while ordinary delegation and the ContextShunt

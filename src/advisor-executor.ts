@@ -54,6 +54,8 @@ import {
 } from "./advisor-threads.ts";
 
 export const ADVISOR_AGENT_NAME = "pi-delegation-policy.advisor";
+/** The same advisor with one tool: `read`, so it can open a file the brief names. */
+export const ADVISOR_READ_AGENT_NAME = "pi-delegation-policy.advisor-read";
 export const ADVISOR_PACKAGE_VERSION = (
   JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
     version: string;
@@ -219,9 +221,16 @@ export function advisorProfile(
   return admissionFor(admissions, setting.provider) ? "admitted" : undefined;
 }
 
+/**
+ * The profile a launch must name. Reading is a separate profile rather than a launch option, because the
+ * child's tools come from the profile and nothing here may pass tool overrides. The provider-dependent
+ * profiles keep their own identity and stay tool-free: reading is offered on the ordinary advisor only,
+ * and the prompt says so instead of promising a capability the child does not have.
+ */
 export function advisorAgentName(
   setting: Pick<AdvisorSetting, "provider" | "model" | "providerExtension">,
   admissions: ProviderAdmissions = {},
+  canRead = false,
 ): string {
   switch (advisorProfile(setting, admissions)) {
     case "anthropic-auth":
@@ -229,7 +238,7 @@ export function advisorAgentName(
     case "admitted":
       return PROVIDER_EXTENSION_ADVISOR_AGENT;
     default:
-      return ADVISOR_AGENT_NAME;
+      return canRead ? ADVISOR_READ_AGENT_NAME : ADVISOR_AGENT_NAME;
   }
 }
 const ANTHROPIC_DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {

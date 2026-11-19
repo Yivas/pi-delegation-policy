@@ -41,23 +41,35 @@ import {
   CONTEXT_SHUNT_MODES,
   type ContextShuntSettings,
   CURRENT_SCHEMA_VERSION,
+  type EffectiveDelegateState,
   type GlobalDefaults,
   INTENSITIES,
   type Intensity,
   type ModelConfigKey,
   type ModelRef,
   type ModelRole,
+  type OptionalRoleEntryKey,
+  optionalRoleEntryKeys,
   PREFERENCES,
+  emptyRoleEntries,
   type Preference,
   ROLE_LABELS,
+  type RoleEntries,
   type SessionDelegateState,
   type SessionThinkingSettings,
   type ThinkingLevelName,
   type ThinkingPolicy,
 } from "./types.ts";
+import { copyRoleEntries, sameRoleEntries, type RoleEntriesSaveResult } from "./role-entries.ts";
+import {
+  normalizeAdvisorRead,
+  trimAdvisorRead,
+  type AdvisorReadSaveResult,
+} from "./advisor-read-mode.ts";
 
 const USE_GLOBAL_DEFAULT = "Use global default";
 const DISABLE_FOR_SESSION = "Disable for this session";
+const REMOVE_ENTRY = "Remove entry (global)";
 const UNSET_FOR_SESSION = "Unset for this session (no policy)";
 const FIXED_LEVEL = "Fixed level…";
 const RANGE_LEVELS = "Range (min–max)…";
@@ -69,6 +81,11 @@ const FIELD_IDS = [
   "medium",
   "large",
   "uiDesign",
+  "uiDesign2",
+  "uiDesign3",
+  "vision",
+  "vision2",
+  "vision3",
   "contextShunt",
   "contextAdvanced",
   "thinkingSmall",
@@ -96,7 +113,40 @@ type ThinkingKey = ModelRole | "uiDesign";
 /** Advisor rows follow list order; each row also carries that entry's provider profile. */
 const ADVISOR_FIELDS = ["advisor", "advisor2", "advisor3"] as const;
 type AdvisorField = (typeof ADVISOR_FIELDS)[number];
-type ModelField = ThinkingKey | AdvisorField;
+/**
+ * Optional-role entries are rows of their own. They are global, like the other sidecar settings,
+ * because the entry lists live in `delegation-policy.roles.json` rather than in the session.
+ */
+const ENTRY_FIELDS = ["uiDesign2", "uiDesign3", "vision", "vision2", "vision3"] as const;
+type EntryField = (typeof ENTRY_FIELDS)[number];
+type ModelField = ThinkingKey | AdvisorField | EntryField;
+const ENTRY_FIELD_KEYS: Record<EntryField, OptionalRoleEntryKey> = {
+  uiDesign2: "uiDesign2",
+  uiDesign3: "uiDesign3",
+  vision: "vision",
+  vision2: "vision2",
+  vision3: "vision3",
+};
+function isEntryField(field: string): field is EntryField {
+  return (ENTRY_FIELDS as readonly string[]).includes(field);
+}
+function entryKeyOf(field: EntryField): OptionalRoleEntryKey {
+  return ENTRY_FIELD_KEYS[field];
+}
+function entryFamilyOf(key: OptionalRoleEntryKey): "uiDesign" | "vision" {
+  return key.startsWith("uiDesign") ? "uiDesign" : "vision";
+}
+/**
+ * The row that must already be configured before this one can appear. `vision` has none: the family
+ * has to be startable from the panel, and its first entry is not backed by a document key.
+ */
+const ENTRY_FIELD_PARENT: Record<EntryField, EntryField | "uiDesign" | "always"> = {
+  uiDesign2: "uiDesign",
+  uiDesign3: "uiDesign2",
+  vision: "always",
+  vision2: "vision",
+  vision3: "vision2",
+};
 const THINKING_FIELD_KEYS: Record<ThinkingField, ThinkingKey> = {
   thinkingSmall: "small",
   thinkingMedium: "medium",
@@ -154,6 +204,7 @@ type PanelMode =
   | { kind: "correction"; selected: number }
   | { kind: "reminder"; selected: number }
   | { kind: "provider"; index: number; selected: number }
+  | { kind: "advisor-read"; index: number; selected: number }
   | { kind: "extension"; index: number; provider: string; selected: number }
   | { kind: "model"; field: ModelField; selected: number; query: string }
   | { kind: "advanced"; selected: number }
@@ -210,6 +261,14 @@ export interface DelegatePanelOptions {
   onDone: (result: DelegatePanelResult) => void;
   /** Global provider-extension admissions; Apply and Save both store a changed set. */
   admissions?: ProviderAdmissions;
+  /** One flag per Advisor slot: whether that Advisor may open the files its brief names. */
+  advisorRead?: boolean[];
+  /** Stores the global reading flags; Apply and Save both write a changed set before their step. */
+  onSaveAdvisorRead?: (read: boolean[]) => Promise<AdvisorReadSaveResult>;
+  /** Optional-role entry lists; absent means none configured. Apply and Save write a change. */
+  roleEntries?: RoleEntries;
+  /** Stores the global entry lists; Apply and Save both write a changed set before their step. */
+  onSaveRoleEntries?: (entries: RoleEntries) => Promise<RoleEntriesSaveResult>;
   /** Global launch correction mode; absent means `correct`. */
   launchCorrection?: LaunchCorrectionMode;
   /** Stores the global mode; Apply and Save both write a changed value before their own step. */
@@ -262,6 +321,11 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   medium: "Medium model",
   large: "Large model",
   uiDesign: "Visual Design",
+  uiDesign2: "Visual Design 2",
+  uiDesign3: "Visual Design 3",
+  vision: "Vision",
+  vision2: "Vision 2",
+  vision3: "Vision 3",
   contextShunt: "Context protection",
   contextAdvanced: "Context advanced",
   thinkingSmall: "Small thinking",
@@ -290,6 +354,16 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
   medium: "Planning, ambiguity, synthesis, and coordination.",
   large: "Exceptional unblocker for persistent hard problems.",
   uiDesign: "Design, assets, and bounded presentation work; no app behavior.",
+  uiDesign2:
+    "Second model for the same work; global, and its thinking policy lives in delegation-policy.roles.json.",
+  uiDesign3:
+    "Third model for the same work; global, and its thinking policy lives in delegation-policy.roles.json.",
+  vision:
+    "Reads images the user chose a model for; global, and its thinking policy lives in the roles file.",
+  vision2:
+    "Second Vision entry; global, and its thinking policy lives in delegation-policy.roles.json.",
+  vision3:
+    "Third Vision entry; global, and its thinking policy lives in delegation-policy.roles.json.",
   contextShunt: "Off, observe, or enforce bounded context protection.",
   contextAdvanced:
     "Reader role, limits, and path patterns; each value can inherit from global defaults.",
@@ -345,6 +419,23 @@ function correctionFailureText(result: LaunchCorrectionSaveResult): string {
   return result === "unknown-state"
     ? "Launch correction file is unreadable or invalid; fix or remove delegation-policy.launch-correction.json, then retry."
     : "Could not save the launch correction mode.";
+}
+
+function advisorReadFailureText(result: AdvisorReadSaveResult): string {
+  return result === "unknown-state"
+    ? "Advisor reading file is unreadable or invalid; fix or remove delegation-policy.advisor-read.json, then retry."
+    : "Could not save the Advisor reading flags.";
+}
+
+/** A sidecar this editor has no writer for: the edit is refused instead of being staged and lost. */
+function noWriterText(file: string): string {
+  return `No writer for ${file} is configured in this editor, so the change was not made.`;
+}
+
+function roleEntriesFailureText(result: RoleEntriesSaveResult): string {
+  return result === "unknown-state"
+    ? "Optional role entries file is unreadable or invalid; fix or remove delegation-policy.roles.json, then retry."
+    : "Could not save the optional role entries.";
 }
 
 function reminderFailureText(result: AdvisorReminderSaveResult): string {
@@ -498,6 +589,10 @@ export class DelegatePanel implements Component, Focusable {
   private readonly onSaveAdmissions: DelegatePanelOptions["onSaveAdmissions"];
   private readonly onSaveLaunchCorrection: DelegatePanelOptions["onSaveLaunchCorrection"];
   private readonly onSaveAdvisorReminder: DelegatePanelOptions["onSaveAdvisorReminder"];
+  private readonly onSaveRoleEntries: DelegatePanelOptions["onSaveRoleEntries"];
+  private readonly onSaveAdvisorRead: DelegatePanelOptions["onSaveAdvisorRead"];
+  private advisorRead: boolean[];
+  private draftAdvisorRead: boolean[];
   private readonly extensionCandidates: readonly ProviderPackage[];
   private readonly extensionProviders: readonly string[];
   private admissions: ProviderAdmissions;
@@ -509,9 +604,12 @@ export class DelegatePanel implements Component, Focusable {
   private readonly advisorReminderInvalid: boolean;
   /** Global steps already on disk from this editor, so a later failure never denies them. */
   private readonly savedGlobals = new Map<
-    "admissions" | "launchCorrection" | "advisorReminder",
+    "admissions" | "launchCorrection" | "advisorReminder" | "roleEntries" | "advisorRead",
     string
   >();
+  /** Optional-role entries as the sidecar holds them, and the set this editor is staging. */
+  private roleEntries: RoleEntries;
+  private draftRoleEntries: RoleEntries;
   private readonly original: SessionDelegateState;
   private readonly searchInput = new Input();
   private readonly advancedInput = new Input();
@@ -547,6 +645,10 @@ export class DelegatePanel implements Component, Focusable {
     this.onDone = options.onDone;
     this.onSaveAdmissions = options.onSaveAdmissions;
     this.onSaveLaunchCorrection = options.onSaveLaunchCorrection;
+    this.onSaveRoleEntries = options.onSaveRoleEntries;
+    this.onSaveAdvisorRead = options.onSaveAdvisorRead;
+    this.advisorRead = [...(options.advisorRead ?? [])];
+    this.draftAdvisorRead = [...this.advisorRead];
     this.extensionCandidates = options.extensionCandidates ?? [];
     this.extensionProviders = options.extensionProviders ?? [];
     this.admissions = structuredClone(options.admissions ?? {});
@@ -554,6 +656,8 @@ export class DelegatePanel implements Component, Focusable {
     this.launchCorrection = options.launchCorrection ?? DEFAULT_LAUNCH_CORRECTION_MODE;
     this.draftLaunchCorrection = this.launchCorrection;
     this.onSaveAdvisorReminder = options.onSaveAdvisorReminder;
+    this.roleEntries = copyRoleEntries(options.roleEntries ?? emptyRoleEntries());
+    this.draftRoleEntries = copyRoleEntries(this.roleEntries);
     this.advisorReminder = options.advisorReminder ?? DEFAULT_ADVISOR_REMINDER_MODE;
     this.draftAdvisorReminder = this.advisorReminder;
     this.advisorReminderInvalid = options.advisorReminderInvalid ?? false;
@@ -561,6 +665,15 @@ export class DelegatePanel implements Component, Focusable {
 
   get focused(): boolean {
     return this._focused;
+  }
+
+  /**
+   * The fields this panel is currently showing, in order. A row can appear or disappear as the
+   * configuration changes, so callers that move the focus resolve the target by name instead of
+   * counting keystrokes that a new row would invalidate.
+   */
+  visibleFields(): DelegateField[] {
+    return this.settingsItems().filter(isDelegateField);
   }
 
   set focused(value: boolean) {
@@ -592,8 +705,85 @@ export class DelegatePanel implements Component, Focusable {
     return this.advisorReminder !== this.draftAdvisorReminder;
   }
 
+  private roleEntriesDirty(): boolean {
+    // Without a writer there is nothing to persist, and a step that always fails would block Apply
+    // for an embedder that does not handle this file.
+    if (!this.onSaveRoleEntries) return false;
+    return !sameRoleEntries(this.roleEntries, this.draftRoleEntries);
+  }
+
+  private advisorReadDirty(): boolean {
+    if (!this.onSaveAdvisorRead) return false;
+    return (
+      this.advisorRead.length !== this.draftAdvisorRead.length ||
+      this.advisorRead.some((flag, index) => flag !== this.draftAdvisorRead[index])
+    );
+  }
+
+  /**
+   * Reading is global, so Apply and Save both write a changed set before their own step. A file this
+   * writer cannot read is reported instead of overwritten.
+   */
+  private async saveAdvisorRead(): Promise<AdvisorReadSaveResult> {
+    let result: AdvisorReadSaveResult;
+    try {
+      result = (await this.onSaveAdvisorRead?.([...this.draftAdvisorRead])) ?? "failed";
+    } catch {
+      result = "failed";
+    }
+    if (result === "saved" || result === "unchanged") {
+      this.advisorRead = [...this.draftAdvisorRead];
+      this.savedGlobals.set("advisorRead", "the Advisor reading flags");
+    }
+    return result;
+  }
+
   private globalsDirty(): boolean {
-    return this.admissionsDirty() || this.launchCorrectionDirty() || this.advisorReminderDirty();
+    return (
+      this.admissionsDirty() ||
+      this.launchCorrectionDirty() ||
+      this.advisorReminderDirty() ||
+      this.roleEntriesDirty() ||
+      this.advisorReadDirty()
+    );
+  }
+
+  /**
+   * Entry lists are global and live in their own file, so Apply and Save both write a changed set
+   * before their own step. An unreadable file is reported instead of overwritten.
+   */
+  private async saveRoleEntries(): Promise<RoleEntriesSaveResult> {
+    let result: RoleEntriesSaveResult;
+    try {
+      result = (await this.onSaveRoleEntries?.(copyRoleEntries(this.draftRoleEntries))) ?? "failed";
+    } catch {
+      result = "failed";
+    }
+    if (result === "saved" || result === "unchanged") {
+      this.roleEntries = copyRoleEntries(this.draftRoleEntries);
+      this.savedGlobals.set("roleEntries", "the optional role entries");
+      const blind = this.blindVisionEntries();
+      this.message = blind
+        ? {
+            kind: "info",
+            text: `${blind} It will not be advertised or launchable until it points at a model that reads images.`,
+          }
+        : this.message;
+    }
+    return result;
+  }
+
+  /** A vision entry whose resolved model the registry says cannot read images, if any. */
+  private blindVisionEntries(entries = this.draftRoleEntries.vision): string | undefined {
+    const blind = entries.filter((entry) => {
+      const model = this.candidates.find(
+        (candidate) => candidate.provider === entry.provider && candidate.id === entry.model,
+      );
+      const input = model?.input as readonly string[] | undefined;
+      return Array.isArray(input) && !input.includes("image");
+    });
+    if (!blind.length) return undefined;
+    return `${blind.map((entry) => `${entry.provider}/${entry.model}`).join(", ")} ${blind.length === 1 ? "does" : "do"} not accept image input.`;
   }
 
   /**
@@ -601,9 +791,16 @@ export class DelegatePanel implements Component, Focusable {
    * no row and the list never offers a gap.
    */
   private settingsItems(): SettingsItem[] {
-    const configured = resolveDelegateState(this.global, this.draft).advisors.length;
+    const effective = resolveDelegateState(this.global, this.draft, this.draftRoleEntries);
+    const configured = effective.advisors.length;
     return [
-      ...FIELD_IDS.filter((field) => !isAdvisorField(field) || advisorIndex(field) <= configured),
+      ...FIELD_IDS.filter(
+        (field) =>
+          (!isAdvisorField(field) || advisorIndex(field) <= configured) &&
+          // An entry row appears only once the row that anchors it is configured, so the list never
+          // offers a family with a hole in it.
+          (!isEntryField(field) || this.entryRowVisible(field, effective)),
+      ),
       ...PANEL_ACTIONS,
     ];
   }
@@ -635,6 +832,7 @@ export class DelegatePanel implements Component, Focusable {
     else if (this.mode.kind === "correction") this.handleCorrectionInput(data);
     else if (this.mode.kind === "reminder") this.handleReminderInput(data);
     else if (this.mode.kind === "provider") this.handleProviderInput(data);
+    else if (this.mode.kind === "advisor-read") this.handleAdvisorReadInput(data);
     else if (this.mode.kind === "extension") this.handleExtensionInput(data);
     else if (this.mode.kind === "model") this.handleModelInput(data);
     else if (this.mode.kind === "advanced") this.handleAdvancedInput(data);
@@ -671,6 +869,7 @@ export class DelegatePanel implements Component, Focusable {
     if (mode.kind === "correction") return this.renderCorrection(width, budget, mode);
     if (mode.kind === "reminder") return this.renderReminder(width, budget, mode);
     if (mode.kind === "provider") return this.renderProvider(width, budget, mode);
+    if (mode.kind === "advisor-read") return this.renderAdvisorRead(width, budget, mode);
     if (mode.kind === "extension") return this.renderExtension(width, budget, mode);
     if (mode.kind === "model") return this.renderModel(width, budget, mode);
     if (mode.kind === "advanced") return this.renderAdvanced(width, budget, mode);
@@ -763,11 +962,13 @@ export class DelegatePanel implements Component, Focusable {
                   this.mode.kind === "advanced-reader-role" ||
                   this.mode.kind === "advanced-input"
                 ? "Delegation policy / Context advanced"
-                : this.mode.kind === "provider"
-                  ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
-                  : this.mode.kind === "extension"
-                    ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
-                    : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
+                : this.mode.kind === "advisor-read"
+                  ? `Delegation policy / Advisor ${this.mode.index + 1} reading`
+                  : this.mode.kind === "provider"
+                    ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
+                    : this.mode.kind === "extension"
+                      ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
+                      : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
     const status = this.working ?? (this.isDirty() ? "Modified" : "");
     const gap = Math.max(1, width - visibleWidth(modeLabel) - visibleWidth(status));
     const statusText = this.theme.fg("warning", status);
@@ -853,12 +1054,23 @@ export class DelegatePanel implements Component, Focusable {
     effective: ReturnType<typeof resolveDelegateState>,
   ): string {
     if (isThinkingField(field)) return this.thinkingValue(field);
+    if (isEntryField(field)) {
+      const current = this.entryList(entryKeyOf(field));
+      return `${current ? modelText(current) : "disabled"} · global`;
+    }
     if (isAdvisorField(field)) {
       const entry = effective.advisors[advisorIndex(field)];
       if (!entry) return field === "advisor" ? "disabled" : "not configured";
       if (entry.providerExtension) return `${modelText(entry)} · Anthropic auth`;
       const admitted = admissionFor(this.draftAdmissions, entry.provider);
-      return `${modelText(entry)}${admitted ? ` · ${admitted.package} ${admitted.version}` : ""}`;
+      const roleLaunch = resolveDelegateState(this.global, this.draft).advisorLaunch === "role";
+      const canReadHere =
+        roleLaunch &&
+        !admitted &&
+        entry.provider !== RESERVED_PROVIDER &&
+        this.draftAdvisorRead[advisorIndex(field)];
+      const reading = canReadHere ? " · reads files" : "";
+      return `${modelText(entry)}${admitted ? ` · ${admitted.package} ${admitted.version}` : ""}${reading}`;
     }
     if (
       field === "intensity" ||
@@ -947,13 +1159,45 @@ export class DelegatePanel implements Component, Focusable {
       .map((line) => truncateToWidth(this.theme.fg("dim", line), width, "…"));
   }
 
+  /** Document fields only; optional-role entries live in the sidecar, never in these objects. */
   private modelSetting(
     state: GlobalDefaults | SessionDelegateState,
-    field: ModelField,
+    field: ThinkingKey | AdvisorField,
   ): ModelRef | null | undefined {
     if (!isAdvisorField(field)) return state[field];
     const advisors = configuredAdvisors(state);
     return advisors === null ? null : advisors?.[advisorIndex(field)];
+  }
+
+  /** The sidecar list this panel is editing, so an entry row never touches the session draft. */
+  private entryList(key: OptionalRoleEntryKey): ModelRef | undefined {
+    const family = entryFamilyOf(key);
+    const entry = this.draftRoleEntries[family][optionalRoleEntryKeys(family).indexOf(key)];
+    return entry ? { provider: entry.provider, model: entry.model } : undefined;
+  }
+
+  /**
+   * Reading belongs to a role launch: `consult_advisor` always runs the packaged, tool-free profile,
+   * so the step is not offered where the flag could not change what launches.
+   */
+  /**
+   * Reading is a role-launch capability of the plain advisor profile: a provider-dependent profile
+   * keeps its own tool-free identity, so the step is not offered for it either.
+   */
+  private advisorReadOffered(provider?: string): boolean {
+    const state = resolveDelegateState(this.global, this.draft);
+    if (state.advisorLaunch !== "role") return false;
+    if (provider === RESERVED_PROVIDER) return false;
+    if (provider && admissionFor(this.draftAdmissions, provider)) return false;
+    return true;
+  }
+
+  /** True when the row that anchors this entry is already configured. */
+  private entryRowVisible(field: EntryField, effective: EffectiveDelegateState): boolean {
+    const parent = ENTRY_FIELD_PARENT[field];
+    if (parent === "always") return true;
+    if (parent === "uiDesign") return effective.uiDesign !== undefined;
+    return effective[entryKeyOf(parent)] !== undefined;
   }
 
   private thinkingSetting(
@@ -1199,6 +1443,15 @@ export class DelegatePanel implements Component, Focusable {
         `session ${local !== undefined ? (local ? thinkingSummary(local) : "unset") : "inherit"}`,
       ];
     }
+    if (isEntryField(field)) {
+      const key = entryKeyOf(field);
+      const current = this.entryList(key);
+      return [
+        "built-in disabled",
+        `global ${current ? modelText(current) : "—"}`,
+        "not a session setting",
+      ];
+    }
     return [
       "built-in not configured",
       `global ${rawModelText(this.modelSetting(this.global, field), "—")}`,
@@ -1324,6 +1577,53 @@ export class DelegatePanel implements Component, Focusable {
         ADVISOR_REMINDER_MODES[this.mode.selected] ?? this.draftAdvisorReminder;
       this.mode = { kind: "settings" };
     }
+  }
+
+  /**
+   * Reading is a capability change on a profile whose input is untrusted, so it is offered as an
+   * explicit step after the model and never implied by configuring an Advisor.
+   */
+  private handleAdvisorReadInput(data: string): void {
+    if (this.mode.kind !== "advisor-read") return;
+    if (matchesKey(data, "up") || matchesKey(data, "down"))
+      this.mode.selected = this.mode.selected === 0 ? 1 : 0;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      const index = this.mode.index;
+      const wanted = this.mode.selected === 1;
+      // Without a writer the flag would show in the row and never reach the file, so it is refused.
+      if (!this.onSaveAdvisorRead) {
+        this.message = { kind: "error", text: noWriterText("delegation-policy.advisor-read.json") };
+        this.mode = { kind: "settings" };
+        return;
+      }
+      while (this.draftAdvisorRead.length <= index) this.draftAdvisorRead.push(false);
+      this.draftAdvisorRead[index] = wanted;
+      this.mode = { kind: "settings" };
+    }
+  }
+
+  private renderAdvisorRead(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "advisor-read" }>,
+  ): string[] {
+    const choices = [
+      "Off: the Advisor reads nothing and works from the brief (default)",
+      "On: it may open only the paths the brief names",
+    ];
+    const blocks = choices.map((choice, index) => [
+      selectedLine(this.theme, choice, width, index === mode.selected),
+    ]);
+    const description = wrapTextWithAnsi(
+      `Advisor ${mode.index + 1} reading. The reading profile has one tool, read, and no shell, write, network or extensions. A model that cannot accept images will say so instead of describing them, and the host decides which paths read may reach.`,
+      width,
+    ).slice(0, Math.max(0, budget - Math.min(blocks.length, budget)));
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
   }
 
   private handleProviderInput(data: string): void {
@@ -1868,7 +2168,8 @@ export class DelegatePanel implements Component, Focusable {
       item === "medium" ||
       item === "large" ||
       item === "uiDesign" ||
-      isAdvisorField(item)
+      isAdvisorField(item) ||
+      isEntryField(item)
     ) {
       this.openModelSelector(item);
       return;
@@ -2271,7 +2572,9 @@ export class DelegatePanel implements Component, Focusable {
   private openModelSelector(field: ModelField): void {
     this.searchInput.setValue("");
     const choices = this.modelChoices(field, "");
-    const current = this.modelSetting(this.draft, field);
+    const current = isEntryField(field)
+      ? (this.entryList(entryKeyOf(field)) ?? null)
+      : this.modelSetting(this.draft, field);
     let selected = 0;
     if (current === null) selected = choices.findIndex((choice) => choice.kind === "disabled");
     else if (current) selected = choices.findIndex((choice) => choice.key === modelKey(current));
@@ -2340,6 +2643,11 @@ export class DelegatePanel implements Component, Focusable {
         // Advisor 1 anchors the list; removing a later entry moves the next one up.
         if (index === 0) entries.length = 0;
         else entries.splice(index, 1);
+        // The flags follow their Advisor: the one that moves up keeps its own capability, and emptying
+        // the list empties the flags.
+        this.draftAdvisorRead = entries.length
+          ? trimAdvisorRead(this.draftAdvisorRead.filter((_, slot) => slot !== index))
+          : [];
       } else if (choice.kind === "global") entries[index] = structuredClone(reference);
       else
         entries[index] = {
@@ -2355,13 +2663,18 @@ export class DelegatePanel implements Component, Focusable {
         if (this.draft.thinking) delete this.draft.thinking.advisor;
       } else this.replaceAdvisors(entries);
       if (!entries.length && choice.kind === "disabled") this.draft.advisorMode = "off";
-      if (choice.kind === "model" && choice.reference.provider === RESERVED_PROVIDER)
+      if (choice.kind === "model" && choice.reference.provider === RESERVED_PROVIDER) {
+        // A provider-dependent profile keeps its own identity and stays tool-free.
+        this.draftAdvisorRead = normalizeAdvisorRead(
+          this.draftAdvisorRead.map((flag, slot) => (slot === index ? false : flag)),
+          Math.max(index + 1, resolveDelegateState(this.global, this.draft).advisors.length),
+        );
         this.mode = {
           kind: "provider",
           index,
           selected: entries[index]?.providerExtension ? 1 : 0,
         };
-      else if (choice.kind === "model" && this.offersExtension(choice.reference.provider)) {
+      } else if (choice.kind === "model" && this.offersExtension(choice.reference.provider)) {
         const provider = choice.reference.provider;
         const current = admissionFor(this.draftAdmissions, provider);
         const selected = current
@@ -2369,8 +2682,97 @@ export class DelegatePanel implements Component, Focusable {
               (pkg) => pkg?.package === current.package && pkg.version === current.version,
             )
           : 0;
+        this.draftAdvisorRead = normalizeAdvisorRead(
+          this.draftAdvisorRead.map((flag, slot) => (slot === index ? false : flag)),
+          Math.max(index + 1, resolveDelegateState(this.global, this.draft).advisors.length),
+        );
         this.mode = { kind: "extension", index, provider, selected: Math.max(0, selected) };
-      } else this.mode = { kind: "settings" };
+      } else if (choice.kind === "model" && this.advisorReadOffered(choice.reference.provider))
+        this.mode = {
+          kind: "advisor-read",
+          index,
+          selected: this.draftAdvisorRead[index] ? 1 : 0,
+        };
+      else this.mode = { kind: "settings" };
+      return;
+    }
+    if (isEntryField(field)) {
+      const key = entryKeyOf(field);
+      const family = entryFamilyOf(key);
+      if (!this.onSaveRoleEntries) {
+        this.message = { kind: "error", text: noWriterText("delegation-policy.roles.json") };
+        this.mode = { kind: "settings" };
+        return;
+      }
+      // A branch value applies to this session only and cannot be written to the global sidecar, so
+      // an entry edit refuses instead of persisting it as "the global default".
+      const firstKey = optionalRoleEntryKeys(family)[0]!;
+      if (Object.hasOwn(this.draft, firstKey)) {
+        this.message = {
+          kind: "error",
+          text: `Clear the session override of ${ROLE_LABELS[firstKey]} (session.${firstKey}) before configuring the global entries.`,
+        };
+        this.mode = { kind: "settings" };
+        return;
+      }
+      const index = optionalRoleEntryKeys(family).indexOf(key);
+      // Seed from what this editor has staged, so two edits in one session build on each other, and
+      // mirror the document's Visual Design entry 1 in because the sidecar may not hold it yet. The
+      // branch case is refused above, so nothing from this session can reach the shared file.
+      const entries = copyRoleEntries(this.draftRoleEntries)[family];
+      const documentEntry = family === "uiDesign" ? this.global.uiDesign : undefined;
+      if (documentEntry) {
+        const first = entries[0];
+        if (
+          !first ||
+          first.provider !== documentEntry.provider ||
+          first.model !== documentEntry.model
+        )
+          entries[0] = { ...documentEntry };
+      }
+      if (choice.kind === "model") {
+        if (index > entries.length) {
+          this.message = {
+            kind: "error",
+            text: `Configure ${ROLE_LABELS[key]} first; entries keep their order.`,
+          };
+          this.mode = { kind: "settings" };
+          return;
+        }
+        // Thinking lives in the same file and this row does not edit it, so a model change keeps it.
+        const previous = entries[index];
+        const entry = {
+          provider: choice.reference.provider,
+          model: choice.reference.model,
+          ...(previous?.thinking ? { thinking: previous.thinking } : {}),
+        };
+        if (entries[index]) entries[index] = entry;
+        else entries.push(entry);
+        // A family never holds one `provider/model` twice, so a repeated model is refused here with
+        // the value that was chosen instead of being staged for a writer that would reject the list.
+        const value = `${entry.provider}/${entry.model}`;
+        const occurrences = entries.filter(
+          (candidate) => `${candidate.provider}/${candidate.model}` === value,
+        ).length;
+        if (occurrences > 1) {
+          this.message = {
+            kind: "error",
+            text: `${ROLE_LABELS[key]} refused: ${value} is already configured in this family, and one family cannot hold the same model twice; the previous entries were left in place.`,
+          };
+          this.mode = { kind: "settings" };
+          return;
+        }
+      } else if (index < entries.length) entries.splice(index, 1);
+      this.draftRoleEntries[family] = entries;
+      // Say it as soon as the model is chosen, not only after a save: the panel is the moment the
+      // user can still pick a model that reads images.
+      const blind = family === "vision" ? this.blindVisionEntries(entries) : undefined;
+      if (blind)
+        this.message = {
+          kind: "info",
+          text: `${blind} It will not be advertised or launchable until it points at a model that reads images.`,
+        };
+      this.mode = { kind: "settings" };
       return;
     }
     if (choice.kind === "global") delete this.draft[field];
@@ -2387,22 +2789,27 @@ export class DelegatePanel implements Component, Focusable {
   }
 
   private modelChoices(field: ModelField, query: string): ModelChoice[] {
-    const global = this.modelSetting(this.global, field);
+    // An entry has no session state and no inherited default: it is either a model or nothing, so the
+    // only pinned choice is the removal that closes the family's gap.
+    const entry = isEntryField(field) ? this.entryList(entryKeyOf(field)) : undefined;
+    const global = isEntryField(field) ? entry : this.modelSetting(this.global, field);
     const globalDescription =
-      field === "uiDesign" || isAdvisorField(field)
+      field === "uiDesign" || isAdvisorField(field) || isEntryField(field)
         ? global
           ? modelText(global)
           : "disabled"
         : rawModelText(global, "not configured");
-    const pinned: ModelChoice[] = [
-      {
-        kind: "global",
-        key: "global",
-        label: USE_GLOBAL_DEFAULT,
-        description: globalDescription,
-      },
-      { kind: "disabled", key: "disabled", label: DISABLE_FOR_SESSION },
-    ];
+    const pinned: ModelChoice[] = isEntryField(field)
+      ? [{ kind: "disabled", key: "disabled", label: REMOVE_ENTRY, description: globalDescription }]
+      : [
+          {
+            kind: "global",
+            key: "global",
+            label: USE_GLOBAL_DEFAULT,
+            description: globalDescription,
+          },
+          { kind: "disabled", key: "disabled", label: DISABLE_FOR_SESSION },
+        ];
     const filtered = query
       ? fuzzyFilter(this.candidates, query, (model) =>
           `${model.provider} ${model.provider}/${model.id} ${model.provider} ${model.id} ${model.name ?? ""}`.trim(),
@@ -2580,6 +2987,30 @@ export class DelegatePanel implements Component, Focusable {
    */
   private async saveGlobalSteps(): Promise<boolean> {
     if (this.admissionsDirty() && !(await this.saveAdmissions())) return false;
+    if (this.advisorReadDirty()) {
+      const result = await this.saveAdvisorRead();
+      if (result !== "saved" && result !== "unchanged") {
+        this.message = {
+          kind: "error",
+          text: `${advisorReadFailureText(result)}${
+            savedClause(this.savedGlobalsList()) || " Nothing else was changed."
+          }`,
+        };
+        return false;
+      }
+    }
+    if (this.roleEntriesDirty()) {
+      const result = await this.saveRoleEntries();
+      if (result !== "saved" && result !== "unchanged") {
+        this.message = {
+          kind: "error",
+          text: `${roleEntriesFailureText(result)}${
+            savedClause(this.savedGlobalsList()) || " Nothing else was changed."
+          }`,
+        };
+        return false;
+      }
+    }
     if (this.advisorReminderDirty()) {
       const result = await this.saveAdvisorReminder();
       if (result !== "saved" && result !== "unchanged") {

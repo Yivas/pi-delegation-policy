@@ -229,8 +229,12 @@ keeps the remaining entries, because the other writer was a version that cannot 
 document's model takes slot 1 and the sidecar's own slot 1 is not kept. Entry commands therefore write
 the global state only. They are refused while the branch owns a family's first slot, because that value
 belongs to the branch and must not become the shared default. `/delegate … remove` closes the gap, so
-the entry behind the removed one moves up into its slot. Slot 1 of Visual Design is edited in the panel;
-`vision 1 …` and `visual-design 1 …` are rejected because a slot number is only `2` or `3`.
+the entry behind the removed one moves up into its slot. Slot 1 of Visual Design is edited in the panel,
+which also offers a row per entry —`Visual Design 2`, `Visual Design 3`, `Vision`, `Vision 2`, `Vision 3`—
+each of them global. Each family's first row is always offered, so a family can be started from the
+panel, and the rest follow the one before them. Those rows write the sidecar themselves; entry thinking
+stays in the file. `vision 1 …` and `visual-design 1 …` are rejected because a slot number is only `2` or
+`3`.
 
 ### Validation
 
@@ -239,6 +243,33 @@ outside the scope, unauthenticated, or whose thinking level is unsupported is re
 and simply cannot be launched; it never turns delegation into `D:ERR` and never affects the other
 roles. A vision entry whose model does not accept image input is reported the same way: the role keeps
 its place, and the block already says that model cannot see.
+
+## Advisor reading
+
+An Advisor never executes work, and by default it also reads nothing: it answers from the brief the
+main agent writes. Reading is a separate capability, off until you turn it on for a specific Advisor.
+It applies to role launches only: `consult_advisor` always launches the packaged, tool-free profile, so
+the panel does not ask the question while Advisor launch is `tool`, and a flag left over from a role
+launch changes nothing there.
+
+In a role launch the panel asks right after you choose that Advisor's model — **Advisor N reading**,
+`Off` or `On` — and the flags are stored in `delegation-policy.advisor-read.json`, one boolean per slot,
+with trailing offs dropped so "none" has one representation. Turned on, that slot launches through
+`pi-delegation-policy.advisor-read`, a profile whose only tool is `read`, and the injected block says
+so in the role line (`reading: on, open only the paths the brief names`). The line states it only when
+that resolved profile is the reading one, so a provider-dependent profile never claims a read it cannot
+do.
+
+What that buys and what it does not:
+
+- The Advisor can open an image the main agent names, which is the point: a description of a screenshot
+  is not the screenshot. A model that only accepts text cannot use it, and the profile tells the Advisor
+  to say it could not see the image rather than describe it from the name.
+- The tool is not a path boundary. This extension grants `read`; the host's permission rules decide what
+  it may reach, and the profile's instruction to open only paths the brief names is guidance.
+- Provider-dependent Advisor profiles (`advisor-anthropic-auth`, `advisor-provider-extension`) keep
+  their own identity and stay tool-free; reading is not offered on them, and choosing one clears the
+  flag for that slot.
 
 ## Advisor
 
@@ -414,7 +445,12 @@ ignored with a diagnostic and leaves the other Advisors running.
 In the child, the profile reads the admission for its own model's provider and loads that one entry
 in an isolated loader. The package may listen only to `session_start`, `session_shutdown`, `input`,
 `session_before_compact`, `session_compact` and `session_before_tree`, and may not register tools,
-flags, shortcuts or renderers. Its commands are not registered: a child has no user to run them.
+flags, shortcuts or renderers. There is exactly one exception, pinned to one package and one version:
+`pi-antigravity-acp-provider` `0.1.21` may register `antigravity_acp_permission`, the tool that asks
+Antigravity for a permission decision the provider itself issued. The Advisor child launches with an
+empty tool allowlist, so that tool never reaches the model, and any other tool, any other package, and
+any other version of that package are still rejected. Registering still runs package code in the child,
+so a new version is a new review and never inherits the exception. Its commands are not registered: a child has no user to run them.
 After `session_start` it must have registered that provider anew and changed no other provider. An
 `input` handler that rewrites or consumes the question also counts as a failure. Any failure
 withdraws what the package registered and leaves a guard for that provider: the child's requests

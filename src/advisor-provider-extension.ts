@@ -58,13 +58,39 @@ function safeRuntime(runtime: ExtensionRuntime): boolean {
 }
 
 /**
+ * The one admitted package that may register a tool, pinned to the exact version whose registration was
+ * reviewed. The tool it registers only asks Antigravity for a permission decision the provider itself
+ * issued, and the Advisor child launches with an empty tool allowlist, so the tool never reaches the
+ * model. Registration still runs package code in the child, which is why this is one package at one
+ * version: a new version is a new review, never an inherited exception.
+ */
+export const KNOWN_TOOL_SURFACE = [
+  { package: "pi-antigravity-acp-provider", version: "0.1.21", tool: "antigravity_acp_permission" },
+] as const;
+
+export type AdmittedIdentity = { package: string; version: string };
+
+/** True when the only tool the extension registered is the reviewed one of this exact admission. */
+function onlyKnownTool(extension: Extension, admitted: AdmittedIdentity): boolean {
+  const known = KNOWN_TOOL_SURFACE.find(
+    (entry) => entry.package === admitted.package && entry.version === admitted.version,
+  );
+  if (extension.tools.size === 0) return true;
+  return extension.tools.size === 1 && known !== undefined && extension.tools.has(known.tool);
+}
+
+/**
  * Nothing the child could expose or render. Commands are tolerated and never registered: an
  * Advisor child has no user to invoke them.
  */
-function safeSurface(extension: Extension, runtime: ExtensionRuntime): boolean {
+export function safeSurface(
+  extension: Extension,
+  runtime: ExtensionRuntime,
+  admitted: AdmittedIdentity,
+): boolean {
   return (
     safeRuntime(runtime) &&
-    extension.tools.size === 0 &&
+    onlyKnownTool(extension, admitted) &&
     extension.flags.size === 0 &&
     extension.shortcuts.size === 0 &&
     extension.messageRenderers.size === 0 &&
@@ -132,7 +158,8 @@ export default function advisorProviderExtension(pi: ExtensionAPI): void {
     try {
       const pkg = admissionFor((await readProviderAdmissions()).admissions, provider);
       const location = pkg && locateInstalledPackage(ctx.cwd, pkg, { configured: true });
-      if (!location?.ok || typeof sdk.DefaultResourceLoader !== "function") return guard();
+      if (!pkg || !location?.ok || typeof sdk.DefaultResourceLoader !== "function") return guard();
+      const admitted = { package: pkg.package, version: pkg.version };
       const before = registrations(registry);
       baseline = before;
       const loader = new sdk.DefaultResourceLoader({
@@ -154,7 +181,7 @@ export default function advisorProviderExtension(pi: ExtensionAPI): void {
         result.extensions.length !== 1 ||
         !extension ||
         realpathSync(extension.resolvedPath) !== location.entry ||
-        !safeSurface(extension, result.runtime)
+        !safeSurface(extension, result.runtime, admitted)
       )
         return guard();
       // Registrations through `pi` are held back and applied only for this provider. A native
@@ -181,7 +208,7 @@ export default function advisorProviderExtension(pi: ExtensionAPI): void {
       for (const handler of extension.handlers.get("session_start") ?? [])
         await handler(event, ctx);
       if (
-        !safeSurface(extension, result.runtime) ||
+        !safeSurface(extension, result.runtime, admitted) ||
         [...configs.keys(), ...natives.keys()].some((name) => name !== provider)
       )
         return guard();

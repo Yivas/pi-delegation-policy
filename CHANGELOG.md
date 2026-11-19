@@ -8,8 +8,33 @@
   exact models. Visual Design accepts up to three too. Entries live in
   `delegation-policy.roles.json`, a separate versioned file, and are configured with
   `/delegate vision [2|3] PROVIDER/MODEL` and `/delegate visual-design 2|3 PROVIDER/MODEL`.
+- In a role launch, an Advisor can read, per slot and off by default. The panel asks **Advisor N
+  reading** after you choose that Advisor's model, and the flags live in
+  `delegation-policy.advisor-read.json`. On, that slot launches
+  `pi-delegation-policy.advisor-read`, a profile whose only tool is `read`, so it can open a file or an
+  image the brief names; the injected block says so in its role line. The tool is not a path boundary —
+  the host's permission rules decide what `read` may reach — and provider-dependent Advisor profiles
+  stay tool-free. Reading applies to role launches only: `consult_advisor` always launches the packaged
+  profile, so the panel does not offer the step while Advisor launch is `tool`.
 
 ### Changed
+
+- A provider-extension Advisor may keep one reviewed tool. `pi-antigravity-acp-provider` `0.1.21`
+  registers `antigravity_acp_permission`, which asks Antigravity for a permission decision the provider
+  itself issued, so the child used to be refused and every request returned `UNAVAILABLE`. The
+  exception is pinned to that package name, that version and that tool; any other tool, package or
+  version is still rejected, and the Advisor child's empty tool allowlist keeps the tool away from the
+  model. Registering runs package code in the child, so a new version needs a new review.
+
+### Panel
+
+- `/delegate` gains one row per optional entry: `Visual Design 2`, `Visual Design 3`, `Vision`,
+  `Vision 2` and `Vision 3`. Each family's first row is always offered and the rest follow the one before
+  them; each row resolves its model with the existing searchable selector and offers **Remove entry
+  (global)** as its first choice.
+  These rows are global settings stored in `delegation-policy.roles.json`, while entry thinking stays in
+  that file. A model the host reports as unable to read images still saves, and the panel warns at the
+  moment of choosing.
 
 - The per-role `launches=` report in `/delegate status` gains the new role codes: Vision and every
   extra Visual Design entry keep their own row, so a configured entry that was never chosen stays

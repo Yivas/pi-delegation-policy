@@ -1,5 +1,6 @@
-import { advisorAgentName, advisorProfile } from "./advisor-executor.ts";
+import { ADVISOR_AGENT_NAME, ADVISOR_READ_AGENT_NAME, advisorProfile } from "./advisor-executor.ts";
 import {
+  advisorAgentNameFor,
   enabledOrdinaryRoles,
   hasRuntimeError,
   hasAdvisorError,
@@ -142,15 +143,17 @@ const ADVISOR_CONTEXT_GUIDANCE = `Context: fresh; do not send this conversation.
  * The consultation contract is shared by both axes: the Advisor never implements or runs
  * tool-dependent checks, its model and profile are exact, thinking is supported and never an
  * ambient default, it launches in the background unless the host or user requires foreground,
- * and its answers are consumed before the decision that depends on them.
+ * and its answers are consumed before the decision that depends on them. `profileStated` is true while
+ * a listed Advisor runs a profile other than the plain packaged one, so the sentence cannot name one
+ * profile while a role line names another.
  */
-function advisorPolicy(launch: AdvisorLaunch, count: number, providerProfile = false): string {
+function advisorPolicy(launch: AdvisorLaunch, count: number, profileStated = false): string {
   return `Consulting is part of this policy, not delegated execution; the Advisor never implements or runs tool-dependent checks, and direct-work guidance does not rule it out. Consult after orientation, before the first edit or state-changing command, any interpretation, approach or assumption, a substantive analysis or recommendation, a recurring error or stalled progress, and any change of approach; before declaring a multi-step task done, make results durable and ask for remaining correctness risks or overlooked assumptions, not approval; an agreed interface does not replace the first checkpoint. No call for facts already available, short reactive steps, or mechanics inside a settled approach; reuse advice, and a consulted failure is not a new trigger.
 
 ${
   launch === "tool"
     ? `Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. Every consultation runs in fresh context: this tool sends the question and brief and never this conversation, and the launch check refuses any call that asks to fork the session for an Advisor. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.`
-    : `Launch every listed Advisor with the host's subagent tool ${providerProfile ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —" : 'using agent "pi-delegation-policy.advisor" exactly — never a host agent or alias named "advisor" or "oracle" —'} with its exact model and a supported thinking level from its role line, never an ambient default, in the background unless the host or the user requires foreground.${count > 1 ? " Ask every listed Advisor the same question in one call." : ""} Keep each returned run id and continue a thread with the same tool's resume action, passing that id, the new question and evidence, and output with outputMode file-only; read that file for the answer and never change model, profile or permissions on a resume.`
+    : `Launch every listed Advisor with the host's subagent tool ${profileStated ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —" : 'using agent "pi-delegation-policy.advisor" exactly — never a host agent or alias named "advisor" or "oracle" —'} with its exact model and a supported thinking level from its role line, never an ambient default, in the background unless the host or the user requires foreground.${count > 1 ? " Ask every listed Advisor the same question in one call." : ""} Keep each returned run id and continue a thread with the same tool's resume action, passing that id, the new question and evidence, and output with outputMode file-only; read that file for the answer and never change model, profile or permissions on a resume.`
 }
 
 ${launch === "role" ? ADVISOR_CONTEXT_GUIDANCE : ""}
@@ -342,7 +345,15 @@ export function advisorRoleLines(state: RuntimeState): string {
           : profile === "admitted"
             ? "; provider extension admitted by the user: it runs as trusted host code in the child, not as model tools"
             : "";
-      return `\n${roleLine(label, setting, thinking, `; agent profile: ${promptString(advisorAgentName(setting, state.admissions))}${extension}`)}`;
+      // Reading is a profile, not a launch option: the block must name the profile that actually runs,
+      // and say what it implies so the main agent knows it can hand over a path. The line states
+      // reading only when that resolved profile is the one that reads, never from the flag alone.
+      const agent = advisorAgentNameFor(state, setting, index);
+      const reading =
+        agent === ADVISOR_READ_AGENT_NAME
+          ? "; reading: on, open only the paths the brief names"
+          : "";
+      return `\n${roleLine(label, setting, thinking, `; agent profile: ${promptString(agent)}${extension}${reading}`)}`;
     })
     .join("");
 }
@@ -373,7 +384,9 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
     ? `\n\nAdvisor consultation:\n${advisorPolicy(
         effective.advisorLaunch,
         advisors.length,
-        advisors.some(({ setting }) => advisorProfile(setting, state.admissions) !== undefined),
+        advisors.some(
+          ({ setting, index }) => advisorAgentNameFor(state, setting, index) !== ADVISOR_AGENT_NAME,
+        ),
       )}`
     : "";
   const advisorTool = effective.advisorLaunch === "tool" && advisorEnabled;

@@ -368,9 +368,12 @@ test("the provider-extension step admits, removes and discards only through the 
       onDone: () => undefined,
     });
   const chooseAdvisorModel = (target: DelegatePanel) => {
-    // Advisor 1 row, then its model selector: global, disable, example-provider/example-model.
+    // Advisor 1 row, then its model selector: global, disable, example-provider/example-model. The
+    // focus is resolved by name because a row can appear or disappear with the configuration.
     target.handleInput("\u001b[H");
-    for (let index = 0; index < 14; index++) target.handleInput("\u001b[B");
+    const advisorRow = target.visibleFields().indexOf("advisor" as never);
+    assert.ok(advisorRow >= 0, `the panel shows advisor: ${target.visibleFields().join(", ")}`);
+    for (let index = 0; index < advisorRow; index++) target.handleInput("\u001b[B");
     target.handleInput("\r");
     target.handleInput("\u001b[B");
     target.handleInput("\u001b[B");
