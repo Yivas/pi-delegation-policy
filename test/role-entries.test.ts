@@ -384,4 +384,20 @@ test("the Writing family reaches the effective state and the policy block", () =
   assert.match(policy, /Writing: these entries are the models the user chose for text/);
   assert.match(policy, /- Writing: exact model base: "example\/writer"/);
   assert.match(policy, /- Writing: public prose and microcopy only/);
+  assert.match(policy, /that deliverable is Writing work even when the task also touches code/);
+
+  // The claim belongs to a role the same block lists: without an advertised entry it is not emitted.
+  const withoutWriting = resolveDelegateState(defaults, activeSession, emptyRoleEntries());
+  const plain =
+    buildDelegationPolicy({
+      effective: withoutWriting,
+      diagnostics: [],
+      runtimeErrors: [],
+      advisorEntries: [],
+      advisorWarnings: [],
+      advisorErrors: [],
+      modelStatuses: new Map(),
+      admissions: {},
+    } as never) ?? "";
+  assert.doesNotMatch(plain, /that deliverable is Writing work/);
 });

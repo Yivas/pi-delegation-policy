@@ -54,8 +54,16 @@ const DELEGATION_RESTRICTIONS =
  * the only reason they are configured. This replaced a forward reference to Visual Design that never
  * produced a launch and fought this very sentence.
  */
-function roleFitPolicy(): string {
-  return "Weigh demand, ambiguity, dependencies, risk, quantity, and error/review cost together, and choose the least costly of Small, Medium and Large that meets the acceptance criteria and evidence; if none can, keep the work. Visual Design, Vision and Writing are outside that comparison: their reason is the model the user chose, not its price. A more capable enabled role may cover a disabled role's work on the same acceptance and evidence; never choose a less capable one because it is the only one enabled. Agent type does not determine the model role.";
+function roleFitPolicy(writing: boolean): string {
+  return (
+    "Weigh demand, ambiguity, dependencies, risk, quantity, and error/review cost together, and choose the least costly of Small, Medium and Large that meets the acceptance criteria and evidence; if none can, keep the work. Visual Design, Vision and Writing are outside that comparison: their reason is the model the user chose, not its price." +
+    // Only claimed for a role that the same block lists. Claiming it for a family with no advertised
+    // entry would leave the text with a role the launch rules forbid, and no way out.
+    (writing
+      ? " If what the user asked for is text other people will read, that deliverable is Writing work even when the task also touches code. Keep the text with the ordinary role only when it is a by-product of the work that role is already doing: commit messages, code comments and one-line status notes."
+      : "") +
+    " A more capable enabled role may cover a disabled role's work on the same acceptance and evidence; never choose a less capable one because it is the only one enabled. Agent type does not determine the model role."
+  );
 }
 
 const SMALL_ROLE_POLICY =
@@ -388,8 +396,8 @@ export function advisorRoleLines(state: RuntimeState): string {
 }
 
 /** The role rules are generated only for the enabled subset; a disabled role never gains a rule. */
-function roleRules(enabled: readonly ModelRole[]): string {
-  const rules = [roleFitPolicy()];
+function roleRules(enabled: readonly ModelRole[], writing: boolean): string {
+  const rules = [roleFitPolicy(writing)];
   if (enabled.includes("small")) rules.push(SMALL_ROLE_POLICY);
   if (enabled.includes("medium")) rules.push(MEDIUM_ROLE_POLICY);
   if (enabled.includes("large")) {
@@ -512,7 +520,7 @@ Do it yourself?
 Intensity: ${effective.intensity}. ${intensityPolicy}${orchestrator ? "" : ` ${TINY_EDIT}`}${ownership} ${restrictions}${advisorSection}
 
 Role selection:
-${roleRules(enabled)}
+${roleRules(enabled, writingEntries.length > 0)}
 Model preference: ${effective.preference}. ${preferenceGuidance(effective.preference, enabled)}
 ${capabilityLine}${optional}${imageFact}
 

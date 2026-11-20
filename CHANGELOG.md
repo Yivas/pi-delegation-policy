@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.31.1 - 2026-11-19
+
+### Changed
+
+- The policy now claims a public-text deliverable for Writing even when the task also touches code, and
+  keeps text with an ordinary role only when it is a by-product of the work that role is already doing:
+  commit messages, comments and short summaries. Without that sentence the cost comparison won the
+  routing, because almost any task carries some text.
+
 ## 0.31.0 - 2026-11-19
 
 ### Added

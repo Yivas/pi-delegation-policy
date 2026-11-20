@@ -3585,7 +3585,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.31.0");
+  assert.equal(packageJson.version, "0.31.1");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
   assert.deepEqual(packageJson.pi.subagents.agents, ["./agents"]);
@@ -4513,7 +4513,10 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // holds, Advisors included. The fixture models declare no input, so the image fact stays unproven
   // and is not emitted, which is why these two hashes are the previous ones. Front 47 regenerated
   // them for the optional Writing role: the role-fit paragraph now names it beside Visual Design and
-  // Vision, and the cost comparison still covers Small, Medium and Large only.
+  // Vision, and the cost comparison still covers Small, Medium and Large only. Front 47 added the
+  // sentence that claims a public-text deliverable for Writing even when the task touches code, with
+  // the by-product exception. It renders only when a Writing entry is advertised, and this fixture
+  // configures none, so these two hashes stay the previous ones.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
