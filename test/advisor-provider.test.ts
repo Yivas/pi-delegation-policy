@@ -214,12 +214,14 @@ test("the profile step after an Anthropic model keeps the selected choice visibl
       onDone: () => undefined,
     });
     panel.render(width);
-    // Advisor 2 row, then its model selector: global, disable, anthropic/synthetic-model. The focus
-    // is resolved by name because a row can appear or disappear with the configuration.
+    // Advisor 2 row, then its model selector: global, disable, its content-filter switch, then
+    // anthropic/synthetic-model. The focus is resolved by name because a row can appear or disappear
+    // with the configuration.
     panel.handleInput("\u001b[H");
     for (let step = 0; step < panel.visibleFields().indexOf("advisor2"); step += 1)
       panel.handleInput("\u001b[B");
     panel.handleInput("\r");
+    panel.handleInput("\u001b[B");
     panel.handleInput("\u001b[B");
     panel.handleInput("\u001b[B");
     panel.handleInput("\r");

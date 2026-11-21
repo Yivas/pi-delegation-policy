@@ -879,10 +879,12 @@ test("Advisors 2 and 3 appear in order, pick their profile with the model and st
   focus("advisorLaunch");
   send(enter, down, down, enter);
   assert.equal(panel.getDraft().advisorLaunch, "tool");
-  // Removing Advisor 2 moves Advisor 3 up together with its profile.
+  // Removing Advisor 2 moves Advisor 3 up together with its profile. The selector opens on the
+  // current model: clamping the selection at the top and stepping once reaches `Disable for this
+  // session`, whatever the number of pinned actions.
   focus("advisor2");
   const up = String.fromCharCode(27) + "[A";
-  send(enter, up, up, up, enter);
+  send(enter, ...Array.from({ length: 8 }, () => up), down, enter);
   assert.deepEqual(panel.getDraft().advisors, [
     advisor,
     { ...claude, providerExtension: "anthropic-auth" },

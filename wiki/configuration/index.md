@@ -280,9 +280,11 @@ What that buys and what it does not:
 
 Some providers refuse a request whose content reads as offensive security work, even when the work is
 legitimate. A provider's filter is not something this extension can see or test, so the panel offers
-the statement as yours: open an Advisor's model selector and the list ends with **Content filter:
-none** or **Content filter: cyber (on)**. Choosing it toggles the flag for that slot and leaves the
-selector open, so nothing about the model changes. The flags live in
+the statement as yours: open an already configured Advisor's model selector and, above the model list
+and beside **Use global default** and **Disable for this session**, the third pinned row is **Content
+filter: none** or **Content filter: cyber, on (softens security briefs)**. A slot with no Advisor yet
+has nothing to flag, so that row appears once the slot is configured. Choosing it toggles the flag for
+that slot and leaves the selector open, so nothing about the model changes. The flags live in
 `delegation-policy.advisor-filters.json`, one boolean per slot, with trailing offs dropped.
 
 With the flag on, the injected block names it in that Advisor's role line (`content filter: cyber,

@@ -2,16 +2,20 @@
 
 ## Unreleased
 
+## 0.32.0 - 2026-11-21
+
 ### Added
 
-- A per-Advisor **content filter** flag, offered at the end of that Advisor's model selector and stored
-  in `delegation-policy.advisor-filters.json`. With the flag on, the injected policy names it in that
-  Advisor's role line and adds one shared paragraph: for questions and briefs about security or cyber
-  work, soften the wording and framing — purpose first, ordinary technical language, same facts,
-  constraints and scope — while everything else is written as for any other model. The extension never
-  rewrites a brief and promises no acceptance: it is the user's statement about a provider, so the
-  provider may still refuse. Changing a slot's model in the panel clears its flag; `/delegate advisor N`
-  does not move it, because it writes the session draft. A version older than this one ignores the file.
+- Flag an Advisor whose provider applies a cyber content filter, from its model selector.
+- Soften the wording of security briefs to that Advisor, keeping every fact, constraint and scope.
+- Let the flagged Advisor keep every other brief exactly as it would be written for any model.
+- Store the flags in `delegation-policy.advisor-filters.json`, one boolean per Advisor slot.
+- Report each Advisor's `filter=cyber|off` flag in the status line.
+- Ignore an unreadable flags file with a diagnostic, and lose the flag silently on a downgrade.
+
+### Fixed
+
+- Show an entry selector's single action above the divider instead of the first model.
 
 ## 0.31.1 - 2026-11-19
 

@@ -3072,9 +3072,19 @@ test("a saved admission is named when the correction step fails", async () => {
       },
       onSaveLaunchCorrection: (mode) => writeLaunchCorrectionMode(mode, correctionPath),
     });
-    // Advisor 1 row, its model selector, then the provider-extension step: admit the package.
+    // Advisor 1 row, its model selector (three pinned actions), then the provider-extension step:
+    // admit the package.
     focusField(harness.panel, "advisor");
-    sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+    sendKeys(
+      harness.panel,
+      KEY_ENTER,
+      KEY_DOWN,
+      KEY_DOWN,
+      KEY_DOWN,
+      KEY_ENTER,
+      KEY_DOWN,
+      KEY_ENTER,
+    );
     // Then the global correction row, staged to block, and Apply.
     focusField(harness.panel, "launchCorrection");
     sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
@@ -3590,7 +3600,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.31.1");
+  assert.equal(packageJson.version, "0.32.0");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
   assert.deepEqual(packageJson.pi.subagents.agents, ["./agents"]);
@@ -5197,8 +5207,8 @@ test("the reading step is offered after an Advisor model and writes its flag", a
     },
   });
   focusField(harness.panel, "advisor");
-  // Open the selector, skip "global" and "disable", choose a plain model: reading follows.
-  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  // Open the selector, skip the three pinned actions, choose a plain model: reading follows.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   assert.match(harness.panel.render(100).join("\n"), /Advisor 1 reading/);
   sendKeys(harness.panel, KEY_DOWN, KEY_ENTER);
   assert.match(harness.panel.render(100).join("\n"), /^> Advisor 1\s+example\/\S+ · reads files/m);
@@ -5310,7 +5320,7 @@ test("tool launch offers no reading step, because it always runs the tool-free p
     onSaveAdvisorRead: async () => "saved",
   });
   focusField(harness.panel, "advisor");
-  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   assert.doesNotMatch(harness.panel.render(100).join("\n"), /Advisor 1 reading/);
   // The model is staged and the selector closed: only the reading step is missing.
   assert.deepEqual(harness.panel.getDraft().advisors, [{ provider: "example", model: "large" }]);
@@ -5575,8 +5585,8 @@ test("the Advisor row shows the content filter, and Apply writes the flag", asyn
     },
   });
   focusField(harness.panel, "advisor");
-  // The switch sits after the models: global, disable, one model, then the switch.
-  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER, "\u001b");
+  // The switch is the third pinned action: global, disable, then the switch.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER, "\u001b");
   assert.match(harness.panel.render(100).join("\n"), /^> Advisor 1\s+example\/\S+ · cyber filter/m);
   sendKeys(harness.panel, "a");
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -5600,6 +5610,23 @@ test("an invalid Advisor content-filter file costs only the flag and leaves the 
   });
 });
 
+test("the content-filter switch stays visible above a long model list", () => {
+  const many = Array.from({ length: 30 }, (_, index) =>
+    model({ provider: "example", model: `m${index}` }),
+  );
+  const harness = createPanelHarness({
+    rows: 12,
+    global: { ...defaults, advisor, advisorMode: "on" },
+    candidates: [model(advisor), ...many] as never,
+    advisorFilter: [true],
+    onSaveAdvisorFilter: async () => "saved",
+  });
+  focusField(harness.panel, "advisor");
+  sendKeys(harness.panel, KEY_ENTER);
+  // The list pages from the top; the pinned switch is never pushed out by thirty models.
+  assert.match(harness.panel.render(80).join("\n"), /Content filter: cyber, on/);
+});
+
 test("the content-filter switch is offered for a session-only Advisor", () => {
   const harness = createPanelHarness({
     rows: 30,
@@ -5609,7 +5636,10 @@ test("the content-filter switch is offered for a session-only Advisor", () => {
   });
   focusField(harness.panel, "advisor");
   sendKeys(harness.panel, KEY_ENTER);
-  assert.match(harness.panel.render(100).join("\n"), /Content filter: none/);
+  const view = harness.panel.render(100).join("\n");
+  assert.match(view, /Content filter: none/);
+  // Off states the state only: no effect is claimed while nothing is flagged.
+  assert.doesNotMatch(view, /softens security briefs/);
 });
 
 test("removing an Advisor moves the content-filter flag with the next one", () => {
@@ -5676,7 +5706,7 @@ test("a changed model clears that slot's content filter", () => {
   assert.match(harness.panel.render(100).join("\n"), /· cyber filter/);
   focusField(harness.panel, "advisor");
   // A tool launch has no reading step, so the selector closes straight back to the list.
-  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
   const row = harness.panel.render(100).join("\n");
   assert.match(row, /^> Advisor 1\s+example\//m);
   assert.doesNotMatch(row, /· cyber filter/);

@@ -76,11 +76,12 @@ built-in, global, and session sources.
 Move with `Up` and `Down`; press `Enter` or `Space` to edit. Every model field — Small, Medium,
 Large, Visual Design, Advisor — starts with two pinned keyboard-selectable rows: **Use global
 default**, described as an exact reference, `disabled`, or `not configured`, and **Disable for this
-session**. An Advisor's selector ends one extra row, **Content filter: none** or **cyber (on)**, which
-toggles that slot's filter flag and leaves the selector open. The selector shows the model ID first and
-`[provider]` last, fuzzy-searches provider, model ID, and display name, and shows at most 10 rows;
-`Page Up` and `Page Down` move through longer results. When Pi supplies public model metadata, the selected row can show name, API, reasoning
-support, context window, and maximum output; that metadata is transient and never saved.
+session**. A configured Advisor's selector adds a third pinned row, **Content filter: none** or
+**cyber, on (softens security briefs)**, which toggles that slot's filter flag and leaves the selector
+open. The selector shows the model ID first and `[provider]` last, fuzzy-searches provider, model ID,
+and display name, and shows at most 10 rows; `Page Up` and `Page Down` move through longer results.
+When Pi supplies public model metadata, the selected row can show name, API, reasoning support,
+context window, and maximum output; that metadata is transient and never saved.
 
 The thinking rows — **Small thinking**, **Medium thinking**, **Large thinking** and **Visual Design
 thinking** — show the effective policy as `unset`, a level such as `high`,

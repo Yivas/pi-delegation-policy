@@ -1856,7 +1856,9 @@ export class DelegatePanel implements Component, Focusable {
     const [input = ""] = this.searchInput.render(inputWidth);
     const inputText = input.startsWith("> ") ? input.slice(2) : input;
     const choices = this.modelChoices(mode.field, mode.query);
-    const pinnedCount = 2;
+    // Every action before the first model is pinned; an Advisor's selector adds its own switch.
+    const firstModel = choices.findIndex((choice) => choice.kind === "model");
+    const pinnedCount = firstModel < 0 ? choices.length : firstModel;
     const pinned = choices.slice(0, pinnedCount);
     const models = choices.slice(pinnedCount);
     const pinnedLines = pinned.map((choice, index) =>
@@ -2714,8 +2716,8 @@ export class DelegatePanel implements Component, Focusable {
     const field = this.mode.field;
     if (isAdvisorField(field)) {
       const index = advisorIndex(field);
-      // The switch changes no model, so it never closes the selector: the label shows the new state
-      // on the next render and the user keeps choosing.
+      // The switch changes no model, so it keeps the selector open and the label shows the new state
+      // on the next render, unless no writer exists for the file and the edit has to be refused.
       if (choice.kind === "advisor-filter") {
         if (!this.onSaveAdvisorFilter) {
           this.message = {
@@ -2930,9 +2932,9 @@ export class DelegatePanel implements Component, Focusable {
           `${model.provider} ${model.provider}/${model.id} ${model.provider} ${model.id} ${model.name ?? ""}`.trim(),
         )
       : this.candidates;
-    // The flag follows the models so the pinned shortcuts keep the positions the panel documents.
-    // It is offered for any configured Advisor, session-only included: the flag is global and the
-    // row would otherwise have no way to reach it.
+    // The switch joins the pinned actions instead of the model list: it changes no model, it must be
+    // reachable without scrolling past every model, and it is offered for any configured Advisor,
+    // session-only included, because the flag is global and the row has no other way to reach it.
     const advisorSwitch: ModelChoice[] =
       isAdvisorField(field) &&
       resolveDelegateState(this.global, this.draft).advisors[advisorIndex(field)]
@@ -2940,14 +2942,17 @@ export class DelegatePanel implements Component, Focusable {
             {
               kind: "advisor-filter",
               key: "advisor-filter",
-              label: `Content filter: ${this.draftAdvisorFilter[advisorIndex(field)] ? "cyber (on)" : "none"}`,
-              description:
-                "Softens this Advisor's questions and briefs so a provider content filter does not refuse them.",
+              label: `Content filter: ${this.draftAdvisorFilter[advisorIndex(field)] ? "cyber, on" : "none"}`,
+              // Only the on state claims an effect, so the off row does not describe one.
+              ...(this.draftAdvisorFilter[advisorIndex(field)]
+                ? { description: "softens security briefs" }
+                : {}),
             },
           ]
         : [];
     return [
       ...pinned,
+      ...advisorSwitch,
       ...filtered.map<ModelChoice>((model) => ({
         kind: "model",
         key: modelKey({ provider: model.provider, model: model.id }),
@@ -2955,7 +2960,6 @@ export class DelegatePanel implements Component, Focusable {
         ...(model.name && model.name !== model.id ? { description: model.name } : {}),
         reference: { provider: model.provider, model: model.id },
       })),
-      ...advisorSwitch,
     ];
   }
 
