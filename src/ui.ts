@@ -14,6 +14,7 @@ import { getLaunchCorrectionPath, writeLaunchCorrectionMode } from "./launch-cor
 import { getAdvisorRemindersPath, writeAdvisorReminderMode } from "./advisor-reminders.ts";
 import { writeRoleEntries } from "./role-entries.ts";
 import { trimAdvisorRead, writeAdvisorRead } from "./advisor-read-mode.ts";
+import { trimAdvisorFilter, writeAdvisorFilters } from "./advisor-filter-mode.ts";
 import { listProviderExtensionCandidates } from "./provider-package.ts";
 import {
   hasRuntimeError,
@@ -90,6 +91,7 @@ export async function openDelegateEditor(
         admissions: state.admissions ?? {},
         roleEntries: state.roleEntries,
         advisorRead: state.advisorRead,
+        advisorFilter: state.advisorFilters,
         launchCorrection: state.launchCorrection,
         advisorReminder: state.advisorReminder,
         advisorReminderInvalid: state.advisorReminderInvalid,
@@ -115,6 +117,13 @@ export async function openDelegateEditor(
           // The runtime carries what the file holds, never the longer list a re-read would shorten.
           if (result === "saved" || result === "unchanged")
             state.advisorRead = trimAdvisorRead(flags);
+          return result;
+        },
+        onSaveAdvisorFilter: async (flags) => {
+          const result = await writeAdvisorFilters(flags, getGlobalConfigPath());
+          // Same rule as the reading flags: the runtime carries what the file holds.
+          if (result === "saved" || result === "unchanged")
+            state.advisorFilters = trimAdvisorFilter(flags);
           return result;
         },
         onSaveRoleEntries: async (entries) => {
@@ -152,6 +161,7 @@ export async function openDelegateEditor(
           state.roleEntries = refreshed.roleEntries;
           state.roleWarnings = refreshed.roleWarnings;
           state.advisorRead = refreshed.advisorRead;
+          state.advisorFilters = refreshed.advisorFilters;
           state.advisorEntries = refreshed.advisorEntries;
           state.admissions = refreshed.admissions;
           state.launchCorrection = refreshed.launchCorrection;

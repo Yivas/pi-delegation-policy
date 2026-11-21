@@ -62,6 +62,7 @@ import {
 import { readProviderAdmissions, writeProviderAdmissions } from "../src/provider-admissions.ts";
 import { getRoleEntriesPath, readRoleEntries } from "../src/role-entries.ts";
 import { getAdvisorReadPath } from "../src/advisor-read-mode.ts";
+import { getAdvisorFiltersPath } from "../src/advisor-filter-mode.ts";
 import {
   CURRENT_SCHEMA_VERSION,
   emptyRoleEntries,
@@ -2033,6 +2034,8 @@ function createPanelHarness(
     onSaveRoleEntries?: DelegatePanelOptions["onSaveRoleEntries"];
     advisorRead?: DelegatePanelOptions["advisorRead"];
     onSaveAdvisorRead?: DelegatePanelOptions["onSaveAdvisorRead"];
+    advisorFilter?: DelegatePanelOptions["advisorFilter"];
+    onSaveAdvisorFilter?: DelegatePanelOptions["onSaveAdvisorFilter"];
   } = {},
 ) {
   const terminal = { rows: options.rows ?? 30 };
@@ -2070,6 +2073,8 @@ function createPanelHarness(
     onSaveRoleEntries: options.onSaveRoleEntries,
     advisorRead: options.advisorRead,
     onSaveAdvisorRead: options.onSaveAdvisorRead,
+    advisorFilter: options.advisorFilter,
+    onSaveAdvisorFilter: options.onSaveAdvisorFilter,
     onDone: (result) => done.push(result),
   });
   panel.focused = true;
@@ -3622,6 +3627,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/advisor-executor.ts",
     "src/advisor-extensions.ts",
     "src/advisor-log.ts",
+    "src/advisor-filter-mode.ts",
     "src/advisor-read-mode.ts",
     "src/advisor-provider-extension.ts",
     "src/advisor-reminders.ts",
@@ -5461,4 +5467,217 @@ test("the capability line lists Advisors too, and the image fact is stated when 
   const advisorPolicy = buildDelegationPolicy(withAdvisor) ?? "";
   assert.match(advisorPolicy, /Advisor 1 text\+image/);
   assert.doesNotMatch(advisorPolicy, /No configured role accepts image input/);
+});
+
+test("no flagged Advisor keeps the policy block byte identical", () => {
+  const session = { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" } as const;
+  const build = (filters?: boolean[]) => {
+    const state = runtime(session, { ...defaults, advisors: [advisor], advisorMode: "on" });
+    validateRuntime(
+      context({
+        availableModels: [
+          model(small),
+          model(medium),
+          model(large),
+          model(uiDesign),
+          model(advisor),
+        ],
+      }),
+      state,
+    );
+    if (filters) state.advisorFilters = filters;
+    return buildDelegationPolicy(state) ?? "";
+  };
+  const reference = build();
+  assert.match(reference, /Advisor \(optional\)/);
+  assert.doesNotMatch(reference, /content filter|cyber/);
+  assert.equal(build([false]), reference);
+  assert.equal(build([false, false]), reference);
+  // A flag on a slot with no Advisor is not a flagged Advisor: nothing is rendered for it.
+  assert.equal(build([false, true]), reference);
+});
+
+test("a flagged Advisor is told to soften its brief, once, in both launch modes", () => {
+  for (const launch of ["role", "tool"] as const) {
+    const second = { provider: "example", model: "second" };
+    const state = runtime(
+      { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+      { ...defaults, advisors: [advisor, second], advisorMode: "on", advisorLaunch: launch },
+    );
+    validateRuntime(
+      context({
+        availableModels: [
+          model(small),
+          model(medium),
+          model(large),
+          model(uiDesign),
+          model(advisor),
+          model(second),
+        ],
+      }),
+      state,
+    );
+    state.advisorFilters = [true, true];
+    const block = buildDelegationPolicy(state) ?? "";
+    assert.match(
+      block,
+      /content filter: cyber, flagged by the user for this slot; soften the wording and framing of its question and brief when the work is security-related, so that provider does not refuse them/,
+    );
+    assert.match(block, /Some listed Advisors are flagged with a cyber content filter\./);
+    assert.match(
+      block,
+      /when a question or brief concerns security or cyber work, soften its wording/,
+    );
+    assert.match(
+      block,
+      /Anything else you send that Advisor stays as you would write it for any other model/,
+    );
+    assert.match(block, /keep the same subject, facts, constraints and scope/);
+    // The outcome is never promised, which is the difference between a register change and a claim.
+    assert.match(block, /may still refuse; it does not promise that a phrasing will be accepted/);
+    // Two flagged Advisors share one sentence instead of repeating the rule per slot.
+    assert.equal(block.match(/Some listed Advisors are flagged/g)?.length, 1);
+    assert.equal(block.match(/content filter: cyber/g)?.length, 2);
+  }
+});
+
+test("a slot can be flagged and able to read without one erasing the other", () => {
+  const state = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, advisors: [advisor], advisorMode: "on" },
+  );
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(advisor)],
+    }),
+    state,
+  );
+  state.advisorRead = [true];
+  state.advisorFilters = [true];
+  const block = buildDelegationPolicy(state) ?? "";
+  assert.match(block, /reading: on, open only the paths the brief names/);
+  assert.match(block, /content filter: cyber/);
+  const line =
+    block.split("\n").find((candidate) => candidate.includes("Advisor (optional)")) ?? "";
+  assert.equal(line.indexOf("reading: on") < line.indexOf("content filter: cyber"), true);
+});
+
+test("the Advisor row shows the content filter, and Apply writes the flag", async () => {
+  const saved: boolean[][] = [];
+  const harness = createPanelHarness({
+    rows: 30,
+    global: { ...defaults, advisor, advisorMode: "on" },
+    candidates: [model(small, "Tiny Worker")] as never,
+    advisorFilter: [],
+    onSaveAdvisorFilter: async (flags) => {
+      saved.push(flags);
+      return "saved";
+    },
+  });
+  focusField(harness.panel, "advisor");
+  // The switch sits after the models: global, disable, one model, then the switch.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER, "\u001b");
+  assert.match(harness.panel.render(100).join("\n"), /^> Advisor 1\s+example\/\S+ · cyber filter/m);
+  sendKeys(harness.panel, "a");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(saved.at(-1), [true]);
+});
+
+test("an invalid Advisor content-filter file costs only the flag and leaves the block active", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = getGlobalConfigPath(directory);
+    await writeConfig(path, { ...defaults, intensity: "normal" });
+    await writeFile(getAdvisorFiltersPath(path), "{ broken", "utf8");
+    const state = await loadRuntime(context());
+    // A side setting: reported where side settings are reported, never as `D:ERR`.
+    assert.ok(state.diagnostics.some(({ scope }) => scope === "advisor-filters"));
+    assert.equal(hasRuntimeError(state), false);
+    assert.equal(statusLabel(state), "D:NORM");
+    const policy = buildDelegationPolicy(state) ?? "";
+    assert.match(policy, /pi-delegation-policy:owned/);
+    assert.match(policy, /Enabled ordinary roles: Small, Medium, Large/);
+    assert.doesNotMatch(policy, /content filter/);
+  });
+});
+
+test("the content-filter switch is offered for a session-only Advisor", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    session: { schemaVersion: CURRENT_SCHEMA_VERSION, advisors: [advisor] },
+    candidates: [model(advisor)] as never,
+    onSaveAdvisorFilter: async () => "saved",
+  });
+  focusField(harness.panel, "advisor");
+  sendKeys(harness.panel, KEY_ENTER);
+  assert.match(harness.panel.render(100).join("\n"), /Content filter: none/);
+});
+
+test("removing an Advisor moves the content-filter flag with the next one", () => {
+  const second = { provider: "example", model: "second" };
+  const third = { provider: "example", model: "third" };
+  const harness = createPanelHarness({
+    rows: 30,
+    global: { ...defaults, advisors: [advisor, second, third], advisorMode: "on" },
+    advisorFilter: [false, false, true],
+    onSaveAdvisorFilter: async () => "saved",
+  });
+  focusField(harness.panel, "advisor2");
+  // The second pinned choice removes that entry; the flag of the entry behind it moves up.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
+  const row = harness.panel.render(100).join("\n");
+  assert.match(row, /^> Advisor 2\s+example\/third · cyber filter/m);
+});
+
+test("a flagged Advisor behind an unlaunchable one still emits the shared rule", () => {
+  const second = { provider: "example", model: "second" };
+  const state = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, advisors: [advisor, second], advisorMode: "on" },
+  );
+  // Only the second model resolves, so the first slot keeps its index and cannot launch.
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(second)],
+    }),
+    state,
+  );
+  state.advisorFilters = [false, true];
+  const block = buildDelegationPolicy(state) ?? "";
+  assert.match(block, /Some listed Advisors are flagged with a cyber content filter\./);
+  assert.match(block, /Advisor 2 \(optional\)/);
+});
+
+test("a flag on an unlaunchable Advisor claims nothing about the Advisor the block lists", () => {
+  const second = { provider: "example", model: "second" };
+  const state = runtime(
+    { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+    { ...defaults, advisors: [advisor, second], advisorMode: "on" },
+  );
+  validateRuntime(
+    context({
+      availableModels: [model(small), model(medium), model(large), model(uiDesign), model(second)],
+    }),
+    state,
+  );
+  state.advisorFilters = [true, false];
+  const block = buildDelegationPolicy(state) ?? "";
+  // The marked slot has no role line, so the shared sentence would promise a filter nothing shows.
+  assert.doesNotMatch(block, /Some listed Advisors are flagged with a cyber content filter/);
+  assert.match(block, /Advisor 2 \(optional\)/);
+});
+
+test("a changed model clears that slot's content filter", () => {
+  const harness = createPanelHarness({
+    rows: 30,
+    global: { ...defaults, advisor, advisorMode: "on", advisorLaunch: "tool" },
+    advisorFilter: [true],
+    onSaveAdvisorFilter: async () => "saved",
+  });
+  assert.match(harness.panel.render(100).join("\n"), /· cyber filter/);
+  focusField(harness.panel, "advisor");
+  // A tool launch has no reading step, so the selector closes straight back to the list.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  const row = harness.panel.render(100).join("\n");
+  assert.match(row, /^> Advisor 1\s+example\//m);
+  assert.doesNotMatch(row, /· cyber filter/);
 });

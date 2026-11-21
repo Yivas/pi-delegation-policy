@@ -276,6 +276,35 @@ What that buys and what it does not:
   their own identity and stay tool-free; reading is not offered on them, and choosing one clears the
   flag for that slot.
 
+## Advisor content filter
+
+Some providers refuse a request whose content reads as offensive security work, even when the work is
+legitimate. A provider's filter is not something this extension can see or test, so the panel offers
+the statement as yours: open an Advisor's model selector and the list ends with **Content filter:
+none** or **Content filter: cyber (on)**. Choosing it toggles the flag for that slot and leaves the
+selector open, so nothing about the model changes. The flags live in
+`delegation-policy.advisor-filters.json`, one boolean per slot, with trailing offs dropped.
+
+With the flag on, the injected block names it in that Advisor's role line (`content filter: cyber,
+flagged by the user for this slot`) and adds one shared paragraph to the consultation contract. What it
+asks for, and what it does not do:
+
+- For questions and briefs about security or cyber work, soften the wording and the framing: state the
+  purpose plainly, name components and actions in ordinary technical language instead of
+  confrontational or exploit-centred phrasing. Softening changes the register, not the content, so the
+  same facts, constraints and scope stay in the brief; a brief emptied of its facts produces advice
+  about something else.
+- Everything else sent to that Advisor is written as for any other model. The flag is not a standing
+  instruction to change how unrelated work is described.
+- The extension never rewrites a brief. It does not add a preamble to the request, and the payload of
+  `consult_advisor` stays exactly `{question, brief}` as the main agent wrote them.
+- No phrasing is promised to be accepted. The flag says the provider may still refuse; it is the
+  user's statement about a model, not an observation, and it is verified by nothing in this repo.
+- A flag belongs to a slot: in the panel, changing that slot's provider or model clears it, and
+  removing an Advisor moves the next one's flag up with it. `/delegate advisor N …` writes the session
+  draft instead, so it does not move or clear the flag; check the row before relying on it. A version
+  older than the file ignores it entirely, so a downgrade loses the flag silently and nothing else.
+
 ## Advisor
 
 Advisor is optional, outside the ordinary-role minimum, and has no model until you configure one. Its
@@ -586,6 +615,9 @@ means the advice comes from the Advisor role plus your own instructions, in that
 - Provider admissions: `delegation-policy.provider-extensions.json`, schema 1 with `providers`, one
   package and version per admitted provider. An invalid file is ignored with a diagnostic and leaves
   the other Advisors running.
+- Advisor content filter: `delegation-policy.advisor-filters.json`, schema 1 with `cyber`, one boolean
+  per Advisor slot, trailing offs dropped. Missing state means no Advisor is flagged; invalid state is
+  a diagnostic that flags none and leaves the block active. Older versions ignore it.
 - Session Apply: schema 2 off guard, extension entry, schema-8 companion, then schema-7 delegation
   commit. The legacy companion remains adjacent to that commit. A failure leaves both axes off.
 

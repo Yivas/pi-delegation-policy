@@ -69,6 +69,11 @@ import {
   trimAdvisorRead,
   type AdvisorReadSaveResult,
 } from "./advisor-read-mode.ts";
+import {
+  normalizeAdvisorFilter,
+  trimAdvisorFilter,
+  type AdvisorFilterSaveResult,
+} from "./advisor-filter-mode.ts";
 
 const USE_GLOBAL_DEFAULT = "Use global default";
 const DISABLE_FOR_SESSION = "Disable for this session";
@@ -249,6 +254,8 @@ type ThinkingChoice = { label: string; description: string; action: ThinkingActi
 type ModelChoice =
   | { kind: "global"; key: "global"; label: string; description?: string }
   | { kind: "disabled"; key: "disabled"; label: string; description?: string }
+  /** A per-Advisor switch offered beside the models: it changes no model, so it is never a model. */
+  | { kind: "advisor-filter"; key: "advisor-filter"; label: string; description?: string }
   | {
       kind: "model";
       key: string;
@@ -286,6 +293,10 @@ export interface DelegatePanelOptions {
   advisorRead?: boolean[];
   /** Stores the global reading flags; Apply and Save both write a changed set before their step. */
   onSaveAdvisorRead?: (read: boolean[]) => Promise<AdvisorReadSaveResult>;
+  /** One flag per Advisor slot: whether the user flagged that Advisor's model with a content filter. */
+  advisorFilter?: boolean[];
+  /** Stores the global flags; Apply and Save both write a changed set before their step. */
+  onSaveAdvisorFilter?: (filters: boolean[]) => Promise<AdvisorFilterSaveResult>;
   /** Optional-role entry lists; absent means none configured. Apply and Save write a change. */
   roleEntries?: RoleEntries;
   /** Stores the global entry lists; Apply and Save both write a changed set before their step. */
@@ -456,6 +467,12 @@ function advisorReadFailureText(result: AdvisorReadSaveResult): string {
     : "Could not save the Advisor reading flags.";
 }
 
+function advisorFilterFailureText(result: AdvisorFilterSaveResult): string {
+  return result === "unknown-state"
+    ? "Advisor content-filter file is unreadable or invalid; fix or remove delegation-policy.advisor-filters.json, then retry."
+    : "Could not save the Advisor content-filter flags.";
+}
+
 /** A sidecar this editor has no writer for: the edit is refused instead of being staged and lost. */
 function noWriterText(file: string): string {
   return `No writer for ${file} is configured in this editor, so the change was not made.`;
@@ -622,6 +639,9 @@ export class DelegatePanel implements Component, Focusable {
   private readonly onSaveAdvisorRead: DelegatePanelOptions["onSaveAdvisorRead"];
   private advisorRead: boolean[];
   private draftAdvisorRead: boolean[];
+  private readonly onSaveAdvisorFilter: DelegatePanelOptions["onSaveAdvisorFilter"];
+  private advisorFilter: boolean[];
+  private draftAdvisorFilter: boolean[];
   private readonly extensionCandidates: readonly ProviderPackage[];
   private readonly extensionProviders: readonly string[];
   private admissions: ProviderAdmissions;
@@ -633,7 +653,12 @@ export class DelegatePanel implements Component, Focusable {
   private readonly advisorReminderInvalid: boolean;
   /** Global steps already on disk from this editor, so a later failure never denies them. */
   private readonly savedGlobals = new Map<
-    "admissions" | "launchCorrection" | "advisorReminder" | "roleEntries" | "advisorRead",
+    | "admissions"
+    | "launchCorrection"
+    | "advisorReminder"
+    | "roleEntries"
+    | "advisorRead"
+    | "advisorFilter",
     string
   >();
   /** Optional-role entries as the sidecar holds them, and the set this editor is staging. */
@@ -678,6 +703,9 @@ export class DelegatePanel implements Component, Focusable {
     this.onSaveAdvisorRead = options.onSaveAdvisorRead;
     this.advisorRead = [...(options.advisorRead ?? [])];
     this.draftAdvisorRead = [...this.advisorRead];
+    this.onSaveAdvisorFilter = options.onSaveAdvisorFilter;
+    this.advisorFilter = [...(options.advisorFilter ?? [])];
+    this.draftAdvisorFilter = [...this.advisorFilter];
     this.extensionCandidates = options.extensionCandidates ?? [];
     this.extensionProviders = options.extensionProviders ?? [];
     this.admissions = structuredClone(options.admissions ?? {});
@@ -767,13 +795,40 @@ export class DelegatePanel implements Component, Focusable {
     return result;
   }
 
+  private advisorFilterDirty(): boolean {
+    if (!this.onSaveAdvisorFilter) return false;
+    return (
+      this.advisorFilter.length !== this.draftAdvisorFilter.length ||
+      this.advisorFilter.some((flag, index) => flag !== this.draftAdvisorFilter[index])
+    );
+  }
+
+  /**
+   * The flags are global, so Apply and Save both write a changed set before their own step. A file
+   * this writer cannot read is reported instead of overwritten.
+   */
+  private async saveAdvisorFilter(): Promise<AdvisorFilterSaveResult> {
+    let result: AdvisorFilterSaveResult;
+    try {
+      result = (await this.onSaveAdvisorFilter?.([...this.draftAdvisorFilter])) ?? "failed";
+    } catch {
+      result = "failed";
+    }
+    if (result === "saved" || result === "unchanged") {
+      this.advisorFilter = [...this.draftAdvisorFilter];
+      this.savedGlobals.set("advisorFilter", "the Advisor content-filter flags");
+    }
+    return result;
+  }
+
   private globalsDirty(): boolean {
     return (
       this.admissionsDirty() ||
       this.launchCorrectionDirty() ||
       this.advisorReminderDirty() ||
       this.roleEntriesDirty() ||
-      this.advisorReadDirty()
+      this.advisorReadDirty() ||
+      this.advisorFilterDirty()
     );
   }
 
@@ -1099,7 +1154,8 @@ export class DelegatePanel implements Component, Focusable {
         entry.provider !== RESERVED_PROVIDER &&
         this.draftAdvisorRead[advisorIndex(field)];
       const reading = canReadHere ? " · reads files" : "";
-      return `${modelText(entry)}${admitted ? ` · ${admitted.package} ${admitted.version}` : ""}${reading}`;
+      const filtered = this.draftAdvisorFilter[advisorIndex(field)] ? " · cyber filter" : "";
+      return `${modelText(entry)}${admitted ? ` · ${admitted.package} ${admitted.version}` : ""}${reading}${filtered}`;
     }
     if (
       field === "intensity" ||
@@ -2658,6 +2714,21 @@ export class DelegatePanel implements Component, Focusable {
     const field = this.mode.field;
     if (isAdvisorField(field)) {
       const index = advisorIndex(field);
+      // The switch changes no model, so it never closes the selector: the label shows the new state
+      // on the next render and the user keeps choosing.
+      if (choice.kind === "advisor-filter") {
+        if (!this.onSaveAdvisorFilter) {
+          this.message = {
+            kind: "error",
+            text: noWriterText("delegation-policy.advisor-filters.json"),
+          };
+          this.mode = { kind: "settings" };
+          return;
+        }
+        while (this.draftAdvisorFilter.length <= index) this.draftAdvisorFilter.push(false);
+        this.draftAdvisorFilter[index] = !this.draftAdvisorFilter[index];
+        return;
+      }
       const entries = structuredClone(resolveDelegateState(this.global, this.draft).advisors);
       const previous = entries[index];
       const global =
@@ -2679,6 +2750,9 @@ export class DelegatePanel implements Component, Focusable {
         this.draftAdvisorRead = entries.length
           ? trimAdvisorRead(this.draftAdvisorRead.filter((_, slot) => slot !== index))
           : [];
+        this.draftAdvisorFilter = entries.length
+          ? trimAdvisorFilter(this.draftAdvisorFilter.filter((_, slot) => slot !== index))
+          : [];
       } else if (choice.kind === "global") entries[index] = structuredClone(reference);
       else
         entries[index] = {
@@ -2694,6 +2768,16 @@ export class DelegatePanel implements Component, Focusable {
         if (this.draft.thinking) delete this.draft.thinking.advisor;
       } else this.replaceAdvisors(entries);
       if (!entries.length && choice.kind === "disabled") this.draft.advisorMode = "off";
+      // The filter flag describes one model, so a changed model never inherits it. Re-picking the same
+      // model, or a global default that resolves to it, is not a change and keeps the flag.
+      const modelChanged =
+        Boolean(reference) &&
+        (previous?.provider !== reference?.provider || previous?.model !== reference?.model);
+      if (modelChanged)
+        this.draftAdvisorFilter = normalizeAdvisorFilter(
+          this.draftAdvisorFilter.map((flag, slot) => (slot === index ? false : flag)),
+          Math.max(index + 1, resolveDelegateState(this.global, this.draft).advisors.length),
+        );
       if (choice.kind === "model" && choice.reference.provider === RESERVED_PROVIDER) {
         // A provider-dependent profile keeps its own identity and stays tool-free.
         this.draftAdvisorRead = normalizeAdvisorRead(
@@ -2846,6 +2930,22 @@ export class DelegatePanel implements Component, Focusable {
           `${model.provider} ${model.provider}/${model.id} ${model.provider} ${model.id} ${model.name ?? ""}`.trim(),
         )
       : this.candidates;
+    // The flag follows the models so the pinned shortcuts keep the positions the panel documents.
+    // It is offered for any configured Advisor, session-only included: the flag is global and the
+    // row would otherwise have no way to reach it.
+    const advisorSwitch: ModelChoice[] =
+      isAdvisorField(field) &&
+      resolveDelegateState(this.global, this.draft).advisors[advisorIndex(field)]
+        ? [
+            {
+              kind: "advisor-filter",
+              key: "advisor-filter",
+              label: `Content filter: ${this.draftAdvisorFilter[advisorIndex(field)] ? "cyber (on)" : "none"}`,
+              description:
+                "Softens this Advisor's questions and briefs so a provider content filter does not refuse them.",
+            },
+          ]
+        : [];
     return [
       ...pinned,
       ...filtered.map<ModelChoice>((model) => ({
@@ -2855,6 +2955,7 @@ export class DelegatePanel implements Component, Focusable {
         ...(model.name && model.name !== model.id ? { description: model.name } : {}),
         reference: { provider: model.provider, model: model.id },
       })),
+      ...advisorSwitch,
     ];
   }
 
@@ -3024,6 +3125,18 @@ export class DelegatePanel implements Component, Focusable {
         this.message = {
           kind: "error",
           text: `${advisorReadFailureText(result)}${
+            savedClause(this.savedGlobalsList()) || " Nothing else was changed."
+          }`,
+        };
+        return false;
+      }
+    }
+    if (this.advisorFilterDirty()) {
+      const result = await this.saveAdvisorFilter();
+      if (result !== "saved" && result !== "unchanged") {
+        this.message = {
+          kind: "error",
+          text: `${advisorFilterFailureText(result)}${
             savedClause(this.savedGlobalsList()) || " Nothing else was changed."
           }`,
         };

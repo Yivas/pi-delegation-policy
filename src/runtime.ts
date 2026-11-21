@@ -36,6 +36,11 @@ import {
   type AdvisorRead,
 } from "./advisor-read-mode.ts";
 import {
+  advisorFilterDiagnostic,
+  readAdvisorFilters,
+  type AdvisorFilters,
+} from "./advisor-filter-mode.ts";
+import {
   type AdvisorSetting,
   MODEL_ROLES,
   OPTIONAL_ROLE_ENTRY_KEYS,
@@ -62,6 +67,8 @@ export type RuntimeState = {
   roleEntries?: RoleEntries;
   /** One flag per Advisor slot: whether that Advisor may open the files its brief names. */
   advisorRead?: AdvisorRead;
+  /** One flag per Advisor slot: whether the user flagged that Advisor's model with a content filter. */
+  advisorFilters?: AdvisorFilters;
   diagnostics: ConfigDiagnostic[];
   modelStatuses: Map<ModelConfigKey, ModelStatus>;
   runtimeErrors: string[];
@@ -300,6 +307,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
   const reminder = await readAdvisorReminderMode(getAdvisorRemindersPath(path));
   const roleFiles = await readRoleEntries(path);
   const advisorReading = await readAdvisorRead(path);
+  const advisorFilterFile = await readAdvisorFilters(path);
   const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
     effective: resolveDelegateState(loaded.defaults, restored.session, roleFiles.entries),
@@ -307,11 +315,15 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
     session: restored.session,
     roleEntries: roleFiles.entries,
     advisorRead: advisorReading.read,
+    advisorFilters: advisorFilterFile.filters,
     diagnostics: [
       ...loaded.diagnostics,
       ...roleFiles.diagnostics,
       ...(advisorReadDiagnostic(advisorReading.invalid)
         ? [advisorReadDiagnostic(advisorReading.invalid)!]
+        : []),
+      ...(advisorFilterDiagnostic(advisorFilterFile.invalid)
+        ? [advisorFilterDiagnostic(advisorFilterFile.invalid)!]
         : []),
       ...restored.diagnostics,
       ...(admissions.diagnostic ? [admissions.diagnostic] : []),
@@ -333,6 +345,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
 const SIDE_SETTING_SCOPES: ReadonlySet<string> = new Set([
   "advisor-extension",
   "advisor-read",
+  "advisor-filters",
   "launch-correction",
   "advisor-reminder",
   "role-entries",

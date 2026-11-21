@@ -91,7 +91,8 @@ export type ConfigDiagnostic = {
     | "launch-correction"
     | "advisor-reminder"
     | "role-entries"
-    | "advisor-read";
+    | "advisor-read"
+    | "advisor-filters";
 };
 export type LoadedDefaults = {
   defaults: GlobalDefaults;

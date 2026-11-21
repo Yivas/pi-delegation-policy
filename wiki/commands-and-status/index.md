@@ -76,9 +76,10 @@ built-in, global, and session sources.
 Move with `Up` and `Down`; press `Enter` or `Space` to edit. Every model field — Small, Medium,
 Large, Visual Design, Advisor — starts with two pinned keyboard-selectable rows: **Use global
 default**, described as an exact reference, `disabled`, or `not configured`, and **Disable for this
-session**. The selector shows the model ID first and `[provider]` last, fuzzy-searches provider, model
-ID, and display name, and shows at most 10 rows; `Page Up` and `Page Down` move through longer
-results. When Pi supplies public model metadata, the selected row can show name, API, reasoning
+session**. An Advisor's selector ends one extra row, **Content filter: none** or **cyber (on)**, which
+toggles that slot's filter flag and leaves the selector open. The selector shows the model ID first and
+`[provider]` last, fuzzy-searches provider, model ID, and display name, and shows at most 10 rows;
+`Page Up` and `Page Down` move through longer results. When Pi supplies public model metadata, the selected row can show name, API, reasoning
 support, context window, and maximum output; that metadata is transient and never saved.
 
 The thinking rows — **Small thinking**, **Medium thinking**, **Large thinking** and **Visual Design
@@ -174,7 +175,7 @@ example:
 D:AGG intensity=aggressive (session) | preference=standard (default) | small=provider/example-small (global)
 medium=provider/example-medium (global) | large=provider/example-large (global) | ui-design=provider/example-visual (global)
 advisor-mode=with-delegation (global); A:ON | advisor=provider/example-advisor (global) | advisor-launch=role (default)
-advisor-1=provider/example-advisor; profile=pi-delegation-policy.advisor; reading=off (global)
+advisor-1=provider/example-advisor; profile=pi-delegation-policy.advisor; reading=off; filter=off (global)
 thinking-small=fixed:high (global) | thinking-medium=range:low..high (session) | thinking-large=unset (default) | thinking-ui-design=unset (default)
 context=off (default) | context-reader-enabled=false (default) | context-reader-role=small (default)
 context-reader-answer-max-bytes=8192 (default); executor checked only on invocation
@@ -219,7 +220,8 @@ requires the brief, and a later call in the same task sends the new question and
 [Limits and privacy](/limits-and-privacy/#advisor-role) states what each turn sends, the concurrency
 limit, the cancellation rules, and the retention.
 
-Status adds `advisor-launch=` and one `advisor-N=` token per entry, with its profile and source. In tool mode
+Status adds `advisor-launch=` and one `advisor-N=` token per entry, with its profile, its reading flag,
+its `filter=cyber|off` flag and its source. In tool mode
 policy text asks for this tool, not the generic subagent launcher, whatever the session uses. See [privacy](/limits-and-privacy/#local-content-free-log) for the local metadata log.
 
 ## 6. Use ContextShunt safely
