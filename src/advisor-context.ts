@@ -127,8 +127,10 @@ export function truncateUtf8(text: string, maxBytes: number): { text: string; tr
   return { text: `${cutToBytes(text, available)}${TRUNCATION_MARKER}`, truncated: true };
 }
 
+// Sections are capped before redaction, so a key block can lose its END line to the cap; an
+// unterminated block is therefore redacted to the end of the text instead of passing through.
 const PRIVATE_KEY_BLOCK =
-  /-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----[\s\S]*?-----END \1PRIVATE KEY-----/g;
+  /-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----[\s\S]*?(?:-----END \1PRIVATE KEY-----|$(?![\s\S]))/g;
 
 /** Credential shapes with a fixed prefix, so no assignment context is needed. */
 const TOKEN_PATTERNS = [

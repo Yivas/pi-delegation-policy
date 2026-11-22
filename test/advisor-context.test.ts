@@ -426,6 +426,27 @@ test("a sensitive path keeps the change header and withholds its text", () => {
   assert.equal(composed.text.includes("secret material"), false);
 });
 
+test("a key block cut by the section cap is still redacted", () => {
+  const body = Array.from(
+    { length: 400 },
+    (_, index) => `BODYLINE${String(index).padStart(4, "0")}`,
+  );
+  const composed = composeAdvisorContext(
+    input({
+      pending: {
+        kind: "edit",
+        path: "deploy/config.txt",
+        lines: 402,
+        text: ["-----BEGIN PRIVATE KEY-----", ...body, "-----END PRIVATE KEY-----"].join("\n"),
+      },
+    }),
+  );
+
+  // The block is longer than the cap, so the END line never reaches the redaction.
+  assert.equal(composed.text.includes("BODYLINE"), false);
+  assert.match(sectionBody(composed.text, "pending_change") ?? "", /\[redacted\]/);
+});
+
 test("only the program and the subcommand of a command line are described", () => {
   const cases: [string, { program: string; subcommand?: string }][] = [
     ["git status", { program: "git", subcommand: "status" }],
