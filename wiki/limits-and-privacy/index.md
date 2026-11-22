@@ -96,11 +96,19 @@ that host's `input` then `before_agent_start` order. No real-provider notice tes
 measurement or provider-cache measurement is claimed. [Configuration](/configuration/#configuration-change-notice)
 lists the tracked settings.
 
-## Advisor reminder
+## Advisor nudge level
 
-An automatic reminder, on by default, adds one short extension-owned line to the request context at
-most once per operative task of each instance. It is armed by one successful builtin orientation
-result (`read`, `find`, `grep`, `ls`) or by the same builtin tool failing in two different rounds, and
+The setting is `advisorLevel`: `off`, `standard` (the default) or `strict`. It replaces the old
+reminder setting, which is now read only as a fallback when the level file does not exist, and with
+Advisor off it has no effect. `off` leaves the written rules alone, `standard` adds the reminder and
+lets the checkpoint record only, and `strict` also states the hard rule in the reminder and lets the
+checkpoint stop a call. [Configuration](/configuration/#advisor-nudge-level) describes the levels, the
+precedence and the file.
+
+In `standard` and `strict` an automatic reminder adds one short extension-owned line to the request
+context at most once per operative task of each instance. It is armed by one successful builtin
+orientation result (`read`, `find`, `grep`, `ls`) or by the same builtin tool failing in two different
+rounds, and
 it is presented only while a valid Advisor is active, the task is live and the configured launch mode
 has its launcher among the active tools. An attempted consultation ends it for that task even when it
 fails; a control action that only names an Advisor is not a consultation.
@@ -115,12 +123,24 @@ documented `pi-subagents` process markers (`PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_R
 child; a `/fork` or `/clone` of a human session keeps the reminder, and a missing marker proves
 nothing, so the approved scope also covers foreground children that load this policy and can consult.
 
-The mode is stored in `delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`off` or
-`remind`). A missing file means `remind`; an unreadable or invalid one suspends only the reminder with
-a diagnostic and never changes the delegation or Advisor axis, and the panel row then reads
-`Unavailable/Suspended · global` instead of presenting the suspension as a choice. The extension writes no reminder text
-to session history or its local log. [Configuration](/configuration/#advisor-reminder) describes the
-row and the file.
+The level is stored in `delegation-policy.advisor-level.json`, schema 1, and a branch keeps its own
+session entry. An unreadable or invalid file falls back to `standard` with a diagnostic and never
+changes the delegation or Advisor axis, and the panel row then reads `Unavailable/Suspended · global`
+instead of presenting the fallback as a choice. The extension writes no reminder text to session
+history or its local log. [Configuration](/configuration/#advisor-nudge-level) describes the row and
+the file.
+
+### Advisor checkpoint
+
+In `strict` the checkpoint refuses one state-changing call per task, and in `standard` it only records
+what it would have refused. It never refuses when a consultation is not possible, so it cannot loop,
+and a `??` at the start of a prompt forces it for that task whatever the level, as long as an Advisor
+is available. The commands it recognizes
+are a nudge, not a security boundary: it reads the leading words of a shell segment, matches nothing
+else, grants no permission and inspects no argument, so it neither authorizes nor blocks anything
+beyond that one refusal. Known limit: in this version a long task is stopped at most once, at its
+first substantive change. [Configuration](/configuration/#advisor-checkpoint) states the conditions
+and the refusal text.
 
 ## Fail-closed behavior
 
@@ -153,9 +173,9 @@ cancel the extension-owned group.
 
 ## Local data and privacy
 
-The extension stores intensity, preference, Advisor mode, explicit disabled markers, provider/model
-identifiers, the optional ContextShunt configuration, and each role's thinking policy in local
-global defaults and Pi session entries. It never stores credentials, prompts, panel catalog metadata,
+The extension stores intensity, preference, Advisor mode, the Advisor nudge level, explicit disabled
+markers, provider/model identifiers, the optional ContextShunt configuration, and each role's
+thinking policy in local global defaults and Pi session entries. It never stores credentials, prompts, panel catalog metadata,
 or the thinking level chosen for an individual run. It sends no telemetry and makes no network
 request of its own.
 
@@ -170,22 +190,38 @@ and mode are configured in [configuration](/configuration/#advisor). This sectio
 consultation sends and retains. The packaged no-tools/no-extensions
 `pi-delegation-policy.advisor` profile advises and executes nothing.
 
-In `role` mode the main agent launches each valid advisor and the extension only observes matching
-attempts. In `tool` mode the always-registered `consult_advisor({ question, brief?, evidence? })`
-launches one child per valid advisor through the public `pi-subagents` delegation API. It requires
-stable SemVer `>=0.76.1`, with no upper bound, and it rejects prereleases and invalid versions. Every
-launch must still pass the strict contract and terminal-binding checks, or it returns unavailable text.
-No model, provider or executor fallback is added.
+`tool` is the default launch mode, and it also runs when no setting names a mode. In `role` mode the
+main agent launches each valid advisor and the extension only observes matching attempts. In `tool`
+mode the always-registered `consult_advisor({ question?, brief?, evidence? })` launches one child per
+valid advisor through the public `pi-subagents` delegation API. It requires stable SemVer `>=0.76.1`,
+with no upper bound, and it rejects prereleases and invalid versions. Every launch must still pass the
+strict contract and terminal-binding checks, or it returns unavailable text. No model, provider or
+executor fallback is added.
 
-Every consultation runs in fresh context: the request carries the question and a short self-contained
-`brief` — objective and constraints, relevant facts, options and proposal, uncertainty — and the
-extension never adds the conversation. A first consultation in a thread requires that brief; a later
-call in the same task sends only the new question and evidence. A call that asks for
-`context: "fork"` — on the child, in the call's `options` or at the top level — is refused when an
-Advisor is involved. One residual stays outside the extension's reach: a default such as
-`defaultSubagentContext: "fork"` lives in the `pi-subagents` configuration, which the extension does
-not read, so check it if this matters to you. The Advisor therefore sees only what you write in the
-brief, so a thin brief weakens the advice.
+Every consultation runs in fresh context, and the extension never adds the conversation. In the
+default `context: composed` the extension, not the model, decides what leaves the machine: it sends
+each Advisor's provider the user's literal request, the main agent's last two messages, the paths it
+read and edited, the commands it ran as program and subcommand with `ok` or `error` only, and the
+change it was about to make when a checkpoint held it back. That provider may differ from the main
+model's provider, and the same context goes to every valid entry.
+
+It sends no command output, no command arguments, no file contents, no model reasoning, no system
+prompt and nothing from before the task. An edit to a sensitive path is withheld and only the path is
+named, and obvious secrets such as private keys, common token formats and `password=`-style values
+become `[redacted]`. Each section is fenced with a random marker, the whole context is capped at
+12 KiB, and past that cap the host drops commands, paths, agent messages and the earlier request
+before it shortens the brief, the evidence and the user request.
+
+`/delegate advisor context manual` keeps the earlier behaviour, in which the main agent writes the
+question and, on a first consultation, the brief: the Advisor then sees only what that brief says, so
+a thin brief weakens the advice. [What a consultation sends](/configuration/#advisor-consultation)
+lists the sections, the per-section caps and the order in which they are cut.
+
+A later call in the same task sends only what changed. A call that asks for `context: "fork"`, on the
+child, in the call's `options` or at the top level, is refused when an Advisor is involved. One
+residual stays outside the extension's reach: a default such as `defaultSubagentContext: "fork"`
+lives in the `pi-subagents` configuration, which the extension does not read, so check it if this
+matters to you.
 
 One pending call per tool: an advisor group launches one child per configured valid advisor, while the
 independent reader can run alongside it (at most four children). Abort, branch change, shutdown and
@@ -240,7 +276,13 @@ refused, a closed refusal code, child count, one role code per child, and the cl
 correction applied); an allowed record with no
 children appears only in that off window and still counts as a launch, while a refusal (for example
 a workflow script or a parallel call without tasks) can also carry no children. Consultation, `task`
-and `launch` records repeat the policy hash they ran under. `advisorConsults` counts attempts: a
+and `launch` records repeat the policy hash they ran under. A `task` record also carries `mainModel`,
+the exact `provider/id` key or `null`, and `advisorLevel`. A `consultation` record also carries
+`mainModel`, `advisorLevel`, `noArgs`, which is true when the model passed no question, brief or
+evidence, and `contextBytes`, which is `0` in manual mode. One `checkpoint` record is written per task
+in which the checkpoint fired: `mode` (`shadow` or `active`), `signals`, `resolution` (`consult`,
+`repeat` or `none`), `priorCalls`, `filesRead`, `promptChars`, `editLines`, `mainModel` and
+`advisorLevel`. Every field is an enum, a boolean or a number. `advisorConsults` counts attempts: a
 `consult_advisor` call counts whether or not it reached a model, and its real outcome is the
 `consultation` event. `subagentLaunches` counts allowed calls that launch a child other than an
 Advisor: a call that launches only Advisors counts as a consult, a mixed call counts as both, and a
@@ -265,10 +307,11 @@ check validates a declared contract, not a sandbox or an executor signature.
 
 ### Retention
 
-Questions, briefs and replies can persist in executor argv, temporary files,
+Questions, briefs, composed contexts and replies can persist in executor argv, temporary files,
 sessions, lifecycle records and at each provider. No deletion, external TTL or absence of cost is
-promised. Turn Advisor off when session content must not reach those providers. Local log rotation
-is not an external retention policy.
+promised. Turn Advisor off when session content must not reach those providers, or use
+`/delegate advisor context manual` to keep the request, the agent's messages and the change it held
+back out of the context. Local log rotation is not an external retention policy.
 
 ## ContextShunt limits
 

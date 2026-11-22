@@ -67,15 +67,17 @@ Configure **Advisor 1** and optional **Advisor 2** and **Advisor 3** in `/delega
 delegation is active. Selecting `on` keeps consultation with delegation `off`, which shows as
 `D:OFF A:ON`.
 
-Default **Advisor launch: role** asks the main agent to consult every valid entry in one background
-call. Optional **tool** mode uses the explicit `consult_advisor({ question, brief?, evidence? })`
-tool through the authorized external executor, never from a hook. It requires stable `pi-subagents`
+**Advisor launch** defaults to `tool`, where the explicit `consult_advisor()` tool asks every valid
+entry through the authorized external executor, never from a hook. It requires stable `pi-subagents`
 SemVer `>=0.76.1`, with no upper bound, and the strict launch contract, and it rejects prereleases and
-invalid versions. Every consultation runs in fresh context and needs a self-contained brief: the
-extension never sends the conversation, and it refuses a call that asks to fork the session for an
-Advisor. A fork default configured in `pi-subagents` itself is outside what the extension can read,
-so check that setting if your Advisors must never see it. Consultation sends the question and brief
-to another model and can add latency and cost, including with delegation off.
+invalid versions. It needs no arguments: the host composes the context from the task, and
+`/delegate advisor context manual` goes back to a question and a brief you write. Optional **role**
+mode asks the main agent to consult every valid entry in one background call instead. Every
+consultation runs in fresh context: the extension never sends the conversation, and it refuses a call
+that asks to fork the session for an Advisor. A fork default configured in `pi-subagents` itself is
+outside what the extension can read, so check that setting if your Advisors must never see it.
+Consultation sends a composed context, or the question and brief in `manual` mode, to another model
+and can add latency and cost, including with delegation off.
 
 Validation is reported per axis: an enabled Advisor that is unusable produces `A:ERR` and removes
 only consultation, while `A:PART` means only some entries are valid and usable. Invalid delegation

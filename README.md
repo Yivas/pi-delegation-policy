@@ -58,12 +58,12 @@ Thinking is unset by default, or a fixed level, or an inclusive range. Advisor t
 
 ## Advisor
 
-Advisor is optional and has no model until you configure one. Its mode defaults to `with-delegation`, `on` keeps consultation with delegation off, and `off` silences it while keeping the saved models. Each of the three slots takes an exact model, and every valid entry gets the same question.
+Advisor is optional and has no model until you configure one. Its mode defaults to `with-delegation`, `on` keeps consultation with delegation off, and `off` silences it while keeping the saved models. Each of the three slots takes an exact model, and every valid entry gets the same context.
 
+- **`tool` launch** (the default): `consult_advisor()` needs no arguments, because the host writes the context from what it observed, and launches one child per advisor in parallel. It needs a stable `pi-subagents` SemVer `>=0.76.1`.
 - **`role` launch**: the main agent launches every valid advisor in one background subagent call.
-- **`tool` launch**: `consult_advisor({ question, brief?, evidence? })` launches one child per advisor in parallel and needs a stable `pi-subagents` SemVer `>=0.76.1`.
 
-Every consultation runs in fresh context and carries only the question and a self-contained brief, never your conversation, unless `pi-subagents` itself defaults a launch to fork, which the extension cannot read. A slot can also be given the `read` tool for role launches, off by default, which opens a file the brief names, though the host's own permission rules decide what `read` may reach ([SECURITY.md](https://github.com/Yivas/pi-delegation-policy/blob/main/SECURITY.md)). Consulting another model costs latency and money. `A:PART` means some entries are usable and `A:ERR` means none is.
+Every consultation runs in fresh context and never carries your conversation, unless `pi-subagents` itself defaults a launch to fork, which the extension cannot read. The default `composed` context sends your request, the agent's last two messages, the paths and commands it touched and the change it held back, within 12 KiB, and never command output, file contents, the system prompt or earlier conversation. `/delegate advisor context manual` goes back to a brief the agent writes. The nudge level, `standard` by default, adds one reminder per task and can hold the first substantive change once. A slot can also be given the `read` tool for role launches, off by default, which opens a file the brief names, though the host's own permission rules decide what `read` may reach ([SECURITY.md](https://github.com/Yivas/pi-delegation-policy/blob/main/SECURITY.md)). Consulting another model costs latency and money. `A:PART` means some entries are usable and `A:ERR` means none is.
 
 [Advisor reference](https://yivas.github.io/pi-delegation-policy/configuration/#advisor) covers modes, threads, provider extensions, and the reading flag.
 
@@ -80,6 +80,10 @@ ContextShunt is a separate opt-in layer, off by default. `observe` records what 
 /delegate reset                                Turn both axes off for the branch
 /delegate advisor off|on|with-delegation       Set the Advisor mode
 /delegate advisor launch role|tool             Select the launch surface
+/delegate advisor level off|standard|strict|default  Set the branch nudge level
+/delegate advisor level global off|standard|strict|default  Set the global nudge level
+/delegate advisor level model off|standard|strict|default  Set the level for this main model
+/delegate advisor context composed|manual      Choose who writes the consultation context
 /delegate advisor 1|2|3 model PROVIDER/MODEL   Configure an entry
 /delegate advisor 1|2|3 model inherit          Return every entry to inheritance
 /delegate advisor 1|2|3 model remove           Remove an entry

@@ -4,8 +4,8 @@
 
 This project is a local Pi extension. It stores policy in global defaults, session entries, and the
 companion files listed in the [configuration reference][persistence]: intensity, preference, Advisor
-mode and models, explicit disabled markers, per-role thinking policies, the optional ContextShunt
-configuration, and provider admissions. It does not store credentials or prompts, and it
+mode and models, the Advisor nudge level, explicit disabled markers, per-role thinking policies, the
+optional ContextShunt configuration, and provider admissions. It does not store credentials or prompts, and it
 never stores the thinking level chosen for an individual run. It makes no network request of its own,
 sends no telemetry, and starts no turn, child, or consultation from a hook: the policy block travels
 with the requests Pi already sends.
@@ -37,8 +37,16 @@ Two surfaces can send content to another model, and both need an explicit tool c
   host adds it to the child, and builds up to `0.18.0` reject that extra runtime. The host owns those
   permission rules. The reader never reads or changes them, and an unverified entry fails closed. This
   is an exact compatibility check, not a support guarantee for future builds.
-- **Advisor.** `consult_advisor` in `tool` mode, or the main agent's own launch in `role` mode, sends
-  the question and the brief the main agent writes. Every consultation runs in fresh context, so the
+- **Advisor.** `consult_advisor`, in the default `tool` launch, or the main agent's own launch in
+  `role` mode, sends one context to each Advisor's provider. In the default `context: composed` the
+  extension assembles it from what it observed: the user's literal request, the main agent's last two
+  messages, the paths it read and edited, the commands it ran as program and subcommand with `ok` or
+  `error`, and the change a checkpoint held back. It never contains command output, command arguments,
+  file contents, model reasoning, the system prompt or anything from before the task. An edit to a
+  sensitive path is withheld and only the path is named, and obvious secrets become `[redacted]`. The
+  whole context is capped at 12 KiB. Every valid entry receives the same context, and that provider
+  can differ from the main model's provider. `/delegate advisor context manual` writes the question
+  and the brief from the main agent instead. Every consultation runs in fresh context, so the
   extension never adds the conversation, and it refuses a launch that asks the host to fork the
   session for an Advisor.
 
@@ -46,8 +54,8 @@ One residual stays outside the extension's reach: a fork default configured in `
 not read here, and the host would honour it. Review that setting for sessions that must not reach an
 Advisor's provider, or turn the Advisor off.
 
-Questions, briefs, replies, and preserved snapshots can persist in the executor's argv, temporary
-files, sessions, and lifecycle records, and at each model provider. The project promises no deletion,
+Questions, briefs, composed contexts, replies, and preserved snapshots can persist in the executor's
+argv, temporary files, sessions, and lifecycle records, and at each model provider. The project promises no deletion,
 no external TTL, and no absence of cost. Model identifiers and provider names can reveal your
 environment, so remove credentials, prompts, personal paths, session files, and unredacted logs from
 anything you publish.
@@ -74,6 +82,11 @@ changes, shutdown, and detected settings changes cancel the extension-owned grou
 role subagents. No retry is issued automatically: a failed consultation reports a closed reason and
 waits for the main agent. Local timeouts do not cap external generation or cost. Partial results keep
 the other advisors' answers, and every reply is untrusted advice.
+
+The `strict` Advisor checkpoint refuses one state-changing call per task, and the `standard` one only
+records what it would have refused. The commands it recognizes are a nudge, not a security boundary:
+it reads the leading words of a shell segment, and it grants, widens and inspects no permission. Known
+limit: in this version a long task is stopped at most once, at its first substantive change.
 
 Thread continuity, the private content-free journal, and their locks are described in the
 [configuration reference][threads]. The concurrent-writer and session-binding limits are in
@@ -115,8 +128,11 @@ provider after a failed check does not undo what it already did.
 Content-free records are written only while a policy block is active. With delegation and Advisor both
 off, no new event is written except in the short window before the next request notices that the policy
 is off. `delegation-policy.events.jsonl` holds policy and consultation metadata plus one `task` counter
-record per main-agent task and one `launch` record per checked subagent call. It never holds questions,
-briefs, replies, conversations, project paths, or raw errors. It rotates at 256 KiB with one backup,
+record per main-agent task, one `launch` record per checked subagent call, and one `checkpoint` record
+per task in which the checkpoint fired. `task` and `consultation` records carry `mainModel` and
+`advisorLevel`, and `consultation` also carries `noArgs` and `contextBytes`, which is `0` in manual
+mode. It never holds questions, briefs, contexts, replies, conversations, project paths, or raw
+errors. It rotates at 256 KiB with one backup,
 write failures are ignored, and no telemetry is sent. Shutdown drains queued writes for at most five
 seconds, then drops the rest. An in-flight filesystem operation may finish later but starts no further
 operation. The writer serializes within one process, not across processes.

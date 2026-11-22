@@ -10,26 +10,30 @@ description: Operate the /delegate panel and interpret its status in Pi.
 Use `/delegate` in Pi's TUI to open the keyboard-first editor; `Alt+G` opens the same editor when
 available. The editor requires TUI mode, while these arguments also work in other modes:
 
-| Command                                             | Effect                                                                    |
-| --------------------------------------------------- | ------------------------------------------------------------------------- |
-| `/delegate`                                         | Open the keyboard-first selector.                                         |
-| `/delegate off`                                     | Disable execution-delegation guidance; an enabled Advisor stays active.   |
-| `/delegate normal`                                  | Enable balanced delegation guidance.                                      |
-| `/delegate aggressive`                              | Enable delegation-first guidance.                                         |
-| `/delegate orchestrator`                            | Delegate all transferable execution while the main agent keeps ownership. |
-| `/delegate status`                                  | Show the effective session state.                                         |
-| `/delegate reset`                                   | Turn delegation and Advisor off for the branch.                           |
-| `/delegate advisor off`                             | Silence consultation and keep its model.                                  |
-| `/delegate advisor on`                              | Enable consultation even with delegation off.                             |
-| `/delegate advisor with-delegation`                 | Keep the default coupling to active delegation.                           |
-| `/delegate context off`                             | Stop ContextShunt work for this branch.                                   |
-| `/delegate context observe`                         | Record what enforcement would block without changing calls.               |
-| `/delegate context enforce`                         | Enforce recognized budgets and bounded recovery.                          |
-| `/delegate context status`                          | Show the effective ContextShunt state.                                    |
-| `/delegate context allow TOKEN MAX_LINES MAX_BYTES` | Approve the next matching blocked read once.                              |
-| `/delegate vision [2\|3] PROVIDER/MODEL`            | Set a Vision entry; `remove` clears it.                                   |
-| `/delegate visual-design 2\|3 PROVIDER/MODEL`       | Set Visual Design entry 2 or 3; `remove` clears it.                       |
-| `/delegate writing [2\|3] PROVIDER/MODEL`           | Set a Writing entry; `remove` clears it.                                  |
+| Command                                                         | Effect                                                                    |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `/delegate`                                                     | Open the keyboard-first selector.                                         |
+| `/delegate off`                                                 | Disable execution-delegation guidance; an enabled Advisor stays active.   |
+| `/delegate normal`                                              | Enable balanced delegation guidance.                                      |
+| `/delegate aggressive`                                          | Enable delegation-first guidance.                                         |
+| `/delegate orchestrator`                                        | Delegate all transferable execution while the main agent keeps ownership. |
+| `/delegate status`                                              | Show the effective session state.                                         |
+| `/delegate reset`                                               | Turn delegation and Advisor off for the branch.                           |
+| `/delegate advisor off`                                         | Silence consultation and keep its model.                                  |
+| `/delegate advisor on`                                          | Enable consultation even with delegation off.                             |
+| `/delegate advisor with-delegation`                             | Keep the default coupling to active delegation.                           |
+| `/delegate advisor level off\|standard\|strict\|default`        | Set the branch Advisor nudge level; `default` clears it.                  |
+| `/delegate advisor level global off\|standard\|strict\|default` | Set the global Advisor nudge level; `default` clears it.                  |
+| `/delegate advisor level model off\|standard\|strict\|default`  | Set the level for the current main model; `default` clears it.            |
+| `/delegate advisor context composed\|manual`                    | Choose who writes the consultation context.                               |
+| `/delegate context off`                                         | Stop ContextShunt work for this branch.                                   |
+| `/delegate context observe`                                     | Record what enforcement would block without changing calls.               |
+| `/delegate context enforce`                                     | Enforce recognized budgets and bounded recovery.                          |
+| `/delegate context status`                                      | Show the effective ContextShunt state.                                    |
+| `/delegate context allow TOKEN MAX_LINES MAX_BYTES`             | Approve the next matching blocked read once.                              |
+| `/delegate vision [2\|3] PROVIDER/MODEL`                        | Set a Vision entry; `remove` clears it.                                   |
+| `/delegate visual-design 2\|3 PROVIDER/MODEL`                   | Set Visual Design entry 2 or 3; `remove` clears it.                       |
+| `/delegate writing [2\|3] PROVIDER/MODEL`                       | Set a Writing entry; `remove` clears it.                                  |
 
 Optional-role entries fill in order too, and the first Visual Design entry is edited in the panel
 because it shares the legacy `uiDesign` key in the delegation document.
@@ -52,6 +56,10 @@ Advisor configuration also works without the panel:
 
 ```text
 /delegate advisor launch role|tool
+/delegate advisor level off|standard|strict|default
+/delegate advisor level global off|standard|strict|default
+/delegate advisor level model off|standard|strict|default
+/delegate advisor context composed|manual
 /delegate advisor 1|2|3 model PROVIDER/MODEL
 /delegate advisor 1|2|3 model remove
 /delegate advisor 1|2|3 model inherit
@@ -61,6 +69,13 @@ Entries fill in order: configure entry 1 before entry 2, and entry 2 before entr
 removes all; removing a later entry moves the next one up with its profile. `model inherit` returns
 the whole list to global inheritance; an explicit list replaces every entry. Advisor thinking has no
 command: `/delegate advisor N thinking` only reports that it is automatic.
+
+`/delegate advisor level` without a scope sets the branch, `global` writes
+`delegation-policy.advisor-level.json` for every session, and `model` writes that file's entry for the
+current main model, refused when the main model cannot be named. `default` clears the value at the
+scope. `/delegate advisor context` chooses `composed`, where the extension writes the consultation
+context, or `manual`, where the main agent writes the question and the brief; see
+[what a consultation sends](/configuration/#advisor-consultation).
 
 There is no separate off shortcut: run `/delegate off` or choose `off` in the editor. Quick commands
 write the session branch directly. **Reset draft to off** only changes the draft until Apply.
@@ -93,7 +108,10 @@ configured, or its model is not selectable, the panel states the reason and offe
 actions. Fixed and range are distinguishable from their text, not only from colour.
 
 The Advisor rows are **Advisor mode** (inheritance, `off`, `on`, `with-delegation`), **Advisor
-launch** (`role` or `tool`) and **Advisor 1**. **Advisor 2** appears once Advisor 1 exists and
+launch** (`role` or `tool`), **Advisor nudge** (`standard`, `strict` or `off`) and **Advisor 1**.
+**Advisor nudge** is global, is saved to `delegation-policy.advisor-level.json`, and reads for example
+`standard · global`, `standard · default` when the file sets no level, or `Unavailable/Suspended ·
+global` when it cannot be read. **Advisor 2** appears once Advisor 1 exists and
 **Advisor 3** once Advisor 2 exists. Choosing an `anthropic` model in one of them asks for its
 profile, **Standard** or **Anthropic auth**, and the row shows `· Anthropic auth` when the opt-in
 is set. A model whose provider an extension supplies asks for its provider extension instead, and
@@ -157,17 +175,17 @@ configured model available later in startup, without waiting for a message or me
 that is still missing or unusable keeps `D:ERR`. The event order was checked in Pi `0.87.1` and
 `1.1.0`; later availability changes still refresh on the next request or menu action.
 
-| Label    | Meaning                                                                | What to do                                                                        |
-| -------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive.           | Choose an active intensity only when the roles are ready.                         |
-| `D:NORM` | A valid `normal` configuration is active.                              | Delegate only with a clear expected benefit.                                      |
-| `D:AGG`  | A valid `aggressive` configuration is active.                          | Delegate suitable substantial work unless coupling or overhead dominates.         |
-| `D:ORCH` | A valid `orchestrator` configuration is active.                        | Delegate all transferable execution first and retain final acceptance.            |
-| `D:ERR`  | Execution-delegation settings are invalid; a valid Advisor can remain. | Inspect `/delegate status` and correct the role or thinking policy.               |
-| `A:OFF`  | No Advisor guidance is injected.                                       | Enable the mode or configure a model if consultation is wanted.                   |
-| `A:ON`   | All configured advisors are valid.                                     | Consultation sends the question and the brief, never the conversation, with cost. |
-| `A:PART` | Some advisors are valid; consult only those entries.                   | Correct or remove the other entries.                                              |
-| `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model.                                |
+| Label    | Meaning                                                                | What to do                                                                                       |
+| -------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `D:OFF`  | Delegation is disabled. Incomplete defaults remain inactive.           | Choose an active intensity only when the roles are ready.                                        |
+| `D:NORM` | A valid `normal` configuration is active.                              | Delegate only with a clear expected benefit.                                                     |
+| `D:AGG`  | A valid `aggressive` configuration is active.                          | Delegate suitable substantial work unless coupling or overhead dominates.                        |
+| `D:ORCH` | A valid `orchestrator` configuration is active.                        | Delegate all transferable execution first and retain final acceptance.                           |
+| `D:ERR`  | Execution-delegation settings are invalid; a valid Advisor can remain. | Inspect `/delegate status` and correct the role or thinking policy.                              |
+| `A:OFF`  | No Advisor guidance is injected.                                       | Enable the mode or configure a model if consultation is wanted.                                  |
+| `A:ON`   | All configured advisors are valid.                                     | Consultation sends a host-composed context or your own brief, never the conversation, with cost. |
+| `A:PART` | Some advisors are valid; consult only those entries.                   | Correct or remove the other entries.                                                             |
+| `A:ERR`  | Advisor is enabled but unusable, so only consultation is unavailable.  | Read the diagnostic and correct the Advisor model.                                               |
 
 `/delegate status` keeps stable tokens and reports exact effective references and sources, for
 example:
@@ -175,7 +193,8 @@ example:
 ```text
 D:AGG intensity=aggressive (session) | preference=standard (default) | small=provider/example-small (global)
 medium=provider/example-medium (global) | large=provider/example-large (global) | ui-design=provider/example-visual (global)
-advisor-mode=with-delegation (global); A:ON | advisor=provider/example-advisor (global) | advisor-launch=role (default)
+advisor-mode=with-delegation (global); A:ON | advisor=provider/example-advisor (global) | advisor-launch=tool (default)
+advisor-level=standard (default) | advisor-context=composed | main-model=provider/example-main
 advisor-1=provider/example-advisor; profile=pi-delegation-policy.advisor; reading=off; filter=off (global)
 thinking-small=fixed:high (global) | thinking-medium=range:low..high (session) | thinking-large=unset (default) | thinking-ui-design=unset (default)
 context=off (default) | context-reader-enabled=false (default) | context-reader-role=small (default)
@@ -185,7 +204,10 @@ launches=41 (Small 12, Medium 0, Large 4, Visual Design 0, Advisor 25)
 
 The source is `default`, `global`, or `session`. The optional role tokens `ui-design=` and `advisor=`
 keep their order. `advisor=` repeats the first configured entry while `advisor-N=` reports each entry
-once with its profile and its reading flag, and `thinking-ui-design=` closes the thinking group. Each thinking policy is reported
+once with its profile and its reading flag, and `thinking-ui-design=` closes the thinking group.
+`advisor-level=` carries its own source, and it can be `session`, `model`, `global`, `reminder` or
+`default`. `advisor-context=` reports `composed` or `manual`. `main-model=` names the exact
+`provider/id` key the per-model level is looked up by, or `unknown` when the host cannot name it. Each thinking policy is reported
 as `unset`, `fixed:<level>`, or `range:<min>..<max>`: the token says what the policy allows, not which
 level a launch used, and that per-run choice is never stored. `unset (session)` means the branch keeps
 no policy even when global defaults set one.
@@ -215,15 +237,20 @@ reveals session content.
 
 ### Consult Advisor tool
 
-`consult_advisor({ question, brief?, evidence? })` is always registered but unavailable outside tool launch
-mode or without an enabled valid advisor. It never receives the conversation: a first consultation
-requires the brief, and a later call in the same task sends the new question and evidence.
-[Limits and privacy](/limits-and-privacy/#advisor-role) states what each turn sends, the concurrency
-limit, the cancellation rules, and the retention.
+`consult_advisor({ question?, brief?, evidence? })` is always registered but unavailable outside tool
+launch mode or without an enabled valid advisor. It needs no arguments: `question`, `brief` and
+`evidence` are all optional. In the default `composed` context the extension assembles what the
+Advisors receive, and in `manual` context the main agent writes the question, plus the brief for a
+first consultation. It never receives the conversation. A later call in the same task continues each
+thread and carries only what changed. [What a consultation sends](/configuration/#advisor-consultation)
+lists the sections, the caps and the exclusions, and
+[limits and privacy](/limits-and-privacy/#advisor-role) states the concurrency limit, the cancellation
+rules, and the retention.
 
-Status adds `advisor-launch=` and one `advisor-N=` token per entry, with its profile, its reading flag,
-its `filter=cyber|off` flag and its source. In tool mode
-policy text asks for this tool, not the generic subagent launcher, whatever the session uses. See [privacy](/limits-and-privacy/#local-content-free-log) for the local metadata log.
+Status adds `advisor-launch=`, `advisor-level=`, `advisor-context=`, `main-model=` and one
+`advisor-N=` token per entry, with its profile, its reading flag, its `filter=cyber|off` flag and its
+source. In tool mode policy text asks for this tool, not the generic subagent launcher, whatever the
+session uses. See [privacy](/limits-and-privacy/#local-content-free-log) for the local metadata log.
 
 ## 6. Use ContextShunt safely
 

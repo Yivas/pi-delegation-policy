@@ -2,12 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- Let `consult_advisor` run with no arguments and send a context the host composes, with
+  `/delegate advisor context manual` returning to a brief the agent writes.
+- Add the Advisor nudge level, `off`, `standard` or `strict`, with an **Advisor nudge** panel row and
+  a per-model map in `delegation-policy.advisor-level.json`.
+- Add `/delegate advisor level` for the branch, the global file and the current main model, each with
+  `default` to clear it.
+- Refuse the first substantive change of a task once in `strict`, and only record what it would have
+  refused in `standard`.
+- Log one `checkpoint` event per task, plus `mainModel`, `advisorLevel`, `noArgs` and `contextBytes`
+  in the records that already existed.
+
 ### Changed
 
 - State Advisor flags in one status line under Purpose, including `none` when no Advisor is flagged.
 - Put the cyber filter rule on its own line under the flagged Advisor, condition first, in one place.
 - Report a cyber filter toggle in the configuration notice, with the rule and an override of earlier
   claims.
+- Launch Advisors with `consult_advisor` by default: `advisorLaunch` defaults to `tool`, and an
+  explicit `role` works as before.
+- Read `delegation-policy.advisor-reminders.json` only as a fallback when the level file is absent.
+- State the moments to consult as four rules, so mechanics in a settled approach are exempt.
+- Send a later consultation only what changed since the previous one in the same task.
 
 ## 0.32.1 - 2026-11-21
 

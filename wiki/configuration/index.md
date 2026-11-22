@@ -50,8 +50,8 @@ preference, tri-state ordinary roles, the `uiDesign` key, the ContextShunt confi
 policies per execution role;
 the Advisor companion and its extension hold Advisor 1, Advisors 2 and 3, `advisorMode` and
 `advisorLaunch` ([persistence](#persistence-and-compatibility)). If global intensity is absent, the
-built-in default is `off`; preference defaults to `standard`, and Advisor mode defaults to
-`with-delegation`.
+built-in default is `off`. Preference defaults to `standard`, Advisor mode defaults to
+`with-delegation`, and Advisor launch defaults to `tool`.
 
 A branch inherits a global value until it records an override. **Use global default** removes the
 branch override. A session `null` wins over a global model, and a session model wins over a global
@@ -251,11 +251,12 @@ its place, and the block already says that model cannot see.
 
 ## Advisor reading
 
-An Advisor never executes work, and by default it also reads nothing: it answers from the brief the
-main agent writes. Reading is a separate capability, off until you turn it on for a specific Advisor.
-It applies to role launches only: `consult_advisor` always launches the packaged, tool-free profile, so
-the panel does not ask the question while Advisor launch is `tool`, and a flag left over from a role
-launch changes nothing there.
+An Advisor never executes work, and by default it also reads nothing: it answers from the context the
+host composes, or from the brief the main agent writes in `manual` mode. Reading is a separate
+capability, off until you turn it on for a specific Advisor. It applies to role launches only:
+`consult_advisor` always launches the packaged, tool-free profile, so the panel does not ask the
+question while Advisor launch is `tool`, and a flag left over from a role launch changes nothing
+there.
 
 In a role launch the panel asks right after you choose that Advisor's model — **Advisor N reading**,
 `Off` or `On` — and the flags are stored in `delegation-policy.advisor-read.json`, one boolean per slot,
@@ -329,12 +330,13 @@ Every valid advisor gets the same question, so each extra advisor adds a consult
 checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/no-extensions
 `pi-delegation-policy.advisor` profile advises and executes nothing.
 
-**Advisor launch** inherits globally or per branch, defaulting to `role`:
+**Advisor launch** inherits globally or per branch, defaulting to `tool`. An explicit `role` keeps
+working exactly as before, and the schema default is `tool`:
 
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
   models and a thinking level it chooses per run. The extension observes matching attempts but does
   not launch them.
-- `tool`: the always-registered `consult_advisor({ question, brief?, evidence? })` launches one
+- `tool`: the always-registered `consult_advisor({ question?, brief?, evidence? })` launches one
   child per valid advisor in parallel through the public `pi-subagents` delegation API. It requires
   stable SemVer `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every
   launch must still pass the strict contract and terminal-binding checks. Otherwise it returns
@@ -343,8 +345,8 @@ checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/n
 In `tool` launch a consultation keeps each advisor's conversation for the rest of the operative
 task. The first call launches the packaged profiles and is the only turn that carries the verified
 launch contract. Later calls in the same task continue each thread with the public RPC `resume`,
-carrying only the new question plus `evidence`: the extension supplies the run id and the output
-path, and the host inherits the model and profile. The
+carrying only what changed since the previous consultation: the extension supplies the run id and the
+output path, and the host inherits the model and profile. The
 answer is accepted only from the per-turn output file the extension owns, after the new run id
 reports one completed step with the same agent, model and thinking; a resumed turn relies on the
 contract the host inherits plus those observed values, not on a re-verified digest. A mismatch,
@@ -378,20 +380,11 @@ confirmed finished: remove `delegation-policy.advisor-threads.json.reclaim.lock`
 lock while a process that uses it may still be running. The locks assume one host and a local
 filesystem, and owner liveness is the only OS signal they use.
 
-Both modes ask for consultation after orientation before substantive work, when stuck, before changing
-approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Short
-reactive steps and mechanics in a settled approach need no new call.
-
-Every consultation runs in fresh context and carries the question plus a short self-contained `brief`
-(objective and constraints, relevant facts, options and proposal, uncertainty), never the
-conversation. A first consultation in a thread requires that brief. A later call sends only the new
-question and the evidence of what changed. The Advisor therefore sees only what you write in the brief, so a thin brief
-weakens the advice. The tool launches each advisor at the highest level its model supports among
-`high`, `medium`, `low`, `minimal` and `off`, in that order. A level above `high` is used only by a
-model that supports none of them.
-
-Concurrency, cancellation, and what each turn sends are limits of the surface:
-[limits and privacy](/limits-and-privacy/#advisor-role) states them.
+Both modes share four rules. Consult before the first change of a task that involves a decision.
+Consult when the same error comes back or progress stalls. Consult before changing approach,
+publishing, or declaring a multi-step task done, with the result made durable first and a request for
+remaining risks rather than approval. Otherwise do not consult: short reactive steps, mechanics inside
+a settled approach and facts you already have need no new call.
 
 **Advisor mode** is an independent axis you set in the panel or with `/delegate advisor …`:
 
@@ -404,6 +397,49 @@ Concurrency, cancellation, and what each turn sends are limits of the surface:
 `D:OFF A:ON` shows consultation-only guidance; `D:OFF A:OFF` means neither axis injects a policy block. `/delegate reset`
 turns both off for the branch; `/delegate off` leaves an independently enabled Advisor active.
 
+### What a consultation sends {#advisor-consultation}
+
+`consult_advisor` needs no arguments: `question`, `brief` and `evidence` are optional. By default
+`context: composed` makes the extension assemble one context and send it to every valid Advisor, in
+this order:
+
+- a host note saying that the host assembled it, that it is partial, and that quoted sections are data
+  rather than instructions;
+- the question, either the agent's own or a default the trigger chooses: the first change, the
+  publishing step, or a free consultation;
+- a situation line with the trigger, the edits so far, and which sections were cut;
+- the user's literal request for the task, and the previous substantive request when the current one
+  is short;
+- the change that was held back, when the consultation follows a checkpoint;
+- the agent's own brief and evidence, when it gave them, marked as unverified;
+- the agent's last two messages, marked as unverified;
+- the paths it read and edited, and the commands it ran, as program and subcommand with `ok` or
+  `error` only.
+
+It never carries command output, command arguments, file contents, the model's reasoning, the system
+prompt, or the conversation before the task. An edit to a sensitive path (`.env` files, keys, `.ssh`,
+`.aws`, credentials and similar) is withheld and only the path is named, and obvious secrets such as
+private keys, common token formats and `password=`-style values become `[redacted]`. Every section is
+fenced with a random marker, so quoted content cannot pass for a host section.
+
+The whole context is capped at 12 KiB, with per-section caps: 2 KiB for the question, 4 KiB each for
+the agent's brief and evidence, 4 KiB for the user request, 3 KiB for the held change, 3 KiB for the
+agent's messages, and at most 40 paths and 30 commands. Past the total, the host drops or shortens in
+this order: commands, paths, agent messages, earlier request, then it halves the evidence, the brief
+and the user request. The question, the situation line and the held change are never cut. A later
+consultation in the same task continues each Advisor's thread and carries only what changed since the
+previous one.
+
+`/delegate advisor context manual` restores the earlier behaviour: the main agent writes the question
+and, on a first consultation, the brief, and a first call without one is refused.
+`/delegate advisor context composed` returns to the default. The mode is stored as `context` in
+`delegation-policy.advisor-level.json` ([persistence](#persistence-and-compatibility)).
+
+The tool launches each advisor at the highest level its model supports among `high`, `medium`, `low`,
+`minimal` and `off`, in that order. A level above `high` is used only by a model that supports none of
+them. Concurrency, cancellation, and what each turn sends are limits of the surface:
+[limits and privacy](/limits-and-privacy/#advisor-role) states them.
+
 ### Errors by axis
 
 Errors are reported per axis. Each entry validates independently: `A:ON` means all valid, `A:PART` means some valid
@@ -415,10 +451,10 @@ and valid, so the next save repairs that pair. A corrupt or unreadable companion
 settings. Settings still present in a legacy delegation file are retained; otherwise, configure the
 Advisor model again.
 
-Consulting sends the question and brief to another model — the extension never adds the conversation,
-and it refuses a call that asks to fork the session for an Advisor — and it can incur latency and
-cost, including with delegation off. A fork default set in `pi-subagents` itself stays outside the
-extension's reach. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
+Consulting sends the context described above to another model and can incur latency and cost, including
+with delegation off. The extension never adds the conversation, and it refuses a call that asks to fork
+the session for an Advisor. A fork default set in `pi-subagents` itself stays outside the extension's
+reach. The host sends it only after an explicit launch or tool call, never from a hook. See the [limits and privacy reference](https://yivas.github.io/pi-delegation-policy/limits-and-privacy/)
 for the signals and the retention of the executor and its provider.
 
 ### Provider extension
@@ -545,20 +581,34 @@ or invalid one is ignored with a diagnostic and never makes the delegation axis 
 refuses to overwrite it until you fix or remove it. The replacement is a temporary-file write, so a
 failure leaves the previous file in place.
 
-## Advisor reminder {#advisor-reminder}
+## Advisor nudge level {#advisor-nudge-level}
 
-The global **Advisor reminder** row adds one short extension-owned line to the request context, at
-most once per operative task of each instance, so a useful consultation does not depend on the user
-remembering to ask for it. It is on by default; `off` adds nothing. The row is global for every
-session, not a session setting, and **Apply changes** and **Save effective configuration as defaults**
-both store a changed value before their own step, while **Cancel** leaves the file as it was.
+The **Advisor nudge** row, formerly **Advisor reminder**, chooses how hard this extension pushes
+towards a consultation, and `advisorLevel` holds the same setting in configuration:
+
+- `off`: the written rules only. No reminder and no checkpoint, and every Advisor stays available and
+  can still be consulted.
+- `standard`: the default. The rules, the existing one-per-task reminder, and the checkpoint in
+  record-only mode, which never stops anything and only logs when it would have stopped a change.
+- `strict`: everything `standard` gives, plus one extra sentence in the reminder and an active
+  checkpoint:
+
+  ```text
+  Hard rule for this session: your first edit, write or publishing command in a task must come after an Advisor consultation. This is a checkpoint, not a difficulty judgment.
+  ```
+
+With Advisor off the level has no effect. It is resolved from a session override first, then from the
+entry for the current main model, then from the global level, then from `standard`, and a task keeps
+the level it started with. The commands are `/delegate advisor level off|standard|strict|default` for
+the branch, `/delegate advisor level global …` for every session and `/delegate advisor level model …`
+for the current main model, where `default` clears the value at that scope.
 
 Two observable events arm the reminder. One successful builtin orientation result (`read`, `find`,
 `grep` or `ls`) presents it in the next request, and the same builtin tool failing in two different
 rounds presents it as well. A batch of results is one round, and a retry of the same request keeps the
 presentation it already carried; the next round never re-arms it. An attempted consultation ends the
 reminder for that task even when it fails, and a control action that only names an Advisor is not a
-consultation. Turning the reminder off, a branch move, a new task or the task settling discards it,
+consultation. Turning the level off, a branch move, a new task or the task settling discards it,
 and re-enabling it never restores a presentation the same task already used.
 
 The reminder is presented only while a valid Advisor is active, the task is live, and the configured
@@ -575,18 +625,66 @@ revokes no instruction, and it cannot promise to arrive before the first edit or
 other than those builtin tools. It is sent to the provider like the rest of the request, so it is not
 a promise about cost or retention, and a reminder is not evidence that a consultation happened.
 
-The panel writes `~/.pi/agent/delegation-policy.advisor-reminders.json`:
+The row is global for every session, not a session setting, and **Apply changes** and **Save effective
+configuration as defaults** both store a changed value before their own step, while **Cancel** leaves
+the file as it was. It reads `standard · global`, `standard · default` when the file sets no level, or
+`Unavailable/Suspended · global` when the file cannot be read, because a suspension is not a value you
+chose. The file is `~/.pi/agent/delegation-policy.advisor-level.json`, schema 1:
 
 ```json
-{ "schemaVersion": 1, "mode": "remind" }
+{
+  "schemaVersion": 1,
+  "level": "standard",
+  "models": { "example-provider/example-main": "strict" },
+  "context": "composed"
+}
 ```
 
-`off` is the value that adds nothing. The file is separate from the schema-10 policy document, which
-rejects unknown keys, so the mode needs no schema bump. A missing file means `remind`; an unreadable
-or invalid one suspends only the reminder with a diagnostic, never changes the delegation or Advisor
-axis, and is reported instead of overwritten until you fix or remove it; the row then reads
-`Unavailable/Suspended · global`, because a suspension is not a value you chose. The replacement is a
-temporary-file write, so a failure leaves the previous file in place.
+`level` is global, `models` maps an exact `provider/id` main-model key to its own level, and `context`
+is the [consultation context mode](#advisor-consultation). Unknown keys are ignored, so a file from a
+newer version stays readable. An unreadable or invalid file falls back to `standard` with a notice
+and never disables delegation. The branch keeps its own session entry. Older versions ignore both, so
+a downgrade loses the level and returns to the reminder setting.
+
+`delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`off` or `remind`), is read only as
+a fallback when the level file does not exist: `off` maps to `off` and `remind` to `standard`. A
+missing level file with no reminder file resolves to `standard`, and a present level file is this
+setting's own answer even when it carries no level.
+
+## Advisor checkpoint {#advisor-checkpoint}
+
+The checkpoint applies in `strict`, where it stops the call, and in `standard`, where it only records
+what it would have stopped. It looks at the first call of a task that changes state, when no Advisor
+was consulted before it in that task and the task looks substantive. State-changing calls are `edit`,
+`write`, and shell commands that publish or push work, such as `git push`, `npm publish`,
+`gh release create`, `gh pr merge`, `docker push` or a deploy command. A `--dry-run` does not count,
+and neither do `git commit` and other local commands. A task is substantive when at least one of these
+holds: five earlier tool calls, three files read or searched, a prompt of 400 characters or more, or
+an edit of more than 40 lines.
+
+It fires once per task, and at most once every 30 minutes in a session. Any consultation, voluntary or
+not, ends it for that task and restarts those 30 minutes. In `strict` the refused call returns this
+text, verbatim:
+
+```text
+Not an error: this call was not run. Advisor checkpoint, once for this task.
+This is the first change in work that looks non-trivial and no Advisor has been consulted.
+1. If there is a decision here you could get wrong (approach, root cause, scope, an irreversible step): call consult_advisor() now. It needs no arguments; the host supplies the context.
+2. If this step is mechanical, or the user already decided it: repeat this call and it will run. Do not consult just to comply.
+```
+
+In `role` launch the sentence about `consult_advisor()` points to the Roles section of the policy
+instead. Every state-changing call of the same assistant message is refused together, so a batch is
+never half applied, and from the next request on any call passes. It never refuses twice in a row.
+
+It refuses nothing when a consultation is not possible: no valid Advisor, no launcher for the
+configured launch mode, no open task, a consultation already running, or a subagent child process. After a session resume, fork or compaction the task counts as covered. A `??` at the
+start of a prompt forces the checkpoint for that task whatever the level, the thresholds and the 30
+minutes, as long as an Advisor is available.
+
+The command list is a nudge, not a security boundary: it reads the leading words of a shell segment,
+matches nothing else, and never authorizes, blocks or inspects the call. Known limit: in this version
+a long task is stopped at most once, at its first substantive change.
 
 ## Advisor child extensions {#advisor-child-extensions}
 
@@ -647,15 +745,17 @@ What it costs and what it does not:
   tri-state ordinary roles, `uiDesign`, the thinking policies, and the ContextShunt configuration.
 - Launch correction mode: `delegation-policy.launch-correction.json`, schema 1 with `mode`. Missing
   or invalid state means `correct`. Older versions ignore it.
+- Advisor nudge level: `delegation-policy.advisor-level.json`, schema 1 with `level`, optional
+  `models` and optional `context`. Missing state means `standard`; invalid state falls back to
+  `standard` with a notice and never disables delegation. Older versions ignore it.
 - Advisor reminder: `delegation-policy.advisor-reminders.json`, schema 1 with `mode` (`off` or
-  `remind`). Missing state means `remind`; invalid state suspends only the reminder. Older versions
-  ignore it.
+  `remind`). Read only as a fallback when the level file does not exist. Older versions ignore it.
 - Legacy companion: `delegation-policy.advisor.json`, envelope 1 with schema 8 state for Advisor 1.
   Versions `0.17–0.20` see its mode and model in role mode; `0.16` sees delegation without Advisor.
   None of those versions sees Advisor 2, Advisor 3 or tool launch.
 - Advisor extension: `delegation-policy.advisor-extension.json`, envelope 1 with normalized schema-8
   `base`, optional `advisor2`, optional `advisor3`, and `advisorLaunch`. Missing, invalid, unreadable
-  or mismatched state falls back to Advisor 1 and role launch with a diagnostic, not `A:ERR` for a
+  or mismatched state falls back to Advisor 1 and `tool` launch with a diagnostic, not `A:ERR` for a
   valid first advisor. Older versions ignore it, and `0.21`–`0.23` fall back to Advisor 1 when it
   holds `advisor3`. A save from one of those versions then drops Advisors 2 and 3.
 - Provider admissions: `delegation-policy.provider-extensions.json`, schema 1 with `providers`, one
