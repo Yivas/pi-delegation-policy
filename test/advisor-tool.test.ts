@@ -3349,9 +3349,14 @@ test("manual context keeps the question and the brief contract", async () => {
   const run = await harness(base, models, 10_000, { contextMode: "manual" });
   try {
     run.bus.respond = (request) => run.bus.finish(request);
+    // The refusal is the executor's own text, with nothing appended to it.
+    const refused = await run.call({ question: "why" });
+    assert.match(refused, /a first consultation requires brief\./);
+    assert.doesNotMatch(refused, /Supply a self-contained brief/);
+    // The manual contract travels in the tool description instead.
     assert.match(
-      await run.call({ question: "why" }),
-      /a first consultation requires brief\.[\s\S]*Supply a self-contained brief for a first consultation\.$/,
+      run.tools.get("consult_advisor")!.description,
+      /With \/delegate advisor context manual, pass question and, on a first consultation, a self-contained brief\.$/,
     );
     assert.equal(run.bus.requests.length, 0);
     assert.match(await run.call({ question: sentinel, brief: sentinel }), /Consultation complete/);
@@ -3359,6 +3364,155 @@ test("manual context keeps the question and the brief contract", async () => {
       question: sentinel,
       brief: sentinel,
     });
+  } finally {
+    await run.close();
+  }
+});
+
+test("an assistant message from an earlier task never reaches the advisor", async () => {
+  const run = await harness(base, models, 10_000, { mainProcess: true });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    // The transcript of a session carries the previous task too; only what the agent said after the
+    // prompt that opened this task belongs to it.
+    await run.hook("context_with_system", {
+      type: "context_with_system",
+      messages: [
+        { role: "system", content: "host prompt", timestamp: 1 },
+        { role: "user", content: "the earlier task", timestamp: 2 },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "EARLIER-TASK-STATEMENT" }],
+          timestamp: 3,
+        },
+        { role: "user", content: "synthetic prompt", timestamp: 4 },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "CURRENT-TASK-STATEMENT" }],
+          timestamp: 5,
+        },
+      ],
+    });
+    assert.match(await run.call({}), /Consultation complete/);
+    const task = JSON.parse(run.bus.requests[0]?.task as string) as Payload;
+    assert.match(String(task.brief), /CURRENT-TASK-STATEMENT/);
+    assert.doesNotMatch(String(task.brief), /EARLIER-TASK-STATEMENT/);
+    assert.doesNotMatch(String(task.brief), /the earlier task/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a composed consultation caps the agent's question before it leaves", async () => {
+  const run = await harness(base, models, 10_000, { mainProcess: true });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call({ question: "q".repeat(10 * 1024) }), /Consultation complete/);
+    const task = JSON.parse(run.bus.requests[0]?.task as string) as Payload;
+    const asked = String(task.question);
+    assert.ok(Buffer.byteLength(asked, "utf8") <= 2048, `${Buffer.byteLength(asked)} bytes`);
+    assert.match(asked, /\[truncated\]$/);
+    // The brief the child reads carries that same capped value, not the whole question.
+    assert.ok(String(task.brief).includes(asked.slice(0, -" [truncated]".length)));
+  } finally {
+    await run.close();
+  }
+});
+
+test("a session change drops the previous request instead of carrying it", async () => {
+  const run = await harness(base, models, 10_000, { mainProcess: true });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    const earlier = "earlier request text ".repeat(20);
+    await run.hook("agent_settled");
+    await run.hook("input", { source: "interactive", text: earlier });
+    await run.hook("before_agent_start");
+    await run.hook("agent_settled");
+    await run.hook("session_start");
+    await run.hook("input", { source: "interactive", text: "short request" });
+    await run.hook("before_agent_start");
+    assert.match(await run.call({}), /Consultation complete/);
+    const task = JSON.parse(run.bus.requests[0]?.task as string) as Payload;
+    assert.match(String(task.brief), /short request/);
+    assert.doesNotMatch(String(task.brief), /earlier request text/);
+  } finally {
+    await run.close();
+  }
+});
+
+const HELD_EDIT = {
+  path: "src/held.ts",
+  edits: [
+    { oldText: "a", newText: Array.from({ length: 41 }, (_, line) => `line ${line}`).join("\n") },
+  ],
+};
+
+async function strictRun(): Promise<Awaited<ReturnType<typeof harness>>> {
+  // A tool-launch consultation is only possible while both launchers are active, and the checkpoint
+  // refuses nothing when one is not.
+  const run = await harness(base, models, 10_000, {
+    mainProcess: true,
+    activeTools: ["subagent", "consult_advisor"],
+  });
+  await writeFile(
+    getAdvisorLevelPath(run.path),
+    `${JSON.stringify({ schemaVersion: 1, level: "strict" })}\n`,
+  );
+  await run.newTask();
+  return run;
+}
+
+test("a change held back by the checkpoint travels in the next composed consultation", async () => {
+  const run = await strictRun();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    const refused = await run.hook("tool_call", {
+      toolName: "edit",
+      toolCallId: "call-held",
+      input: HELD_EDIT,
+    });
+    assert.equal((refused as { block?: boolean }).block, true);
+    assert.match(await run.call({}), /Consultation complete/);
+    const task = JSON.parse(run.bus.requests[0]?.task as string) as Payload;
+    assert.match(String(task.brief), /<pending_change-[0-9a-f]{16}>/);
+    assert.match(String(task.brief), /edit src\/held\.ts \(41 lines\)/);
+    // The held change is carried once, so the follow-up does not repeat it.
+    assert.match(await run.call({}), /answer-0/);
+    assert.equal(rpc.resumes.length, 2);
+    assert.doesNotMatch(String(rpc.resumes[0]?.message), /held\.ts/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("the checkpoint refuses nothing without a task and while an Advisor is in flight", async () => {
+  const run = await strictRun();
+  try {
+    // No operative task: there is nothing to hold back.
+    await run.hook("agent_settled");
+    assert.equal(
+      await run.hook("tool_call", {
+        toolName: "edit",
+        toolCallId: "call-closed",
+        input: HELD_EDIT,
+      }),
+      undefined,
+    );
+    // A consultation already in flight is not an opportunity to consult, so nothing is refused.
+    await run.newTask();
+    const pending = run.call({});
+    const first = await Promise.race([
+      until(() => run.bus.requests.length === 2).then(() => "requested"),
+      pending.then((answer) => `answered: ${answer}`),
+    ]);
+    assert.equal(first, "requested");
+    assert.equal(
+      await run.hook("tool_call", { toolName: "edit", toolCallId: "call-busy", input: HELD_EDIT }),
+      undefined,
+    );
+    for (const request of run.bus.requests) run.bus.finish(request);
+    assert.match(await pending, /Consultation complete/);
   } finally {
     await run.close();
   }

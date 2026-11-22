@@ -1179,11 +1179,12 @@ export class DelegatePanel implements Component, Focusable {
         : effective.contextShunt.mode;
     if (field === "contextAdvanced")
       return `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`;
-    // An unreadable companion suspends the level; it is not a choice the user made, so the row
-    // says so until a different value is staged for the file that would replace it.
+    // An unreadable companion falls back to `standard` and keeps working, so the row names the level
+    // in effect and says it is not a choice the user made, until a different value is staged for the
+    // file that would replace it.
     if (field === "advisorLevel")
       return this.advisorLevelInvalid && !this.advisorLevelDirty()
-        ? "Unavailable/Suspended · global"
+        ? "Invalid · standard"
         : `${this.draftAdvisorLevel} · ${this.advisorLevel === undefined ? "default" : "global"}`;
     if (field === "launchCorrection")
       return this.draftLaunchCorrection === "block"

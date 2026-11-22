@@ -1320,6 +1320,59 @@ test("Advisor guidance names observable checkpoints and asks for a brief in fres
   );
 });
 
+test("the tool branch asks for no arguments in composed mode and keeps the manual brief", () => {
+  const available = {
+    availableModels: [model(small), model(medium), model(large), model(advisor)],
+  };
+  const policyFor = (advisorContextMode?: "composed" | "manual"): string => {
+    const current: RuntimeState = {
+      ...runtime(
+        { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
+        { ...defaults, advisor, advisorLaunch: "tool" },
+      ),
+      ...(advisorContextMode === undefined ? {} : { advisorContextMode }),
+    };
+    validateRuntime(context(available), current);
+    assert.equal(statusLabel(current), "D:NORM");
+    return buildDelegationPolicy(current) ?? "";
+  };
+
+  // The default, with no context mode stored, composes the context in the host.
+  for (const policy of [policyFor(), policyFor("composed")]) {
+    assert.match(policy, /Call consult_advisor with no arguments for all enabled valid advisors/);
+    assert.match(
+      policy,
+      /The host sends them the user's request, your latest messages in this task, the files you touched and the change you are about to make/,
+    );
+    assert.match(
+      policy,
+      /optionally pass question for something specific and evidence for facts the host cannot see, such as an error message/,
+    );
+    assert.match(
+      policy,
+      /A later call in the same task continues each Advisor's thread and sends only what changed/,
+    );
+    assert.match(policy, /it never sends this conversation or command output/);
+    assert.match(policy, /do not use the generic subagent tool for Advisor/);
+    assert.match(policy, /call consult_advisor once with that evidence on disagreement/);
+    assert.doesNotMatch(policy, /Supply brief/);
+    assert.doesNotMatch(policy, /an updated brief/);
+  }
+
+  // The manual mode keeps the text this block carried before the composed mode existed, whole.
+  const manual = policyFor("manual");
+  assert.ok(
+    manual.includes(
+      "Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. Every consultation runs in fresh context: this tool sends the question and brief and never this conversation, and the launch check refuses any call that asks to fork the session for an Advisor. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.",
+    ),
+  );
+  assert.match(
+    manual,
+    /call consult_advisor once with that evidence and an updated brief on disagreement/,
+  );
+  assert.doesNotMatch(manual, /Call consult_advisor with no arguments/);
+});
+
 test("an optional role is described without a forward reference and outside the cost rule", () => {
   for (const intensity of ["normal", "aggressive", "orchestrator"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity });

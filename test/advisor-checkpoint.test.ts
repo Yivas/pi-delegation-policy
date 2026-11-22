@@ -4,6 +4,7 @@ import {
   AdvisorCheckpoint,
   CHECKPOINT_COOLDOWN_MS,
   CHECKPOINT_MESSAGE,
+  CHECKPOINT_ROLE_MESSAGE,
   classifyToolCall,
   isOutwardCommand,
   type ToolCallFacts,
@@ -151,6 +152,15 @@ test("the refusal message is four lines, ends without a newline and names both w
   assert.match(lines[1], /no Advisor has been consulted\.$/);
   assert.match(lines[2], /consult_advisor\(\) now/);
   assert.match(lines[3], /repeat this call and it will run/);
+  // Role launch has no consult_advisor launcher, so the same message names the Roles section.
+  const roleLines = CHECKPOINT_ROLE_MESSAGE.split("\n");
+  assert.equal(roleLines.length, 4);
+  assert.deepEqual(roleLines.slice(0, 2), lines.slice(0, 2));
+  assert.equal(
+    roleLines[2],
+    "1. If there is a decision here you could get wrong (approach, root cause, scope, an irreversible step): consult the Advisors now, exactly as the Roles section of the delegation policy describes, with a short self-contained brief.",
+  );
+  assert.equal(roleLines[3], lines[3]);
 });
 
 test("a task that looks trivial never fires", () => {
@@ -468,14 +478,6 @@ test("a task the user forced is refused while nothing else suggests work", () =>
       message: CHECKPOINT_MESSAGE,
     },
   );
-});
-
-test("cover() silences the rest of the task", () => {
-  const checkpoint = openedTask();
-  checkpoint.beginRequest();
-  checkpoint.cover();
-  assert.deepEqual(checkpoint.onToolCall(edit(41), active), { action: "pass" });
-  assert.equal(checkpoint.closeTask(), undefined);
 });
 
 test("closeTask reports the counters of the call it refused and only then clears the task", () => {

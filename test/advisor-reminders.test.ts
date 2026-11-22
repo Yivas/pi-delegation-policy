@@ -17,7 +17,7 @@ import {
   writeAdvisorReminderMode,
 } from "../src/advisor-reminders.ts";
 import { getGlobalConfigPath, isAbsentPathError, writeConfig } from "../src/config.ts";
-import { CHECKPOINT_MESSAGE } from "../src/advisor-checkpoint.ts";
+import { CHECKPOINT_MESSAGE, CHECKPOINT_ROLE_MESSAGE } from "../src/advisor-checkpoint.ts";
 import { getAdvisorLevelPath, readAdvisorLevelFile } from "../src/advisor-level.ts";
 import { getEventLogPath } from "../src/advisor-log.ts";
 import { DelegatePanel, type DelegatePanelOptions } from "../src/delegate-panel.ts";
@@ -721,13 +721,11 @@ test("a failed nudge write stops Apply and names what was saved", async () => {
   assert.deepEqual(done, [], "the editor stays open instead of reporting success");
   assert.match(view, /^> Advisor nudge\s+strict · default\s*$/m);
 
-  // An unreadable companion is shown as suspended, never as a level the user chose.
-  const suspended = createPanelHarness({ advisorLevel: "off", advisorLevelInvalid: true });
-  focusNudgeRow(suspended.panel);
-  assert.match(
-    suspended.panel.render(120).join("\n"),
-    /^> Advisor nudge\s+Unavailable\/Suspended · global\s*$/m,
-  );
+  // An unreadable companion keeps the level it falls back to and says the file is invalid, never
+  // presenting the fallback as a level the user chose.
+  const invalid = createPanelHarness({ advisorLevel: "off", advisorLevelInvalid: true });
+  focusNudgeRow(invalid.panel);
+  assert.match(invalid.panel.render(120).join("\n"), /^> Advisor nudge\s+Invalid · standard\s*$/m);
 
   // An unreadable file is reported by name instead of being overwritten.
   const blocked = createPanelHarness({ onSaveAdvisorLevel: async () => "unknown-state" });
@@ -845,6 +843,9 @@ test("the refusal names the Roles section in role mode and the tool in tool mode
     await writeLevel({ level: "strict" });
     await harness.prompt();
     const refused = await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+    // The whole message, not a fragment of it: the role branch used to rewrite one sentence of the
+    // tool text, so anything else in it was unchecked.
+    assert.equal(refused?.reason, CHECKPOINT_ROLE_MESSAGE);
     assert.match(
       refused?.reason ?? "",
       /exactly as the Roles section of the delegation policy describes/,

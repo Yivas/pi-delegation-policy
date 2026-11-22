@@ -110,8 +110,8 @@ actions. Fixed and range are distinguishable from their text, not only from colo
 The Advisor rows are **Advisor mode** (inheritance, `off`, `on`, `with-delegation`), **Advisor
 launch** (`role` or `tool`), **Advisor nudge** (`standard`, `strict` or `off`) and **Advisor 1**.
 **Advisor nudge** is global, is saved to `delegation-policy.advisor-level.json`, and reads for example
-`standard · global`, `standard · default` when the file sets no level, or `Unavailable/Suspended ·
-global` when it cannot be read. **Advisor 2** appears once Advisor 1 exists and
+`standard · global`, `standard · default` when the file sets no level, or `Invalid · standard` when it
+cannot be read, because the level then falls back to `standard` and stays active. **Advisor 2** appears once Advisor 1 exists and
 **Advisor 3** once Advisor 2 exists. Choosing an `anthropic` model in one of them asks for its
 profile, **Standard** or **Anthropic auth**, and the row shows `· Anthropic auth` when the opt-in
 is set. A model whose provider an extension supplies asks for its provider extension instead, and

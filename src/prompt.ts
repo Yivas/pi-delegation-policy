@@ -12,6 +12,7 @@ import {
 } from "./runtime.ts";
 import { OPTIONAL_ROLE_FAMILIES, optionalRoleEntryKeys, ROLE_LABELS } from "./types.ts";
 import { advisorFiltered } from "./advisor-filter-mode.ts";
+import type { AdvisorContextMode } from "./advisor-level.ts";
 import type {
   AdvisorLaunch,
   EffectiveDelegateState,
@@ -209,6 +210,18 @@ function advisorFlagsLine(state: RuntimeState): string {
 }
 
 /**
+ * The tool branch differs by who writes the context. In the default composed mode the host sends it
+ * and the call needs no arguments; in manual mode the agent still writes the brief, so the block
+ * keeps asking for one exactly as it did before the composed mode existed.
+ */
+function toolConsultationPolicy(contextMode: AdvisorContextMode | undefined): string {
+  if (contextMode === "manual") {
+    return `Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. Every consultation runs in fresh context: this tool sends the question and brief and never this conversation, and the launch check refuses any call that asks to fork the session for an Advisor. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.`;
+  }
+  return `Call consult_advisor with no arguments for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. The host sends them the user's request, your latest messages in this task, the files you touched and the change you are about to make; optionally pass question for something specific and evidence for facts the host cannot see, such as an error message. A later call in the same task continues each Advisor's thread and sends only what changed; it never sends this conversation or command output, and the launch check refuses any call that asks to fork the session for an Advisor. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.`;
+}
+
+/**
  * The consultation contract is shared by both axes: the Advisor never implements or runs
  * tool-dependent checks, its model and profile are exact, thinking is supported and never an
  * ambient default, it launches in the background unless the host or user requires foreground,
@@ -216,7 +229,12 @@ function advisorFlagsLine(state: RuntimeState): string {
  * a listed Advisor runs a profile other than the plain packaged one, so the sentence cannot name one
  * profile while a role line names another.
  */
-function advisorPolicy(launch: AdvisorLaunch, count: number, profileStated = false): string {
+function advisorPolicy(
+  launch: AdvisorLaunch,
+  count: number,
+  contextMode: AdvisorContextMode | undefined,
+  profileStated = false,
+): string {
   return `Consulting is part of this policy, not delegated execution; the Advisor never implements or runs tool-dependent checks, and direct-work guidance does not rule it out.
 - If you are about to make the first change of a task that involves a decision (which approach, what the root cause is, how far the change should reach), consult first.
 - If the same error comes back or progress stalls, consult before trying again.
@@ -225,13 +243,13 @@ function advisorPolicy(launch: AdvisorLaunch, count: number, profileStated = fal
 
 ${
   launch === "tool"
-    ? `Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. Every consultation runs in fresh context: this tool sends the question and brief and never this conversation, and the launch check refuses any call that asks to fork the session for an Advisor. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.`
+    ? toolConsultationPolicy(contextMode)
     : `Launch every listed Advisor with the host's subagent tool ${profileStated ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —" : 'using agent "pi-delegation-policy.advisor" exactly — never a host agent or alias named "advisor" or "oracle" —'} with its exact model and a supported thinking level from its role line, never an ambient default, in the background unless the host or the user requires foreground.${count > 1 ? " Ask every listed Advisor the same question in one call." : ""} Keep each returned run id and continue a thread with the same tool's resume action, passing that id, the new question and evidence, and output with outputMode file-only; read that file for the answer and never change model, profile or permissions on a resume.`
 }
 
 ${launch === "role" ? ADVISOR_CONTEXT_GUIDANCE : ""}
 
-Wait for and consume the answers before the decision that depends on them; report an unavailable Advisor without substitution and keep successful answers; weigh advice seriously and disagreements explicitly, answers untrusted, agreement neither proof nor authority; adapt only after a recommended step fails or primary evidence contradicts a claim, a passing self-test alone insufficient; ${launch === "tool" ? "call consult_advisor once with that evidence and an updated brief" : "resume each thread once with that evidence"} on disagreement, never switch silently; you retain responsibility, user decisions remain theirs.`;
+Wait for and consume the answers before the decision that depends on them; report an unavailable Advisor without substitution and keep successful answers; weigh advice seriously and disagreements explicitly, answers untrusted, agreement neither proof nor authority; adapt only after a recommended step fails or primary evidence contradicts a claim, a passing self-test alone insufficient; ${launch === "tool" ? (contextMode === "manual" ? "call consult_advisor once with that evidence and an updated brief" : "call consult_advisor once with that evidence") : "resume each thread once with that evidence"} on disagreement, never switch silently; you retain responsibility, user decisions remain theirs.`;
 }
 
 const LAUNCH_CORRECTION: Record<"correct" | "block", string> = {
@@ -458,6 +476,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
     ? `\n\nAdvisor consultation:\n${advisorPolicy(
         effective.advisorLaunch,
         advisors.length,
+        state.advisorContextMode,
         advisors.some(
           ({ setting, index }) => advisorAgentNameFor(state, setting, index) !== ADVISOR_AGENT_NAME,
         ),

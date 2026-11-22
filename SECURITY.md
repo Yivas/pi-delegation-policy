@@ -42,9 +42,11 @@ Two surfaces can send content to another model, and both need an explicit tool c
   extension assembles it from what it observed: the user's literal request, the main agent's last two
   messages, the paths it read and edited, the commands it ran as program and subcommand with `ok` or
   `error`, and the change a checkpoint held back. It never contains command output, command arguments,
-  file contents, model reasoning, the system prompt or anything from before the task. An edit to a
-  sensitive path is withheld and only the path is named, and obvious secrets become `[redacted]`. The
-  whole context is capped at 12 KiB. Every valid entry receives the same context, and that provider
+  file contents, model reasoning, the system prompt or anything from before the task, and its agent
+  messages are only the ones written in this task. The one exception to file contents is that held
+  change: its path, its line count and up to 3 KiB of the new text travel with the context, which for
+  a `write` can be file content. An edit to a sensitive path is withheld and only the path is named,
+  and obvious secrets become `[redacted]`. The whole context is capped at 12 KiB. Every valid entry receives the same context, and that provider
   can differ from the main model's provider. `/delegate advisor context manual` writes the question
   and the brief from the main agent instead. Every consultation runs in fresh context, so the
   extension never adds the conversation, and it refuses a launch that asks the host to fork the

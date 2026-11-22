@@ -414,13 +414,18 @@ this order:
 - the agent's own brief and evidence, when it gave them, marked as unverified;
 - the agent's last two messages, marked as unverified;
 - the paths it read and edited, and the commands it ran, as program and subcommand with `ok` or
-  `error` only.
+  `error` only;
+- a final `Question, again:` line: the question repeated on one line, up to 300 characters, so a long
+  context cannot bury what is being asked.
 
 It never carries command output, command arguments, file contents, the model's reasoning, the system
-prompt, or the conversation before the task. An edit to a sensitive path (`.env` files, keys, `.ssh`,
-`.aws`, credentials and similar) is withheld and only the path is named, and obvious secrets such as
-private keys, common token formats and `password=`-style values become `[redacted]`. Every section is
-fenced with a random marker, so quoted content cannot pass for a host section.
+prompt, or the conversation before the task, and the agent's messages it carries are only the ones
+written in this task. The one exception to file contents is the change a checkpoint held back: its
+path, its line count and up to 3 KiB of the new text travel with the context, which for a `write` can
+be file content. An edit to a sensitive path (`.env` files, keys, `.ssh`, `.aws`, credentials and
+similar) is withheld and only the path is named, and obvious secrets such as private keys, common
+token formats and `password=`-style values become `[redacted]`. Every section is fenced with a random
+marker, so quoted content cannot pass for a host section.
 
 The whole context is capped at 12 KiB, with per-section caps: 2 KiB for the question, 4 KiB each for
 the agent's brief and evidence, 4 KiB for the user request, 3 KiB for the held change, 3 KiB for the
@@ -628,8 +633,8 @@ a promise about cost or retention, and a reminder is not evidence that a consult
 The row is global for every session, not a session setting, and **Apply changes** and **Save effective
 configuration as defaults** both store a changed value before their own step, while **Cancel** leaves
 the file as it was. It reads `standard · global`, `standard · default` when the file sets no level, or
-`Unavailable/Suspended · global` when the file cannot be read, because a suspension is not a value you
-chose. The file is `~/.pi/agent/delegation-policy.advisor-level.json`, schema 1:
+`Invalid · standard` when the file cannot be read, because the level then falls back to `standard` and
+stays active, and that fallback is not a value you chose. The file is `~/.pi/agent/delegation-policy.advisor-level.json`, schema 1:
 
 ```json
 {

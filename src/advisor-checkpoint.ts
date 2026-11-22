@@ -21,13 +21,31 @@ export const CHECKPOINT_EDIT_LINES = 40;
 
 /**
  * The refusal text. It states that the call did not run, so the model does not report a success it
- * never had, it names the two ways out, and it says not to consult just to comply.
+ * never had, it names the two ways out, and it says not to consult just to comply. Only the first
+ * way out depends on the launch mode, so the rest is assembled once from these parts.
  */
-export const CHECKPOINT_MESSAGE = [
+const CHECKPOINT_PREFIX = [
   "Not an error: this call was not run. Advisor checkpoint, once for this task.",
   "This is the first change in work that looks non-trivial and no Advisor has been consulted.",
+];
+const CHECKPOINT_REPEAT =
+  "2. If this step is mechanical, or the user already decided it: repeat this call and it will run. Do not consult just to comply.";
+
+/**
+ * The first way out names the path the configured launch mode has. With role launch, telling the
+ * model to call consult_advisor would send it to a tool that only redirects it to the host's
+ * subagent tool, so this message names the Roles section instead.
+ */
+export const CHECKPOINT_MESSAGE = [
+  ...CHECKPOINT_PREFIX,
   "1. If there is a decision here you could get wrong (approach, root cause, scope, an irreversible step): call consult_advisor() now. It needs no arguments; the host supplies the context.",
-  "2. If this step is mechanical, or the user already decided it: repeat this call and it will run. Do not consult just to comply.",
+  CHECKPOINT_REPEAT,
+].join("\n");
+
+export const CHECKPOINT_ROLE_MESSAGE = [
+  ...CHECKPOINT_PREFIX,
+  "1. If there is a decision here you could get wrong (approach, root cause, scope, an irreversible step): consult the Advisors now, exactly as the Roles section of the delegation policy describes, with a short self-contained brief.",
+  CHECKPOINT_REPEAT,
 ].join("\n");
 
 export type CheckpointMode = "off" | "shadow" | "active";
@@ -183,14 +201,6 @@ export class AdvisorCheckpoint {
     this.open = false;
     this.clearTaskState();
     return report;
-  }
-
-  /**
-   * After a resume, fork or compaction the earlier calls of this task are unknown, so the task is
-   * treated as already covered instead of being refused on a state nobody remembers.
-   */
-  cover(): void {
-    this.covered = true;
   }
 
   beginRequest(): void {

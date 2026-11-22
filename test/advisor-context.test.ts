@@ -356,6 +356,28 @@ test("obvious secrets are redacted and ordinary prose is left alone", () => {
   assert.equal(composed.text.includes("sk-abcdefghijklmnopqrst"), false);
 });
 
+test("redaction stays linear and the composition caps before it scans", () => {
+  // One long run of keyword characters is what made the bounded key part necessary: the unbounded
+  // form re-scanned the rest of the input from every position. The bounds are generous because a
+  // loaded machine is not a correctness failure.
+  const run = "a".repeat(200 * 1024);
+  const redactionStarted = Date.now();
+  assert.equal(redactSecrets(run), run);
+  const redactionMs = Date.now() - redactionStarted;
+  assert.ok(redactionMs < 500, `redacting 200 KB took ${redactionMs} ms`);
+
+  const compositionStarted = Date.now();
+  const composed = composeAdvisorContext(
+    input({ userRequest: `${run} password=hunter2hunter2 ${run}` }),
+  );
+  const compositionMs = Date.now() - compositionStarted;
+  assert.ok(compositionMs < 1_000, `composing a 400 KB request took ${compositionMs} ms`);
+  // The cap ran first, so the section is one capped body and not a scan of the whole request.
+  const body = sectionBody(composed.text, "user_request") ?? "";
+  assert.ok(Buffer.byteLength(body, "utf8") <= 4 * 1024, "the section keeps its own cap");
+  assert.ok(composed.truncated.includes("user_request"));
+});
+
 test("a path is sensitive by base name or by segment, with either separator", () => {
   const sensitive = [
     ".env",

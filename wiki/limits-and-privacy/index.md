@@ -125,8 +125,8 @@ nothing, so the approved scope also covers foreground children that load this po
 
 The level is stored in `delegation-policy.advisor-level.json`, schema 1, and a branch keeps its own
 session entry. An unreadable or invalid file falls back to `standard` with a diagnostic and never
-changes the delegation or Advisor axis, and the panel row then reads `Unavailable/Suspended · global`
-instead of presenting the fallback as a choice. The extension writes no reminder text to session
+changes the delegation or Advisor axis, and the panel row then reads `Invalid · standard` instead of
+presenting the fallback as a choice. The extension writes no reminder text to session
 history or its local log. [Configuration](/configuration/#advisor-nudge-level) describes the row and
 the file.
 
@@ -206,9 +206,11 @@ change it was about to make when a checkpoint held it back. That provider may di
 model's provider, and the same context goes to every valid entry.
 
 It sends no command output, no command arguments, no file contents, no model reasoning, no system
-prompt and nothing from before the task. An edit to a sensitive path is withheld and only the path is
-named, and obvious secrets such as private keys, common token formats and `password=`-style values
-become `[redacted]`. Each section is fenced with a random marker, the whole context is capped at
+prompt and nothing from before the task, and the agent's messages in it are only the ones from the
+current task. The one exception to file contents is the change a checkpoint held back: its path, its
+line count and up to 3 KiB of the new text travel with the context, which for a `write` can be file
+content, and a sensitive path is withheld with only the path named. Obvious secrets such as private
+keys, common token formats and `password=`-style values become `[redacted]`. Each section is fenced with a random marker, the whole context is capped at
 12 KiB, and past that cap the host drops commands, paths, agent messages and the earlier request
 before it shortens the brief, the evidence and the user request.
 
@@ -282,7 +284,8 @@ the exact `provider/id` key or `null`, and `advisorLevel`. A `consultation` reco
 evidence, and `contextBytes`, which is `0` in manual mode. One `checkpoint` record is written per task
 in which the checkpoint fired: `mode` (`shadow` or `active`), `signals`, `resolution` (`consult`,
 `repeat` or `none`), `priorCalls`, `filesRead`, `promptChars`, `editLines`, `mainModel` and
-`advisorLevel`. Every field is an enum, a boolean or a number. `advisorConsults` counts attempts: a
+`advisorLevel`. Every field is an enum, a boolean, a number or a bounded identifier such as the policy
+hash and model keys. `advisorConsults` counts attempts: a
 `consult_advisor` call counts whether or not it reached a model, and its real outcome is the
 `consultation` event. `subagentLaunches` counts allowed calls that launch a child other than an
 Advisor: a call that launches only Advisors counts as a consult, a mixed call counts as both, and a

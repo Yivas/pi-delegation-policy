@@ -57,14 +57,17 @@ import {
 } from "./advisor-reminders.ts";
 import {
   AdvisorCheckpoint,
+  CHECKPOINT_ROLE_MESSAGE,
   classifyToolCall,
   type CheckpointMode,
   type ToolCallFacts,
 } from "./advisor-checkpoint.ts";
 import {
+  ADVISOR_QUESTION_MAX_BYTES,
   composeAdvisorContext,
   defaultQuestion,
   describeCommand,
+  truncateUtf8,
   type CommandRecord,
   type ConsultTrigger,
   type PendingChange,
@@ -476,10 +479,29 @@ function observeCommand(
   if (oldest !== undefined) observation.commands.delete(oldest);
 }
 
-/** The last two assistant texts of a request: text parts only, never thinking or a tool result. */
-function lastAssistantTexts(messages: ContextWithSystemEvent["messages"]): string[] {
+/**
+ * The last two assistant texts of this task: text parts only, never thinking or a tool result. The
+ * transcript also carries every earlier task of the session, so the cut is the user message that is
+ * this task's prompt. A prompt the host does not show verbatim is not found, and then no text is
+ * sent at all: another task's words are worse than none.
+ */
+function lastAssistantTexts(
+  messages: ContextWithSystemEvent["messages"],
+  userRequest: string,
+): string[] {
+  let opening = -1;
+  for (let index = messages.length - 1; index >= 0 && opening < 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== "user") continue;
+    const text =
+      typeof message.content === "string"
+        ? message.content
+        : message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    if (text === userRequest) opening = index;
+  }
+  if (opening < 0) return [];
   const texts: string[] = [];
-  for (const message of messages) {
+  for (const message of messages.slice(opening + 1)) {
     if (message.role !== "assistant") continue;
     for (const part of message.content) {
       if (part.type === "text" && part.text.trim()) texts.push(part.text);
@@ -543,9 +565,6 @@ function checkpointMode(level: AdvisorLevel | undefined): CheckpointMode {
   if (level === "strict") return "active";
   return level === "standard" ? "shadow" : "off";
 }
-
-/** What the manual mode answered when a first consultation arrived without a brief. */
-const MANUAL_BRIEF_REQUEST = "Supply a self-contained brief for a first consultation.";
 
 type ReaderAuthorization = Readonly<{
   fingerprint: string;
@@ -1360,18 +1379,19 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         editedPaths: observed.editedPaths.slice(mark.editedPaths),
         commands: commands.slice(mark.commands),
       });
-      return {
-        question: asked.question?.trim() ? asked.question : defaultQuestion(shared.trigger),
-        brief: full.text,
-        evidence: followUp.text,
-        bytes: full.bytes,
-      };
+      // The question leaves for another provider as well, so it is capped with the same limit the
+      // compositor applies to the copy it renders; the launch and the thread carry that value.
+      const question = truncateUtf8(
+        asked.question?.trim() ? asked.question : defaultQuestion(shared.trigger),
+        ADVISOR_QUESTION_MAX_BYTES,
+      ).text;
+      return { question, brief: full.text, evidence: followUp.text, bytes: full.bytes };
     };
     pi.registerTool({
       name: "consult_advisor",
       label: "Consult Advisor",
       description:
-        "Ask the configured Advisors for a second opinion. It needs no arguments: the host sends them the user's request, your latest messages, the files you touched and the change you are about to make. Call it before your first change in a task that involves a decision (which approach, what the root cause is, how far the change should reach), when the same error comes back, before changing approach, and before publishing or declaring a multi-step task done. Example: you are choosing between two designs - call it. Example: the same test fails for the third time - call it and pass the error text in evidence. Counter-example: renaming something the user already named - do not call it. Optionally pass question to ask something specific, and evidence with facts the host cannot see, such as an error message. Advice only: you decide, and the user's instructions win. Each call costs time and tokens.",
+        "Ask the configured Advisors for a second opinion. It needs no arguments: the host sends them the user's request, your latest messages, the files you touched and the change you are about to make. Call it before your first change in a task that involves a decision (which approach, what the root cause is, how far the change should reach), when the same error comes back, before changing approach, and before publishing or declaring a multi-step task done. Example: you are choosing between two designs - call it. Example: the same test fails for the third time - call it and pass the error text in evidence. Counter-example: renaming something the user already named - do not call it. Optionally pass question to ask something specific, and evidence with facts the host cannot see, such as an error message. Advice only: you decide, and the user's instructions win. Each call costs time and tokens. With /delegate advisor context manual, pass question and, on a first consultation, a self-contained brief.",
       parameters: Type.Object(
         {
           question: Type.Optional(Type.String({ minLength: 1 })),
@@ -1532,11 +1552,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               detail: advisorContinuityText("cancelled"),
             })),
           };
-        const rendered = renderAdvisorGroup(group);
-        // The composed mode always supplies a brief; only the manual mode can lack one.
-        const missingBrief =
-          composed === undefined && group.slots.some((slot) => slot.code === "brief-required");
-        return text(missingBrief ? `${rendered} ${MANUAL_BRIEF_REQUEST}` : rendered, {
+        // Nothing is appended to a refusal: the executor's own `brief-required` text is the whole
+        // answer, which is the contract the manual mode had before this release.
+        return text(renderAdvisorGroup(group), {
           advisorConsultation: {
             summary: group.summary,
             slots: group.slots.map(({ slot, status, model, code }) => ({
@@ -2079,6 +2097,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       taskToken = undefined;
       advisorReminder.closeTask();
       advisorCheckpoint.closeTask();
+      // A request of the session that ended cannot stand in for this one's short prompt.
+      previousRequest = undefined;
       advisorEpoch += 1;
       advisorExecutor.cancel();
       startConfigBaseline(await refreshRuntime(ctx));
@@ -2096,12 +2116,13 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       pendingInvalidation = "session-changed";
       taskToken = undefined;
       advisorReminder.closeTask();
-      // The earlier calls of the task belong to the branch the session left, so the checkpoint is
-      // treated as already covered rather than deciding on a state nobody remembers.
-      advisorCheckpoint.cover();
+      // The earlier calls of the task belong to the branch the session left. Closing the task drops
+      // them, so the checkpoint decides nothing on a state nobody remembers.
       advisorCheckpoint.closeTask();
       taskMetrics = undefined;
       observation = undefined;
+      // A request of the branch the session left cannot stand in for this branch's short prompt.
+      previousRequest = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
       await applyAdvisorChildExtensions(ctx);
     });
@@ -2181,7 +2202,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorReminder.beginRequest();
       if (!isSubagentChildProcess()) {
         advisorCheckpoint.beginRequest();
-        if (observation) observation.assistantTexts = lastAssistantTexts(event.messages);
+        if (observation)
+          observation.assistantTexts = lastAssistantTexts(event.messages, observation.userRequest);
       }
       const policy = renderPolicy(state);
       const systemMessage = event.messages[0];
@@ -2346,7 +2368,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const observed = isSubagentChildProcess() ? undefined : observation;
       if (observed) {
         if (facts.kind === "read") observePath(observed.readPaths, facts.path);
-        if (facts.kind === "edit") observePath(observed.editedPaths, facts.path);
         if (facts.kind === "command" && facts.command !== undefined)
           observeCommand(observed, event.toolCallId, facts.command);
       }
@@ -2361,17 +2382,19 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           : undefined;
       const refused = decision?.action === "block";
       countTaskToolCall(event, check, consulted, refused);
+      // A refused call wrote nothing, so only a call that runs counts as an edit of this task; the
+      // change it would have made is what the consultation carries instead.
+      if (observed && facts.kind === "edit" && !refused)
+        observePath(observed.editedPaths, facts.path);
       if (observed && changesState(facts) && check?.refusal === undefined)
         observed.pending = refused ? heldChange(facts, event.toolName, event.input) : undefined;
       if (decision?.action === "block") {
         // Role launch names no tool, so the way out is the policy's Roles section, not this tool.
-        const instruction =
-          "consult the Advisors now, exactly as the Roles section of the delegation policy describes";
         return {
           block: true,
           reason:
             latestRuntime?.effective.advisorLaunch === "role"
-              ? decision.message.replace("call consult_advisor() now", instruction)
+              ? CHECKPOINT_ROLE_MESSAGE
               : decision.message,
         };
       }

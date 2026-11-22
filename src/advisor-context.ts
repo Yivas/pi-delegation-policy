@@ -141,9 +141,13 @@ const TOKEN_PATTERNS = [
   /Bearer\s+[A-Za-z0-9._~+/-]{20,}/g,
 ];
 
-/** Key and separator survive so the reader still knows which credential was stripped. */
+/**
+ * Key and separator survive so the reader still knows which credential was stripped. The key part is
+ * bounded on both sides of the keyword: an unbounded `*` re-scanned the rest of the line from every
+ * position, which is quadratic on the large inputs this module is handed.
+ */
 const SECRET_ASSIGNMENT =
-  /([\w.-]*(?:api[ _-]?key|token|secret|password|passwd)[\w.-]*)(["']?\s*[:=]\s*["']?)([^\s"']{8,})/gi;
+  /([\w.-]{0,64}(?:api[ _-]?key|token|secret|password|passwd)[\w.-]{0,64})(["']?\s*[:=]\s*["']?)([^\s"']{8,})/gi;
 
 export function redactSecrets(text: string): string {
   let redacted = text.replace(PRIVATE_KEY_BLOCK, REDACTED);
@@ -249,9 +253,14 @@ function sanitizeQuoted(text: string, nonce: string): string {
   return nonce ? redacted.split(nonce).join(NONCE_PLACEHOLDER) : redacted;
 }
 
+/**
+ * The cap runs before the redaction, so the patterns only ever scan one section's worth of text. The
+ * replacements shorten what they touch, so a capped section still fits its cap afterwards.
+ */
 function quotedBody(text: string | undefined, maxBytes: number, nonce: string): Carried {
   if (!text || !text.trim().length) return { text: "", truncated: false };
-  return truncateUtf8(sanitizeQuoted(text, nonce), maxBytes);
+  const capped = truncateUtf8(text, maxBytes);
+  return { text: sanitizeQuoted(capped.text, nonce), truncated: capped.truncated };
 }
 
 function pendingBody(pending: PendingChange | undefined, nonce: string): Carried {
@@ -269,15 +278,17 @@ function pendingBody(pending: PendingChange | undefined, nonce: string): Carried
     nonce,
   );
   if (withheld) return { text: header, truncated: false };
-  const text = truncateUtf8(sanitizeQuoted(pending.text, nonce), PENDING_TEXT_MAX_BYTES);
-  return { text: text.text ? `${header}\n${text.text}` : header, truncated: text.truncated };
+  // Capped before redaction for the same reason as every other section.
+  const text = truncateUtf8(pending.text, PENDING_TEXT_MAX_BYTES);
+  const quoted = sanitizeQuoted(text.text, nonce);
+  return { text: quoted ? `${header}\n${quoted}` : header, truncated: text.truncated };
 }
 
 function messagesBody(texts: readonly string[], nonce: string): Carried {
   const kept = texts.filter((text) => text.trim().length > 0).slice(-2);
   if (!kept.length) return { text: "", truncated: false };
-  const joined = kept.map((text) => sanitizeQuoted(text, nonce)).join("\n---\n");
-  return truncateUtf8(joined, AGENT_MESSAGES_MAX_BYTES);
+  const capped = truncateUtf8(kept.join("\n---\n"), AGENT_MESSAGES_MAX_BYTES);
+  return { text: sanitizeQuoted(capped.text, nonce), truncated: capped.truncated };
 }
 
 function pathsBody(
@@ -349,11 +360,11 @@ export function composeAdvisorContext(input: AdvisorContextInput): ComposedConte
 
   const question = (input.question ?? "").trim();
   const asked = truncateUtf8(
-    question.length ? sanitizeQuoted(question, nonce) : defaultQuestion(input.trigger),
+    question.length ? question : defaultQuestion(input.trigger),
     ADVISOR_QUESTION_MAX_BYTES,
   );
   if (asked.truncated) recordTruncation(truncated, "question");
-  const questionText = asked.text;
+  const questionText = sanitizeQuoted(asked.text, nonce);
 
   const body: SectionBody[] = [];
   const add = (name: SectionName, carried: Carried) => {
