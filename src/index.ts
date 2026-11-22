@@ -1,6 +1,7 @@
 import type {
   AgentActivityOutcome,
   AgentEndEvent,
+  ContextWithSystemEvent,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
@@ -9,7 +10,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import {
   appendGuardedSessionState,
@@ -50,11 +51,39 @@ import {
 import { AdvisorLog, type TaskSummary } from "./advisor-log.ts";
 import {
   AdvisorReminderState,
-  DEFAULT_ADVISOR_REMINDER_MODE,
   isSubagentChildProcess,
   reminderConsultationPath,
   type AdvisorReminderMessage,
 } from "./advisor-reminders.ts";
+import {
+  AdvisorCheckpoint,
+  classifyToolCall,
+  type CheckpointMode,
+  type ToolCallFacts,
+} from "./advisor-checkpoint.ts";
+import {
+  composeAdvisorContext,
+  defaultQuestion,
+  describeCommand,
+  type CommandRecord,
+  type ConsultTrigger,
+  type PendingChange,
+} from "./advisor-context.ts";
+import {
+  ADVISOR_CONTEXT_MODES,
+  ADVISOR_LEVEL_ENTRY_TYPE,
+  ADVISOR_LEVELS,
+  advisorLevelEntry,
+  DEFAULT_ADVISOR_CONTEXT_MODE,
+  DEFAULT_ADVISOR_LEVEL,
+  getAdvisorLevelPath,
+  mainModelKey,
+  readAdvisorLevelFile,
+  writeAdvisorLevelFile,
+  type AdvisorContextMode,
+  type AdvisorLevel,
+  type AdvisorLevelFile,
+} from "./advisor-level.ts";
 import {
   POLICY_DELIVERY_TYPE,
   createConfigNotice,
@@ -127,6 +156,8 @@ export type CommandAction =
   | { kind: "intensity"; intensity: Intensity }
   | { kind: "advisor-mode"; mode: AdvisorMode }
   | { kind: "advisor-launch"; launch: AdvisorLaunch }
+  | { kind: "advisor-level"; target: "session" | "global" | "model"; level: AdvisorLevel | null }
+  | { kind: "advisor-context"; mode: AdvisorContextMode }
   | { kind: "advisor-config"; index: number; values: string[] }
   | { kind: "advisor-thinking" }
   | { kind: "advisor-threads"; action: AdvisorThreadsAction }
@@ -139,6 +170,14 @@ export type CommandAction =
   | { kind: "invalid" };
 export const ADVISOR_THREADS_ACTIONS = ["status", "recover", "reset"] as const;
 export type AdvisorThreadsAction = (typeof ADVISOR_THREADS_ACTIONS)[number];
+const ADVISOR_LEVEL_CHOICES = [...ADVISOR_LEVELS, "default"] as const;
+
+/** `default` clears the level at its scope; null says so, and undefined is not a choice. */
+function parseLevelChoice(value: string | undefined): AdvisorLevel | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === "default") return null;
+  return ADVISOR_LEVELS.includes(value as AdvisorLevel) ? (value as AdvisorLevel) : undefined;
+}
 
 export function parseCommand(args: string): CommandAction {
   const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -156,6 +195,20 @@ export function parseCommand(args: string): CommandAction {
       ADVISOR_LAUNCH_MODES.includes(parts[2] as AdvisorLaunch)
     )
       return { kind: "advisor-launch", launch: parts[2] as AdvisorLaunch };
+    if (parts[1] === "level") {
+      const target = parts[2] === "global" || parts[2] === "model" ? parts[2] : undefined;
+      const value = target === undefined ? parts[2] : parts[3];
+      const level = parseLevelChoice(value);
+      if (level !== undefined && parts.length === (target === undefined ? 3 : 4))
+        return { kind: "advisor-level", target: target ?? "session", level };
+      return { kind: "invalid" };
+    }
+    if (parts[1] === "context" && parts.length === 3) {
+      const mode = parts[2] as AdvisorContextMode;
+      return ADVISOR_CONTEXT_MODES.includes(mode)
+        ? { kind: "advisor-context", mode }
+        : { kind: "invalid" };
+    }
     const position = Number(parts[1]);
     const isPosition = Number.isInteger(position) && position >= 1 && position <= MAX_ADVISORS;
     if (isPosition && parts[2] === "model" && parts.length >= 4)
@@ -226,6 +279,10 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
     ...ADVISOR_MODES.map((mode) => `advisor ${mode}`),
     ...ADVISOR_LAUNCH_MODES.map((mode) => `advisor launch ${mode}`),
     ...ADVISOR_THREADS_ACTIONS.map((action) => `advisor threads ${action}`),
+    ...ADVISOR_LEVEL_CHOICES.map((choice) => `advisor level ${choice}`),
+    ...ADVISOR_LEVEL_CHOICES.map((choice) => `advisor level global ${choice}`),
+    ...ADVISOR_LEVEL_CHOICES.map((choice) => `advisor level model ${choice}`),
+    ...ADVISOR_CONTEXT_MODES.map((mode) => `advisor context ${mode}`),
     ...Array.from({ length: MAX_ADVISORS }, (_, index) => `advisor ${index + 1} model`),
     "vision model",
     "vision 2 model",
@@ -329,7 +386,10 @@ function launchesOnlyAdvisors(children: readonly LaunchChildRole[]): boolean {
 }
 
 /** Counters for one main-agent task: a user prompt to the next settle. */
-type TaskMetrics = Omit<TaskSummary, "durationMs" | "consultBeforeFirstEdit"> & {
+type TaskMetrics = Omit<
+  TaskSummary,
+  "durationMs" | "consultBeforeFirstEdit" | "mainModel" | "advisorLevel"
+> & {
   startedAt: number;
 };
 
@@ -345,6 +405,147 @@ function startTaskMetrics(): TaskMetrics {
     launchRefusals: 0,
   };
 }
+
+/** A request this short only stands on its own when there is no earlier one to carry. */
+const SHORT_REQUEST_CHARS = 200;
+const MAX_OBSERVED_PATHS = 64;
+const MAX_OBSERVED_COMMANDS = 64;
+
+/**
+ * What the open task has shown so far. It is what the host can see of a task, never what the model
+ * meant, it never reaches the disk, and it goes away with the task.
+ */
+type TaskObservation = {
+  /** The literal text of the prompt that opened the task. */
+  userRequest: string;
+  /** The previous task's request, kept only when this one is too short to stand alone. */
+  earlierRequest?: string;
+  /** The user wrote `??` first: consult before changing anything, whatever the level says. */
+  forced: boolean;
+  /** The last two non-empty assistant texts, oldest first. */
+  assistantTexts: string[];
+  readPaths: string[];
+  editedPaths: string[];
+  /** Commands this task ran, by the call that ran them, so their own result can mark them. */
+  commands: Map<string, CommandRecord>;
+  /** The change a refusal held back, until a change passes or a consultation carries it. */
+  pending?: PendingChange;
+  /** The level the task opened under; a later change never moves it. */
+  level?: AdvisorLevel;
+  /** How many paths and commands the last consultation of this task already sent. */
+  consultMark: { readPaths: number; editedPaths: number; commands: number };
+};
+
+function openTaskObservation(
+  userRequest: string,
+  earlierRequest: string | undefined,
+  forced: boolean,
+): TaskObservation {
+  return {
+    userRequest,
+    ...(earlierRequest === undefined ? {} : { earlierRequest }),
+    forced,
+    assistantTexts: [],
+    readPaths: [],
+    editedPaths: [],
+    commands: new Map(),
+    consultMark: { readPaths: 0, editedPaths: 0, commands: 0 },
+  };
+}
+
+/** A consultation whose task record is missing still has to compose something: nothing observed. */
+function emptyTaskObservation(): TaskObservation {
+  return openTaskObservation("", undefined, false);
+}
+
+function observePath(paths: string[], path: string | undefined): void {
+  if (path === undefined || paths.includes(path)) return;
+  paths.push(path);
+  if (paths.length > MAX_OBSERVED_PATHS) paths.shift();
+}
+
+function observeCommand(
+  observation: TaskObservation,
+  toolCallId: string,
+  commandLine: string,
+): void {
+  observation.commands.set(toolCallId, { ...describeCommand(commandLine), status: "ok" });
+  if (observation.commands.size <= MAX_OBSERVED_COMMANDS) return;
+  // Insertion order is call order, so the first key is the oldest command of the task.
+  const oldest = observation.commands.keys().next().value;
+  if (oldest !== undefined) observation.commands.delete(oldest);
+}
+
+/** The last two assistant texts of a request: text parts only, never thinking or a tool result. */
+function lastAssistantTexts(messages: ContextWithSystemEvent["messages"]): string[] {
+  const texts: string[] = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const part of message.content) {
+      if (part.type === "text" && part.text.trim()) texts.push(part.text);
+    }
+  }
+  return texts.slice(-2);
+}
+
+/**
+ * The new text of an edit or write, read from the same input fields `classifyToolCall` counts, so
+ * the held change the Advisor reads is the one the refused call would have written.
+ */
+function newEditText(toolName: string, input: unknown): string {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return "";
+  const record = input as Record<string, unknown>;
+  if (toolName.toLowerCase() === "write")
+    return typeof record.content === "string" ? record.content : "";
+  const edits = Array.isArray(record.edits) ? record.edits : [record];
+  return edits
+    .map((edit) => {
+      if (typeof edit !== "object" || edit === null || Array.isArray(edit)) return "";
+      const candidate = edit as Record<string, unknown>;
+      const text = candidate.newText ?? candidate.new_string;
+      return typeof text === "string" ? text : "";
+    })
+    .filter((text) => text.length > 0)
+    .join("\n");
+}
+
+/** The change a refused call holds back, in the shape the composed context shows an Advisor. */
+function heldChange(
+  facts: ToolCallFacts,
+  toolName: string,
+  input: unknown,
+): PendingChange | undefined {
+  if (facts.kind === "edit")
+    return {
+      kind: "edit",
+      path: facts.path ?? "(unnamed)",
+      lines: facts.editLines ?? 0,
+      text: newEditText(toolName, input),
+    };
+  if (facts.kind === "command" && facts.command !== undefined)
+    return { kind: "command", ...describeCommand(facts.command) };
+  return undefined;
+}
+
+/** A call that writes a file or leaves this machine, which is what the checkpoint guards. */
+function changesState(facts: ToolCallFacts): boolean {
+  return facts.kind === "edit" || (facts.kind === "command" && facts.outward === true);
+}
+
+/** What the held change makes a consultation about. */
+function heldTrigger(pending: PendingChange | undefined): ConsultTrigger {
+  if (pending?.kind === "edit") return "first-change";
+  return pending?.kind === "command" ? "outward-step" : "free";
+}
+
+/** `active` refuses, `shadow` only records, and `off` never looks. */
+function checkpointMode(level: AdvisorLevel | undefined): CheckpointMode {
+  if (level === "strict") return "active";
+  return level === "standard" ? "shadow" : "off";
+}
+
+/** What the manual mode answered when a first consultation arrived without a brief. */
+const MANUAL_BRIEF_REQUEST = "Supply a self-contained brief for a first consultation.";
 
 type ReaderAuthorization = Readonly<{
   fingerprint: string;
@@ -459,6 +660,9 @@ export function statusText(state: RuntimeState): string {
     `advisor-mode=${effective.advisorMode} (${effective.source.advisorMode}); ${advisorStatusLabel(state)}`,
     `advisor=${effective.advisor ? formatModelRef(effective.advisor) : "disabled"} (${effective.source.advisor})`,
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
+    `advisor-level=${state.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL} (${state.advisorLevel?.source ?? "default"})`,
+    `advisor-context=${state.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE}`,
+    `main-model=${state.mainModel ?? "unknown"}`,
     ...effective.advisors.map(
       (entry, index) =>
         `advisor-${index + 1}=${formatModelRef(entry)}; profile=${advisorAgentNameFor(state, entry, index)}; reading=${effective.advisorLaunch === "role" && advisorCanRead(state.advisorRead, index) ? "on" : "off"}; filter=${advisorFiltered(state.advisorFilters, index) ? "cyber" : "off"}${admissionText(entry, state)} (${effective.source.advisors})`,
@@ -578,6 +782,27 @@ async function resetSession(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pro
   );
 }
 
+/**
+ * Store a level setting in the companion. The change is applied to what the file holds, so the
+ * models and the context mode survive it, and a file this writer cannot read is reported instead of
+ * replaced. Returns the message of a refusal, or undefined once the file holds the setting.
+ */
+async function saveAdvisorLevelCompanion(
+  change: (file: AdvisorLevelFile) => string | undefined,
+): Promise<string | undefined> {
+  const loaded = await readAdvisorLevelFile();
+  if (loaded.invalid)
+    return `Could not read ${getAdvisorLevelPath()}; the previous file was left in place.`;
+  const next: AdvisorLevelFile = { ...loaded.file, models: { ...loaded.file.models } };
+  const refusal = change(next);
+  if (refusal !== undefined) return refusal;
+  const result = await writeAdvisorLevelFile(next);
+  if (result === "saved" || result === "unchanged") return undefined;
+  return result === "unknown-state"
+    ? `Could not read ${getAdvisorLevelPath()}; the previous file was left in place.`
+    : "Could not save the Advisor level settings; the previous file was left in place.";
+}
+
 export type PiDelegationPolicyOptions = {
   shunt?: ContextShuntAdapter;
   executor?: ContextShuntExecutor;
@@ -606,6 +831,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     let taskToken: string | undefined;
     // The reminder is ephemeral and belongs to the same task as the token; it never outlives it.
     const advisorReminder = new AdvisorReminderState();
+    // The checkpoint shares the task's life cycle, not its state: it holds the cooldown between tasks.
+    const advisorCheckpoint = new AdvisorCheckpoint();
     // Bumped whenever Advisor mode, launch or settings change, so a thread created under the
     // previous configuration is never resumed under the new one.
     let advisorEpoch = 0;
@@ -862,6 +1089,11 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     // One task runs from a user prompt to the next settle. It counts calls and positions only:
     // no tool input, task body or path reaches the log.
     let taskMetrics: TaskMetrics | undefined;
+    // What the open task has shown: the composed consultation and the checkpoint read it, nothing
+    // writes it anywhere, and it is dropped with the counters of the same task.
+    let observation: TaskObservation | undefined;
+    // The request of the last task that ended, so a one-line follow-up can be read in its context.
+    let previousRequest: string | undefined;
     // Correction notes wait for the tool result of the call that was corrected. The host prepares
     // every call of a batch before running any of them, so a fixed cap would drop the note of a call
     // that is still pending. Nothing is evicted: a note is removed when its result arrives, and the
@@ -891,12 +1123,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       event: ToolCallEvent,
       check: SubagentLaunchCheck | undefined,
       consulted: boolean,
+      refused = false,
     ): void => {
       const task = taskMetrics;
       if (!task) return;
       const index = task.toolCalls;
       task.toolCalls += 1;
-      if (event.toolName === "edit" || event.toolName === "write") {
+      // A refused call was not run, so it never becomes an edit of this task.
+      if (!refused && (event.toolName === "edit" || event.toolName === "write")) {
         task.edits += 1;
         task.firstEditIndex ??= index;
       }
@@ -987,6 +1221,16 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         return [];
       }
     };
+    /** The level of the open task, frozen when it opened; without a task, the resolved level. */
+    const taskAdvisorLevel = (state: RuntimeState): AdvisorLevel =>
+      observation?.level ?? state.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL;
+    /** Whether a consultation is possible here, which is the only reason to refuse a change. */
+    const consultationAvailable = (state: RuntimeState | undefined): boolean =>
+      state !== undefined &&
+      validAdvisors(state).length > 0 &&
+      reminderConsultationPath(state.effective.advisorLaunch, activeTools()) !== undefined &&
+      taskToken !== undefined &&
+      !advisorExecutor.busy;
     /**
      * The reminder for this request, when the extension may add it: the reminder is on, a valid
      * Advisor is active, the task is live and the configured launch mode has its launcher among the
@@ -994,7 +1238,11 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
      * follow, and a pending trigger is dropped rather than carried to a later round.
      */
     const advisorReminderMessage = (state: RuntimeState): AdvisorReminderMessage | undefined => {
-      if ((state.advisorReminder ?? DEFAULT_ADVISOR_REMINDER_MODE) !== "remind") {
+      // The task's level decides, not the old on/off companion: an `off` level neither reminds nor
+      // refuses, and `strict` states the rule the checkpoint enforces.
+      const level = taskAdvisorLevel(state);
+      // A level turned off while the task runs stops the reminder at once; it never starts one.
+      if (level === "off" || (state.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL) === "off") {
         advisorReminder.suspend();
         return undefined;
       }
@@ -1010,7 +1258,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         advisorReminder.suspend();
         return undefined;
       }
-      return advisorReminder.presentation(Date.now());
+      return advisorReminder.presentation(Date.now(), level === "strict");
     };
     const rememberRuntime = (state: RuntimeState): RuntimeState => {
       if (
@@ -1072,14 +1320,61 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       });
       return policy;
     };
+    /**
+     * The texts a composed consultation sends: the whole task for a first turn, and only what changed
+     * since the last consultation for a follow-up. Each one carries its own nonce, and the context
+     * module bounds and redacts both before they leave for another provider.
+     */
+    const composeConsultation = (
+      observed: TaskObservation,
+      asked: { question?: string; brief?: string; evidence?: string },
+    ): { question: string; brief: string; evidence: string; bytes: number } => {
+      const mark = observed.consultMark;
+      const commands = [...observed.commands.values()];
+      const shared = {
+        trigger: heldTrigger(observed.pending),
+        ...(observed.pending === undefined ? {} : { pending: observed.pending }),
+        ...(asked.question?.trim() ? { question: asked.question } : {}),
+        ...(asked.brief?.trim() ? { brief: asked.brief } : {}),
+        ...(asked.evidence?.trim() ? { evidence: asked.evidence } : {}),
+        assistantTexts: observed.assistantTexts,
+        editsSoFar: taskMetrics?.edits ?? 0,
+      };
+      // The follow-up carries what changed, so the request itself belongs to the first turn only.
+      const full = composeAdvisorContext({
+        ...shared,
+        nonce: randomBytes(8).toString("hex"),
+        userRequest: observed.userRequest,
+        ...(observed.earlierRequest === undefined
+          ? {}
+          : { earlierRequest: observed.earlierRequest }),
+        readPaths: observed.readPaths,
+        editedPaths: observed.editedPaths,
+        commands,
+      });
+      const followUp = composeAdvisorContext({
+        ...shared,
+        nonce: randomBytes(8).toString("hex"),
+        continuation: true,
+        readPaths: observed.readPaths.slice(mark.readPaths),
+        editedPaths: observed.editedPaths.slice(mark.editedPaths),
+        commands: commands.slice(mark.commands),
+      });
+      return {
+        question: asked.question?.trim() ? asked.question : defaultQuestion(shared.trigger),
+        brief: full.text,
+        evidence: followUp.text,
+        bytes: full.bytes,
+      };
+    };
     pi.registerTool({
       name: "consult_advisor",
       label: "Consult Advisor",
       description:
-        "Use only when advisor-launch=tool; in role mode launch Advisor with the host subagent tool instead. Consult the configured advisors after orientation before substantive work, when stuck, before changing approach, and before declaring a multi-step task done (ask for remaining risks, not approval). Skip short reactive steps and mechanics within a settled approach. Supply a self-contained brief for a first consultation; a later call in the same task continues each thread with the question and evidence. Advice only; sends only the question and brief, never the conversation, and may incur cost.",
+        "Ask the configured Advisors for a second opinion. It needs no arguments: the host sends them the user's request, your latest messages, the files you touched and the change you are about to make. Call it before your first change in a task that involves a decision (which approach, what the root cause is, how far the change should reach), when the same error comes back, before changing approach, and before publishing or declaring a multi-step task done. Example: you are choosing between two designs - call it. Example: the same test fails for the third time - call it and pass the error text in evidence. Counter-example: renaming something the user already named - do not call it. Optionally pass question to ask something specific, and evidence with facts the host cannot see, such as an error message. Advice only: you decide, and the user's instructions win. Each call costs time and tokens.",
       parameters: Type.Object(
         {
-          question: Type.String({ minLength: 1 }),
+          question: Type.Optional(Type.String({ minLength: 1 })),
           brief: Type.Optional(Type.String({ minLength: 1 })),
           evidence: Type.Optional(Type.String({ minLength: 1 })),
         },
@@ -1119,7 +1414,15 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           );
         }
         if (advisorExecutor.busy) return text(advisorContinuityText("busy"));
-        if (!input.question.trim())
+        const contextMode = state.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE;
+        const noArgs = !input.question?.trim() && !input.brief?.trim() && !input.evidence?.trim();
+        // The host writes the brief from what it observed, so only the manual mode still asks the
+        // agent for a question and keeps the errors that ask for one.
+        const composed =
+          contextMode === "composed"
+            ? composeConsultation(observation ?? emptyTaskObservation(), input)
+            : undefined;
+        if (composed === undefined && !input.question?.trim())
           return text(
             "Advisor error: question must not be blank. Call again with a specific question.",
           );
@@ -1133,6 +1436,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           return text(
             "Advisor unavailable: this run has no operative task, so no consultation was started and no thread was opened. Call consult_advisor from a turn the user started; do not retry from an extension-driven run.",
           );
+        const question = composed?.question ?? input.question ?? "";
+        const brief = composed?.brief ?? input.brief;
+        const evidence = composed?.evidence ?? input.evidence;
         const parentKey = advisorParentKey(sessionId);
         const plans: AdvisorSlotPlan[] = advisors.map((slot) => {
           const model = `${slot.setting.provider}/${slot.setting.model}`;
@@ -1160,8 +1466,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               epoch: authorizationEpoch,
             },
             request: {
-              question: input.question,
-              ...(input.brief?.trim() ? { brief: input.brief } : {}),
+              question,
+              ...(brief?.trim() ? { brief } : {}),
               ...(profile ? { providerExtension: profile } : {}),
               model: {
                 provider: slot.model.provider,
@@ -1186,9 +1492,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           {
             slots: plans,
             consult: {
-              question: input.question,
-              ...(input.brief?.trim() ? { brief: input.brief } : {}),
-              ...(input.evidence?.trim() ? { evidence: input.evidence } : {}),
+              question,
+              ...(brief?.trim() ? { brief } : {}),
+              ...(evidence?.trim() ? { evidence } : {}),
             },
             task: { parentKey, taskToken: token },
             isAuthorized,
@@ -1196,8 +1502,23 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           },
           { cwd: ctx.cwd, sessionId, events: pi.events },
           signal,
-          (attempt) => advisorLog.consultation("tool", [attempt]),
+          (attempt) =>
+            advisorLog.consultation("tool", [attempt], {
+              mainModel: state.mainModel ?? null,
+              advisorLevel: taskAdvisorLevel(state),
+              noArgs,
+              contextBytes: composed?.bytes ?? 0,
+            }),
         );
+        // The next consultation of this task sends only what this one did not already carry.
+        if (composed && observation) {
+          observation.consultMark = {
+            readPaths: observation.readPaths.length,
+            editedPaths: observation.editedPaths.length,
+            commands: observation.commands.size,
+          };
+          observation.pending = undefined;
+        }
         // This is outside the executor and all its async cleanup. No await may follow this fence.
         if (!isAuthorized() || signal?.aborted)
           group = {
@@ -1211,7 +1532,11 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               detail: advisorContinuityText("cancelled"),
             })),
           };
-        return text(renderAdvisorGroup(group), {
+        const rendered = renderAdvisorGroup(group);
+        // The composed mode always supplies a brief; only the manual mode can lack one.
+        const missingBrief =
+          composed === undefined && group.slots.some((slot) => slot.code === "brief-required");
+        return text(missingBrief ? `${rendered} ${MANUAL_BRIEF_REQUEST}` : rendered, {
           advisorConsultation: {
             summary: group.summary,
             slots: group.slots.map(({ slot, status, model, code }) => ({
@@ -1623,6 +1948,55 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           );
           return;
         }
+        if (action.kind === "advisor-level") {
+          let refusal: string | undefined;
+          if (action.target === "session")
+            pi.appendEntry(ADVISOR_LEVEL_ENTRY_TYPE, advisorLevelEntry(action.level));
+          else {
+            const model = mainModelKey(ctx.model);
+            refusal = await saveAdvisorLevelCompanion((file) => {
+              if (action.target === "global") {
+                if (action.level === null) delete file.level;
+                else file.level = action.level;
+                return undefined;
+              }
+              if (model === undefined)
+                return "The main model cannot be named in this session, so no model level was stored. Nothing was changed.";
+              if (action.level === null) delete file.models[model];
+              else file.models[model] = action.level;
+              return undefined;
+            });
+          }
+          if (refusal !== undefined) {
+            ctx.ui.notify(refusal, "error");
+            return;
+          }
+          const state = rememberRuntime(await loadRuntime(ctx));
+          updateStatus(ctx, state);
+          ctx.ui.notify(
+            `Advisor level: ${state.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL} (${state.advisorLevel?.source ?? "default"}).`,
+            "info",
+          );
+          return;
+        }
+        if (action.kind === "advisor-context") {
+          const refusal = await saveAdvisorLevelCompanion((file) => {
+            if (action.mode === "composed") delete file.context;
+            else file.context = action.mode;
+            return undefined;
+          });
+          if (refusal !== undefined) {
+            ctx.ui.notify(refusal, "error");
+            return;
+          }
+          const state = rememberRuntime(await loadRuntime(ctx));
+          updateStatus(ctx, state);
+          ctx.ui.notify(
+            `Advisor consultation context: ${state.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE}.`,
+            "info",
+          );
+          return;
+        }
         if (action.kind === "context-mode") {
           if (action.mode !== "enforce") invalidateReaderAuthorization();
           const state = rememberRuntime(await setContextMode(pi, ctx, action.mode));
@@ -1704,6 +2078,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("session_start", async (_event, ctx) => {
       taskToken = undefined;
       advisorReminder.closeTask();
+      advisorCheckpoint.closeTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
       startConfigBaseline(await refreshRuntime(ctx));
@@ -1721,7 +2096,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       pendingInvalidation = "session-changed";
       taskToken = undefined;
       advisorReminder.closeTask();
+      // The earlier calls of the task belong to the branch the session left, so the checkpoint is
+      // treated as already covered rather than deciding on a state nobody remembers.
+      advisorCheckpoint.cover();
+      advisorCheckpoint.closeTask();
       taskMetrics = undefined;
+      observation = undefined;
       startConfigBaseline(await refreshRuntime(ctx));
       await applyAdvisorChildExtensions(ctx);
     });
@@ -1743,10 +2123,27 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       inputSource = event.source;
       // A prompt an extension sends belongs to no user task, so it opens none, and a steer or
       // follow-up keeps the task already open instead of restarting its counters.
-      if (event.source !== "extension" && taskMetrics === undefined)
+      if (event.source !== "extension" && taskMetrics === undefined) {
         taskMetrics = startTaskMetrics();
+        if (!isSubagentChildProcess()) {
+          const request = typeof event.text === "string" ? event.text : "";
+          // A request this short only reads in context when the previous task was substantial.
+          const earlierRequest =
+            request.length < SHORT_REQUEST_CHARS &&
+            previousRequest !== undefined &&
+            previousRequest.length >= SHORT_REQUEST_CHARS
+              ? previousRequest
+              : undefined;
+          observation = openTaskObservation(
+            request,
+            earlierRequest,
+            request.trimStart().startsWith("??"),
+          );
+          previousRequest = request;
+        }
+      }
     });
-    pi.on("before_agent_start", async () => {
+    pi.on("before_agent_start", async (_event, ctx) => {
       const source = inputSource;
       inputSource = undefined;
       runToken += 1;
@@ -1762,10 +2159,19 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // Only a public interactive or RPC prompt opens an operative task. A steer or follow-up
       // never reaches this event, so it keeps the token it continues.
       if (source === "interactive" || source === "rpc") {
+        // The level belongs to the task: a change made while it runs reaches the next one only.
+        const child = isSubagentChildProcess();
+        const level = child ? undefined : (await refreshRuntime(ctx)).advisorLevel?.level;
         advisorEpoch += 1;
         advisorExecutor.cancel();
         taskToken = randomUUID();
         advisorReminder.openTask();
+        if (child) return;
+        if (observation) observation.level = level;
+        advisorCheckpoint.openTask({
+          promptChars: observation?.userRequest.length ?? 0,
+          forced: observation?.forced ?? false,
+        });
       }
     });
     pi.on("context_with_system", async (event, ctx) => {
@@ -1773,6 +2179,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // One request is one round. A retry of the same request carries no new tool result and keeps
       // the round, so its reminder is reused instead of rearmed.
       advisorReminder.beginRequest();
+      if (!isSubagentChildProcess()) {
+        advisorCheckpoint.beginRequest();
+        if (observation) observation.assistantTexts = lastAssistantTexts(event.messages);
+      }
       const policy = renderPolicy(state);
       const systemMessage = event.messages[0];
       if (
@@ -1853,6 +2263,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const parentKey = parentKeyFor(ctx);
       taskToken = undefined;
       advisorReminder.closeTask();
+      const checkpoint = advisorCheckpoint.closeTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
       if (settledToken) {
@@ -1864,10 +2275,22 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           );
       }
       const task = taskMetrics;
+      const frozenLevel = observation?.level;
       taskMetrics = undefined;
+      observation = undefined;
+      const advisorLevel =
+        frozenLevel ?? latestRuntime?.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL;
+      if (checkpoint)
+        advisorLog.checkpoint({
+          ...checkpoint,
+          mainModel: latestRuntime?.mainModel ?? null,
+          advisorLevel,
+        });
       if (task)
         advisorLog.task({
           durationMs: Date.now() - task.startedAt,
+          mainModel: latestRuntime?.mainModel ?? null,
+          advisorLevel,
           toolCalls: task.toolCalls,
           edits: task.edits,
           firstEditIndex: task.firstEditIndex,
@@ -1913,9 +2336,45 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           ? inspectSubagentLaunch(event.input, latestRuntime)
           : undefined;
       const consulted = isConsultAttempt(event, check);
-      // An attempt ends the reminder for this task; whether it answers is the tool result's business.
-      if (consulted) advisorReminder.noteConsultAttempt();
-      countTaskToolCall(event, check, consulted);
+      if (consulted) {
+        // An attempt ends the reminder for this task; whether it answers is the tool result's
+        // business. A role-mode launch through the host subagent tool is a consultation too.
+        advisorReminder.noteConsultAttempt();
+        advisorCheckpoint.noteConsult(Date.now());
+      }
+      const facts = classifyToolCall(event.toolName, event.input);
+      const observed = isSubagentChildProcess() ? undefined : observation;
+      if (observed) {
+        if (facts.kind === "read") observePath(observed.readPaths, facts.path);
+        if (facts.kind === "edit") observePath(observed.editedPaths, facts.path);
+        if (facts.kind === "command" && facts.command !== undefined)
+          observeCommand(observed, event.toolCallId, facts.command);
+      }
+      // The launch check already decided this subagent call, so a refusal there is never revisited.
+      const decision =
+        check?.refusal === undefined && observed !== undefined
+          ? advisorCheckpoint.onToolCall(facts, {
+              mode: checkpointMode(observed.level),
+              available: consultationAvailable(latestRuntime),
+              now: Date.now(),
+            })
+          : undefined;
+      const refused = decision?.action === "block";
+      countTaskToolCall(event, check, consulted, refused);
+      if (observed && changesState(facts) && check?.refusal === undefined)
+        observed.pending = refused ? heldChange(facts, event.toolName, event.input) : undefined;
+      if (decision?.action === "block") {
+        // Role launch names no tool, so the way out is the policy's Roles section, not this tool.
+        const instruction =
+          "consult the Advisors now, exactly as the Roles section of the delegation policy describes";
+        return {
+          block: true,
+          reason:
+            latestRuntime?.effective.advisorLaunch === "role"
+              ? decision.message.replace("call consult_advisor() now", instruction)
+              : decision.message,
+        };
+      }
       if (check) {
         // A control or management action launches nothing, so it records no `launch` event.
         if (check.launch)
@@ -1965,6 +2424,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
                   },
                 ]
               : [],
+            {
+              mainModel: latestRuntime.mainModel ?? null,
+              advisorLevel:
+                observation?.level ?? latestRuntime.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL,
+              // A role launch carries the task the agent wrote, not a context the host composed.
+              noArgs: false,
+              contextBytes: 0,
+            },
           );
         }
       }
@@ -1980,7 +2447,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // no enabled Advisor, a result is left untouched and no tool inventory is read.
       if (
         latestRuntime &&
-        (latestRuntime.advisorReminder ?? DEFAULT_ADVISOR_REMINDER_MODE) === "remind" &&
+        taskAdvisorLevel(latestRuntime) !== "off" &&
         isAdvisorEnabled(latestRuntime.effective)
       )
         advisorReminder.observeToolResult({
@@ -1988,8 +2455,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           isError: event.isError,
           builtin: isBuiltinTool(pi, event.toolName),
         });
-      const note = takeCorrection(event.toolCallId);
       const settings = latestRuntime?.effective.contextShunt;
+      if (!isSubagentChildProcess() && observation) {
+        const command = observation.commands.get(event.toolCallId);
+        if (command) command.status = event.isError ? "error" : "ok";
+      }
+      const note = takeCorrection(event.toolCallId);
       let result: { content?: Array<{ type: "text"; text: string }> } | undefined;
       if (!settings || settings.mode === "off") shunt.clearPending();
       else
@@ -2008,7 +2479,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       latestRuntime = undefined;
       taskToken = undefined;
       advisorReminder.closeTask();
+      advisorCheckpoint.closeTask();
       taskMetrics = undefined;
+      observation = undefined;
       correctionNotes.clear();
       configBaseline = undefined;
       presentedNotice = undefined;

@@ -92,7 +92,8 @@ export type ConfigDiagnostic = {
     | "advisor-reminder"
     | "role-entries"
     | "advisor-read"
-    | "advisor-filters";
+    | "advisor-filters"
+    | "advisor-level";
 };
 export type LoadedDefaults = {
   defaults: GlobalDefaults;

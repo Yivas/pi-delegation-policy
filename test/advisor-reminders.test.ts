@@ -17,6 +17,9 @@ import {
   writeAdvisorReminderMode,
 } from "../src/advisor-reminders.ts";
 import { getGlobalConfigPath, isAbsentPathError, writeConfig } from "../src/config.ts";
+import { CHECKPOINT_MESSAGE } from "../src/advisor-checkpoint.ts";
+import { getAdvisorLevelPath } from "../src/advisor-level.ts";
+import { getEventLogPath } from "../src/advisor-log.ts";
 import { DelegatePanel, type DelegatePanelOptions } from "../src/delegate-panel.ts";
 import piDelegationPolicy from "../src/index.ts";
 import { openDelegateEditor } from "../src/ui.ts";
@@ -190,16 +193,19 @@ function createHarness(
     if (!projected) throw new Error("The context hook returns the complete request transcript.");
     return projected;
   };
-  const prompt = async (source = "interactive"): Promise<void> => {
-    await handler("input")({ type: "input", text: "Run the task", source }, ctx);
+  const prompt = async (source = "interactive", text = "Run the task"): Promise<void> => {
+    await handler("input")({ type: "input", text, source }, ctx);
     await handler("before_agent_start")({ type: "before_agent_start" }, ctx);
   };
-  const toolCall = async (toolName: string, input: Record<string, unknown> = {}): Promise<void> => {
+  const toolCall = async (
+    toolName: string,
+    input: Record<string, unknown> = {},
+  ): Promise<{ block?: boolean; reason?: string } | undefined> => {
     callId += 1;
-    await handler("tool_call")(
+    return (await handler("tool_call")(
       { type: "tool_call", toolCallId: `call-${callId}`, toolName, input },
       ctx,
-    );
+    )) as { block?: boolean; reason?: string } | undefined;
   };
   const toolResult = async (toolName: string, isError = false): Promise<void> => {
     callId += 1;
@@ -742,4 +748,181 @@ test("a reminder saved before a failing defaults step is named, not denied", asy
     /Could not save global defaults\. The Advisor reminder mode \(off\) was saved\./,
   );
   assert.doesNotMatch(view, /Nothing was changed on disk/);
+});
+
+/** The level companion decides a task's level: it is read when the task opens. */
+async function writeLevel(values: { level?: string; context?: string }): Promise<void> {
+  await writeFile(
+    getAdvisorLevelPath(getGlobalConfigPath()),
+    `${JSON.stringify({ schemaVersion: 1, ...values })}\n`,
+  );
+}
+
+/** The log writer drains on its own, so a case waits for the record it is about. */
+async function logEventsNamed(event: string): Promise<Array<Record<string, unknown>>> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const text = await readFile(getEventLogPath(getGlobalConfigPath()), "utf8").catch(() => "");
+    const matching = text
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.event === event);
+    if (matching.length || Date.now() > deadline) return matching;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** More than 40 new lines is the signal that says the first change is not a small one. */
+const SUBSTANTIVE_EDIT = {
+  path: "src/big.ts",
+  edits: [{ oldText: "a", newText: Array.from({ length: 41 }, (_, i) => `line ${i}`).join("\n") }],
+};
+
+const SMALL_EDIT = { path: "src/a.ts", edits: [{ oldText: "a", newText: "one" }] };
+
+test("level off never presents the reminder, refuses nothing and logs no checkpoint", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "off" });
+    await harness.prompt();
+    await harness.toolResult("read");
+    await harness.toolResult("read");
+    await harness.toolResult("read");
+    assert.equal(harness.reminders(await harness.request()).length, 0);
+    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
+    await harness.settled();
+    assert.deepEqual(await logEventsNamed("checkpoint"), []);
+  });
+});
+
+test("standard presents the reminder as before and records the first change in the shadow", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "standard" });
+    await harness.prompt();
+    await harness.toolResult("read");
+    assert.equal(harness.reminderText(await harness.request()), renderAdvisorReminder());
+    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
+    await harness.settled();
+    const [checkpoint] = await logEventsNamed("checkpoint");
+    assert.equal(checkpoint?.mode, "shadow");
+    assert.deepEqual(checkpoint?.signals, ["large-edit"]);
+    // The change was never repeated nor consulted, so the task left the question open.
+    assert.equal(checkpoint?.resolution, "none");
+    assert.equal(checkpoint?.advisorLevel, "standard");
+  });
+});
+
+test("strict presents the hard rule and refuses the first change and its whole batch once", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    await harness.toolResult("read");
+    const presented = await harness.request();
+    assert.equal(harness.reminderText(presented), renderAdvisorReminder(true));
+    assert.match(harness.reminderText(presented) ?? "", /Hard rule for this session/);
+    assert.equal((await harness.toolCall("edit", SUBSTANTIVE_EDIT))?.block, true);
+    // The calls of one assistant message are one turn, so the rest of the batch is refused too.
+    assert.equal((await harness.toolCall("edit", SUBSTANTIVE_EDIT))?.block, true);
+    await harness.request();
+    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
+    await harness.settled();
+    const [checkpoint] = await logEventsNamed("checkpoint");
+    assert.equal(checkpoint?.mode, "active");
+    assert.deepEqual(checkpoint?.signals, ["large-edit"]);
+  });
+});
+
+test("the refusal names the Roles section in role mode and the tool in tool mode", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    const refused = await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+    assert.match(
+      refused?.reason ?? "",
+      /exactly as the Roles section of the delegation policy describes/,
+    );
+    assert.doesNotMatch(refused?.reason ?? "", /consult_advisor/);
+    assert.match(refused?.reason ?? "", /repeat this call and it will run/);
+  });
+
+  await withHarness(
+    { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
+    async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      const refused = await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+      assert.equal(refused?.reason, CHECKPOINT_MESSAGE);
+    },
+  );
+});
+
+test("a consultation, a trivial task and an impossible consultation are never refused", async () => {
+  // A consultation before the first change leaves nothing to ask.
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    await harness.toolCall("consult_advisor", {});
+    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
+  });
+
+  // A short request, one read and a small edit are mechanics, not a decision.
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt("interactive", "rename the label");
+    await harness.toolResult("read");
+    await harness.request();
+    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
+  });
+
+  // Fail-open: no valid Advisor, no launcher among the active tools, or a child process.
+  for (const options of [
+    { config: { ...defaults, advisors: [{ provider: "example", model: "missing" }] } },
+    { activeTools: [] as string[] },
+  ]) {
+    await withHarness(options, async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
+    });
+  }
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    process.env.PI_SUBAGENT_CHILD = "1";
+    try {
+      await harness.prompt();
+      assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
+    } finally {
+      delete process.env.PI_SUBAGENT_CHILD;
+    }
+  });
+});
+
+test("a leading `??` forces the first change at any level, and only with an Advisor", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "off" });
+    await harness.prompt("interactive", "?? rewrite the loader");
+    const refused = await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal(refused?.block, true);
+    assert.match(refused?.reason ?? "", /Not an error: this call was not run/);
+  });
+
+  await withHarness(
+    { config: { ...defaults, advisors: [{ provider: "example", model: "missing" }] } },
+    async (harness) => {
+      await writeLevel({ level: "off" });
+      await harness.prompt("interactive", "?? rewrite the loader");
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
+    },
+  );
+});
+
+test("the level frozen when a task opens survives a change during it", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "off" });
+    await harness.prompt();
+    await writeLevel({ level: "strict" });
+    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
+    await harness.settled();
+    assert.deepEqual(await logEventsNamed("checkpoint"), []);
+  });
 });

@@ -167,6 +167,10 @@ export async function openDelegateEditor(
           state.launchCorrection = refreshed.launchCorrection;
           state.advisorReminder = refreshed.advisorReminder;
           state.advisorReminderInvalid = refreshed.advisorReminderInvalid;
+          state.advisorLevel = refreshed.advisorLevel;
+          state.advisorLevelFile = refreshed.advisorLevelFile;
+          state.advisorContextMode = refreshed.advisorContextMode;
+          state.mainModel = refreshed.mainModel;
           return result === "success";
         },
         onSaveDefaults: async (draft) => {

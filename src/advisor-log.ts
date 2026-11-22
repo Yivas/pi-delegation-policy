@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { getGlobalConfigPath } from "./config.ts";
 import type { LaunchChildRole, LaunchCorrectionCode, LaunchRefusalCode } from "./launch-guard.ts";
 import type { AdvisorTurnContext } from "./advisor-threads.ts";
+import type { AdvisorLevel } from "./advisor-level.ts";
+import type { CheckpointReport } from "./advisor-checkpoint.ts";
 import type { AdvisorLaunch, AdvisorMode, Intensity } from "./types.ts";
 
 export const ADVISOR_LOG_MAX_BYTES = 256 * 1024;
@@ -41,6 +43,9 @@ export type ConsultationAttempt = {
 /** Counters for one main-agent task, from its user prompt to the next settle. */
 export type TaskSummary = {
   durationMs: number;
+  /** The main model named by the host, or null; never a task, a prompt or a path. */
+  mainModel: string | null;
+  advisorLevel: AdvisorLevel;
   toolCalls: number;
   edits: number;
   firstEditIndex: number | null;
@@ -51,6 +56,22 @@ export type TaskSummary = {
   subagentLaunches: number;
   launchRefusals: number;
 };
+/** What a `consult_advisor` call carried, next to the attempts it produced. */
+export type ConsultationContext = {
+  mainModel: string | null;
+  advisorLevel: AdvisorLevel;
+  /** The model passed no question, brief or evidence and the host supplied the context. */
+  noArgs: boolean;
+  /** Bytes of the context the host assembled; 0 when the agent wrote its own brief. */
+  contextBytes: number;
+};
+
+/** One checkpoint decision, with the configuration it ran under. */
+export type CheckpointRecord = CheckpointReport & {
+  mainModel: string | null;
+  advisorLevel: AdvisorLevel;
+};
+
 export type LaunchOutcome = "allowed" | "refused";
 export type LaunchRecord = {
   outcome: LaunchOutcome;
@@ -105,13 +126,25 @@ export class AdvisorLog {
     });
   }
 
-  consultation(mode: AdvisorLaunch, attempts: readonly ConsultationAttempt[]): void {
+  consultation(
+    mode: AdvisorLaunch,
+    attempts: readonly ConsultationAttempt[],
+    context?: ConsultationContext,
+  ): void {
     if (!this.lastHash) return;
     this.enqueue({
       event: "consultation",
       version: VERSION,
       policyHash: this.lastHash,
       mode,
+      ...(context
+        ? {
+            mainModel: context.mainModel ? context.mainModel.slice(0, 256) : null,
+            advisorLevel: context.advisorLevel,
+            noArgs: context.noArgs,
+            contextBytes: Math.max(0, Math.round(context.contextBytes)),
+          }
+        : {}),
       models: attempts.map((attempt) => ({
         model: attempt.model.slice(0, 256),
         status: attempt.status,
@@ -130,6 +163,8 @@ export class AdvisorLog {
       version: VERSION,
       policyHash: this.lastHash,
       durationMs: Math.max(0, Math.round(summary.durationMs)),
+      mainModel: summary.mainModel ? summary.mainModel.slice(0, 256) : null,
+      advisorLevel: summary.advisorLevel,
       toolCalls: summary.toolCalls,
       edits: summary.edits,
       firstEditIndex: summary.firstEditIndex,
@@ -153,6 +188,28 @@ export class AdvisorLog {
       children: record.children.length,
       roles: record.children,
       corrections: record.corrections,
+    });
+  }
+
+  /**
+   * One record per task whose checkpoint fired: the closed signals that caused it and how the task
+   * answered, with no tool input, path, prompt or task body.
+   */
+  checkpoint(record: CheckpointRecord): void {
+    if (!this.lastHash) return;
+    this.enqueue({
+      event: "checkpoint",
+      version: VERSION,
+      policyHash: this.lastHash,
+      mode: record.mode,
+      signals: record.signals,
+      resolution: record.resolution,
+      priorCalls: Math.max(0, Math.round(record.priorCalls)),
+      filesRead: Math.max(0, Math.round(record.filesRead)),
+      promptChars: Math.max(0, Math.round(record.promptChars)),
+      editLines: Math.max(0, Math.round(record.editLines)),
+      mainModel: record.mainModel ? record.mainModel.slice(0, 256) : null,
+      advisorLevel: record.advisorLevel,
     });
   }
 

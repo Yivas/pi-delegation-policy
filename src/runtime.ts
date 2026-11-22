@@ -30,6 +30,17 @@ import {
 } from "./advisor-reminders.ts";
 import { readRoleEntries } from "./role-entries.ts";
 import {
+  advisorLevelDiagnostic,
+  DEFAULT_ADVISOR_CONTEXT_MODE,
+  mainModelKey,
+  readAdvisorLevelFile,
+  resolveAdvisorLevel,
+  sessionAdvisorLevel,
+  type AdvisorContextMode,
+  type AdvisorLevelFile,
+  type ResolvedAdvisorLevel,
+} from "./advisor-level.ts";
+import {
   advisorCanRead,
   advisorReadDiagnostic,
   readAdvisorRead,
@@ -81,6 +92,14 @@ export type RuntimeState = {
   launchCorrection?: LaunchCorrectionMode;
   /** Whether the extension may add its short Advisor reminder; absent means `remind`. */
   advisorReminder?: AdvisorReminderMode;
+  /** How hard this session nudges towards a consultation, and which setting decided it. */
+  advisorLevel?: ResolvedAdvisorLevel;
+  /** The level companion as read, so a write preserves the level, models and context it holds. */
+  advisorLevelFile?: AdvisorLevelFile;
+  /** Who writes a consultation brief: the extension from what it observed, or the agent. */
+  advisorContextMode?: AdvisorContextMode;
+  /** "provider/id" of the host's current main model; absent when it cannot be named. */
+  mainModel?: string;
   /** The reminder companion was unreadable or invalid, so the mode above is suspended. */
   advisorReminderInvalid?: boolean;
   /** Advisor notes that never remove an Advisor or change the footer. */
@@ -305,6 +324,8 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
   const admissions = await readProviderAdmissions(getProviderAdmissionsPath(path));
   const correction = await readLaunchCorrectionMode(getLaunchCorrectionPath(path));
   const reminder = await readAdvisorReminderMode(getAdvisorRemindersPath(path));
+  const level = await readAdvisorLevelFile(path);
+  const mainModel = mainModelKey(ctx.model);
   const roleFiles = await readRoleEntries(path);
   const advisorReading = await readAdvisorRead(path);
   const advisorFilterFile = await readAdvisorFilters(path);
@@ -329,11 +350,24 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
       ...(admissions.diagnostic ? [admissions.diagnostic] : []),
       ...(correction.diagnostic ? [correction.diagnostic] : []),
       ...(reminder.diagnostic ? [reminder.diagnostic] : []),
+      ...(advisorLevelDiagnostic(level.invalid) ? [advisorLevelDiagnostic(level.invalid)!] : []),
     ],
     admissions: admissions.admissions,
     launchCorrection: correction.mode,
     advisorReminder: reminder.mode,
     advisorReminderInvalid: reminder.invalid === true,
+    advisorLevel: resolveAdvisorLevel({
+      session: sessionAdvisorLevel(ctx.sessionManager.getBranch()),
+      file: level.file,
+      filePresent: level.present,
+      // The old on/off reminder only survives here as its own `off`: on its own it never carried
+      // a level.
+      reminderMode: reminder.mode,
+      model: mainModel,
+    }),
+    advisorLevelFile: level.file,
+    advisorContextMode: level.file.context ?? DEFAULT_ADVISOR_CONTEXT_MODE,
+    ...(mainModel === undefined ? {} : { mainModel }),
     modelStatuses: new Map(),
     runtimeErrors: [],
   };
@@ -348,6 +382,7 @@ const SIDE_SETTING_SCOPES: ReadonlySet<string> = new Set([
   "advisor-filters",
   "launch-correction",
   "advisor-reminder",
+  "advisor-level",
   "role-entries",
 ]);
 

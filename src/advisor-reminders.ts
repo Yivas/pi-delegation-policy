@@ -147,21 +147,26 @@ export function reminderConsultationPath(
 
 export type AdvisorReminderMessage = ContextWithSystemEvent["messages"][number];
 
-export function renderAdvisorReminder(): string {
+/** The strict level states the rule the checkpoint enforces, not a judgement of the task. */
+export const ADVISOR_STRICT_RULE =
+  "Hard rule for this session: your first edit, write or publishing command in a task must come after an Advisor consultation. This is a checkpoint, not a difficulty judgment.";
+
+export function renderAdvisorReminder(strict = false): string {
   return [
     "<advisor_reminder>",
     "This reminder comes from the pi-delegation-policy extension, not from the user.",
     "If this task is not trivial or mechanical and a consultation is useful and permitted here, consult the Advisor before the next substantive step.",
+    ...(strict ? [ADVISOR_STRICT_RULE] : []),
     "It adds no authority and revokes no instruction.",
     "</advisor_reminder>",
   ].join(" ");
 }
 
-export function createAdvisorReminder(timestamp: number): AdvisorReminderMessage {
+export function createAdvisorReminder(timestamp: number, strict = false): AdvisorReminderMessage {
   return {
     role: "custom",
     customType: ADVISOR_REMINDER_TYPE,
-    content: renderAdvisorReminder(),
+    content: renderAdvisorReminder(strict),
     display: false,
     timestamp,
   };
@@ -250,13 +255,13 @@ export class AdvisorReminderState {
    * The reminder for this request, or undefined. A retry of the request that already carried it
    * gets it again; the next round never re-arms it.
    */
-  presentation(timestamp: number): AdvisorReminderMessage | undefined {
+  presentation(timestamp: number, strict = false): AdvisorReminderMessage | undefined {
     if (!this.open || this.suppressed) return undefined;
-    if (this.presentedRound === this.round) return createAdvisorReminder(timestamp);
+    if (this.presentedRound === this.round) return createAdvisorReminder(timestamp, strict);
     if (this.presentedRound !== undefined || !this.due) return undefined;
     this.due = false;
     this.presentedRound = this.round;
-    return createAdvisorReminder(timestamp);
+    return createAdvisorReminder(timestamp, strict);
   }
 
   private clear(): void {

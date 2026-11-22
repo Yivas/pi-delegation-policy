@@ -32,6 +32,7 @@ import {
   type AdvisorThreadRecord,
 } from "../src/advisor-threads.ts";
 import { getLaunchCorrectionPath } from "../src/launch-correction-mode.ts";
+import { ADVISOR_LEVEL_ENTRY_TYPE, getAdvisorLevelPath } from "../src/advisor-level.ts";
 import type { AgentLaunchModules } from "../src/agent-launch.ts";
 import {
   ADVISOR_EXTENSION_ENTRY_TYPE,
@@ -116,7 +117,7 @@ type Tool = {
   parameters: unknown;
   execute: (
     id: string,
-    input: { question: string; brief?: string; evidence?: string },
+    input: { question?: string; brief?: string; evidence?: string },
     signal: AbortSignal | undefined,
     update: unknown,
     context: never,
@@ -231,6 +232,13 @@ async function harness(
     packageVersion?: unknown;
     activeTools?: string[];
     correctionMode?: "block";
+    /** The companion's context mode; composing is the default, so `manual` has to be asked for. */
+    contextMode?: "composed" | "manual";
+    /**
+     * Clear the documented `pi-subagents` child markers, so the harness behaves as a main session
+     * even when the suite itself runs inside a child. Nothing else in the environment is touched.
+     */
+    mainProcess?: boolean;
     /** Shared journal so a test can gate or fail its writes. */
     journal?: AdvisorThreadJournal;
     directory?: string;
@@ -240,12 +248,22 @@ async function harness(
   const directory = options.directory ?? (await mkdtemp(join(tmpdir(), "advisor-tool-")));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
+  const childMarkers = ["PI_SUBAGENT_CHILD", "PI_SUBAGENT_RUNNER_PID"] as const;
+  const savedMarkers = options.mainProcess
+    ? childMarkers.map((key) => [key, process.env[key]] as const)
+    : undefined;
+  if (savedMarkers) for (const key of childMarkers) delete process.env[key];
   const path = getGlobalConfigPath(directory);
   await writeConfig(path, value);
   if (options.correctionMode)
     await writeFile(
       getLaunchCorrectionPath(path),
       `${JSON.stringify({ schemaVersion: 1, mode: options.correctionMode })}\n`,
+    );
+  if (options.contextMode === "manual")
+    await writeFile(
+      getAdvisorLevelPath(path),
+      `${JSON.stringify({ schemaVersion: 1, context: "manual" })}\n`,
     );
   const bus = new Bus();
   const handlers = new Map<string, Handler>();
@@ -332,7 +350,7 @@ async function harness(
     logPath,
     executor,
     call: async (
-      input: { question: string; brief?: string; evidence?: string } = {
+      input: { question?: string; brief?: string; evidence?: string } = {
         question: sentinel,
         brief: sentinel,
       },
@@ -341,7 +359,7 @@ async function harness(
       (await tools.get("consult_advisor")!.execute("id", input, signal, undefined, ctx as never))
         .content[0]!.text,
     callBoth: async (
-      input: { question: string; brief?: string; evidence?: string } = {
+      input: { question?: string; brief?: string; evidence?: string } = {
         question: sentinel,
         brief: sentinel,
       },
@@ -361,6 +379,10 @@ async function harness(
       await hook("session_shutdown");
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
+      for (const [key, value] of savedMarkers ?? []) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       // Windows can delay directory removal even after the writer has drained.
       if (!options.directory)
         await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -1028,7 +1050,7 @@ test("registered tool definitions and order stay identical across modes and repe
 });
 
 test("invalid question and absent session identify the corrective action without launching", async () => {
-  const run = await harness();
+  const run = await harness(base, models, 10_000, { contextMode: "manual" });
   try {
     assert.equal(
       await run.call({ question: "   ", brief: sentinel }),
@@ -1047,10 +1069,12 @@ test("invalid question and absent session identify the corrective action without
 
 test("tool starts both exact models in parallel, preserves a partial answer and never launches from hooks", async () => {
   // The second model offers no `high`, so automatic thinking steps down to the next supported level.
-  const run = await harness(base, [
-    models[0]!,
-    { ...models[1]!, thinkingLevelMap: { high: null } } as (typeof models)[number],
-  ]);
+  const run = await harness(
+    base,
+    [models[0]!, { ...models[1]!, thinkingLevelMap: { high: null } } as (typeof models)[number]],
+    10_000,
+    { contextMode: "manual" },
+  );
   try {
     for (const name of [
       "context_with_system",
@@ -1146,7 +1170,10 @@ test("terminal results must match the bound digest and carry usable text", async
 });
 
 test("a build without the public fork wrapper still serves fresh consultations", async () => {
-  const run = await harness(base, models, 10_000, { forkTaskNormalizer: false });
+  const run = await harness(base, models, 10_000, {
+    forkTaskNormalizer: false,
+    contextMode: "manual",
+  });
   try {
     run.bus.respond = (request) => run.bus.finish(request);
     assert.match(await run.call(), new RegExp(sentinel));
@@ -1279,7 +1306,7 @@ test("old, prerelease and malformed pi-subagents versions are rejected before an
 test("no consultation asks the host for a fork, whatever the session uses", async () => {
   // Nothing is retried with a second context: an explicit host rejection ends the turn.
   for (const tokens of [10_000, 60_000, null, 90_000]) {
-    const run = await harness(base, models, tokens as number | null);
+    const run = await harness(base, models, tokens as number | null, { contextMode: "manual" });
     try {
       run.bus.respond = (request) => run.bus.finish(request);
       assert.match(await run.call(), /example\/first \[fresh\]/);
@@ -1318,7 +1345,7 @@ test("no consultation asks the host for a fork, whatever the session uses", asyn
 });
 
 test("a first consultation requires a brief in fresh context", async () => {
-  const fresh = await harness(base, models, 60_000);
+  const fresh = await harness(base, models, 60_000, { contextMode: "manual" });
   try {
     assert.match(
       await fresh.call({ question: sentinel } as never),
@@ -1528,6 +1555,7 @@ test("a task logs whether the first Advisor consult came before its first edit",
     assert.equal(tasks.length, 2);
     assert.deepEqual(Object.keys(tasks[0]).sort(), [
       "advisorConsults",
+      "advisorLevel",
       "consultBeforeFirstEdit",
       "durationMs",
       "edits",
@@ -1535,6 +1563,7 @@ test("a task logs whether the first Advisor consult came before its first edit",
       "firstConsultIndex",
       "firstEditIndex",
       "launchRefusals",
+      "mainModel",
       "policyHash",
       "subagentLaunches",
       "time",
@@ -3232,8 +3261,185 @@ test("a task whose closing tombstones fail stays blocked until reconciliation", 
   }
 });
 
-test("a continuation needs no new brief, and only a first consultation requires one", async () => {
+test("a consultation with no arguments sends the host-composed context to every Advisor", async () => {
+  const run = await harness(base, models, 10_000, { mainProcess: true });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    await run.hook("tool_call", {
+      toolName: "read",
+      toolCallId: "call-read",
+      input: { path: "/synthetic/file.ts" },
+    });
+    await run.hook("tool_call", {
+      toolName: "bash",
+      toolCallId: "call-bash",
+      input: { command: "npm test -- --secret-argument" },
+    });
+    await run.hook("tool_result", {
+      toolName: "bash",
+      toolCallId: "call-bash",
+      input: {},
+      content: [{ type: "text", text: sentinel }],
+      isError: true,
+    });
+    assert.match(await run.call({}), /Consultation complete/);
+    assert.equal(run.bus.requests.length, 2);
+    for (const request of run.bus.requests) {
+      const task = JSON.parse(request.task as string) as Payload;
+      assert.deepEqual(Object.keys(task).sort(), ["brief", "question"]);
+      assert.match(String(task.brief), /<host_note-[0-9a-f]{16}>/);
+      assert.match(String(task.brief), /synthetic prompt/);
+      assert.match(String(task.brief), /npm test: error/);
+      assert.doesNotMatch(String(task.brief), /secret-argument/);
+      assert.doesNotMatch(String(task.brief), new RegExp(sentinel));
+      assert.match(String(task.question), /Review the agent's current approach/);
+    }
+  } finally {
+    await run.close();
+  }
+});
+
+test("a second consultation continues the thread with only what changed", async () => {
+  const run = await harness(base, models, 10_000, { mainProcess: true });
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call({}), /Consultation complete/);
+    await run.hook("tool_call", {
+      toolName: "read",
+      toolCallId: "call-next",
+      input: { path: "/synthetic/after.ts" },
+    });
+    assert.match(await run.call({ evidence: "the same test failed again" }), /answer-0/);
+    assert.equal(rpc.resumes.length, 2);
+    const message = String(rpc.resumes[0]?.message);
+    assert.match(message, /Evidence since the last consultation:/);
+    assert.match(message, /\/synthetic\/after\.ts/);
+    assert.match(message, /the same test failed again/);
+    assert.doesNotMatch(message, /synthetic prompt/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("an agent question, brief and evidence keep their own tagged sections", async () => {
   const run = await harness();
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(
+      await run.call({
+        question: "Is the cache the right place?",
+        brief: "Keep the change small.",
+        evidence: "the loader throws",
+      }),
+      /Consultation complete/,
+    );
+    const task = JSON.parse(run.bus.requests[0]?.task as string) as Payload;
+    assert.equal(task.question, "Is the cache the right place?");
+    assert.match(String(task.brief), /source="agent"/);
+    assert.match(String(task.brief), /note="written by the main agent, unverified"/);
+    assert.match(String(task.brief), /Keep the change small\./);
+    assert.match(String(task.brief), /the loader throws/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("manual context keeps the question and the brief contract", async () => {
+  const run = await harness(base, models, 10_000, { contextMode: "manual" });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(
+      await run.call({ question: "why" }),
+      /a first consultation requires brief\.[\s\S]*Supply a self-contained brief for a first consultation\.$/,
+    );
+    assert.equal(run.bus.requests.length, 0);
+    assert.match(await run.call({ question: sentinel, brief: sentinel }), /Consultation complete/);
+    assert.deepEqual(JSON.parse(run.bus.requests[0]?.task as string), {
+      question: sentinel,
+      brief: sentinel,
+    });
+  } finally {
+    await run.close();
+  }
+});
+
+test("a composed consultation records its shape and never its content", async () => {
+  const run = await harness({ ...base, advisors: [first] });
+  try {
+    // A consultation is only logged after the policy block it ran under has been logged.
+    await run.hook("before_provider_request", {
+      payload: { model: "example", stream: true, store: false, instructions: "host" },
+    });
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call({}), /Consultation complete/);
+    await run.log.flush();
+    const consultation = (await logEvents(run.logPath)).find(
+      (event) => event.event === "consultation",
+    );
+    assert.equal(consultation?.noArgs, true);
+    assert.equal(consultation?.mainModel, null);
+    assert.equal(consultation?.advisorLevel, "standard");
+    assert.ok(Number(consultation?.contextBytes) > 0);
+    const text = await readFile(run.logPath, "utf8");
+    assert.doesNotMatch(text, /synthetic prompt|host_note|agent_messages/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("level and context commands store their setting and report its source", async () => {
+  const run = await harness();
+  const levelPath = getAdvisorLevelPath(run.path);
+  try {
+    await run.command("advisor level strict");
+    assert.deepEqual(run.branch.at(-1), {
+      type: "custom",
+      customType: ADVISOR_LEVEL_ENTRY_TYPE,
+      data: { schemaVersion: 1, level: "strict" },
+    });
+    assert.match(run.notifications.at(-1)?.message ?? "", /Advisor level: strict \(session\)/);
+
+    await run.command("advisor level global off");
+    assert.equal(JSON.parse(await readFile(levelPath, "utf8")).level, "off");
+    assert.match(run.notifications.at(-1)?.message ?? "", /Advisor level: strict \(session\)/);
+
+    // Removing the session entry lets the stored global level apply.
+    await run.command("advisor level default");
+    assert.match(run.notifications.at(-1)?.message ?? "", /Advisor level: off \(global\)/);
+
+    // This host names no main model, so a model level is refused before anything is written.
+    await run.command("advisor level model strict");
+    assert.match(run.notifications.at(-1)?.message ?? "", /main model cannot be named/);
+    assert.equal(JSON.parse(await readFile(levelPath, "utf8")).models, undefined);
+
+    (run.ctx as { model?: unknown }).model = { provider: "example", id: "first", name: "first" };
+    await run.command("advisor level model strict");
+    assert.deepEqual(JSON.parse(await readFile(levelPath, "utf8")).models, {
+      "example/first": "strict",
+    });
+
+    await run.command("advisor context manual");
+    assert.equal(JSON.parse(await readFile(levelPath, "utf8")).context, "manual");
+
+    await run.command("status");
+    const status = run.notifications.at(-1)?.message ?? "";
+    assert.match(status, /advisor-level=strict \(model\)/);
+    assert.match(status, /advisor-context=manual/);
+    assert.match(status, /main-model=example\/first/);
+
+    // An unreadable companion is reported and left exactly as it is.
+    await writeFile(levelPath, "{ broken");
+    await run.command("advisor context composed");
+    assert.match(run.notifications.at(-1)?.message ?? "", /Could not read .*advisor-level\.json/);
+    assert.equal(await readFile(levelPath, "utf8"), "{ broken");
+  } finally {
+    await run.close();
+  }
+});
+
+test("a continuation needs no new brief, and only a first consultation requires one", async () => {
+  const run = await harness(base, models, 10_000, { contextMode: "manual" });
   const rpc = new RpcHost(run.bus);
   try {
     run.bus.respond = (request) => run.bus.finish(request);

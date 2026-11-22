@@ -448,11 +448,57 @@ test("Advisor commands and request hooks independently update and remove the own
       "advisor threads status",
       "advisor threads recover",
       "advisor threads reset",
+      "advisor level off",
+      "advisor level standard",
+      "advisor level strict",
+      "advisor level default",
+      "advisor level global off",
+      "advisor level global standard",
+      "advisor level global strict",
+      "advisor level global default",
+      "advisor level model off",
+      "advisor level model standard",
+      "advisor level model strict",
+      "advisor level model default",
+      "advisor context composed",
+      "advisor context manual",
       "advisor 1 model",
       "advisor 2 model",
       "advisor 3 model",
     ],
   );
+  assert.deepEqual(parseCommand("advisor level strict"), {
+    kind: "advisor-level",
+    target: "session",
+    level: "strict",
+  });
+  assert.deepEqual(parseCommand("advisor level default"), {
+    kind: "advisor-level",
+    target: "session",
+    level: null,
+  });
+  assert.deepEqual(parseCommand("advisor level global off"), {
+    kind: "advisor-level",
+    target: "global",
+    level: "off",
+  });
+  assert.deepEqual(parseCommand("advisor level model default"), {
+    kind: "advisor-level",
+    target: "model",
+    level: null,
+  });
+  assert.deepEqual(parseCommand("advisor context manual"), {
+    kind: "advisor-context",
+    mode: "manual",
+  });
+  for (const input of [
+    "advisor level",
+    "advisor level loud",
+    "advisor level global",
+    "advisor context",
+  ]) {
+    assert.deepEqual(parseCommand(input), { kind: "invalid" }, input);
+  }
   assert.deepEqual(parseCommand("advisor 2 thinking high"), { kind: "advisor-thinking" });
   assert.deepEqual(parseCommand("advisor 4 model example/advisor"), { kind: "invalid" });
 });
