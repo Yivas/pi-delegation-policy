@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.33.0 - 2026-11-22
+
 ### Added
 
 - Let `consult_advisor` run with no arguments and send a context the host composes, with
@@ -26,6 +28,7 @@
 - Read `delegation-policy.advisor-reminders.json` only as a fallback when the level file is absent.
 - State the moments to consult as four rules, so mechanics in a settled approach are exempt.
 - Send a later consultation only what changed since the previous one in the same task.
+- Show `advisor-level`, `advisor-context` and `main-model` in `/delegate status`.
 
 ## 0.32.1 - 2026-11-21
 

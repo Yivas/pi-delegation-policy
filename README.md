@@ -8,7 +8,7 @@
   <a href="https://www.npmjs.com/package/pi-delegation-policy"><img src="https://img.shields.io/npm/l/pi-delegation-policy" alt="License on npm"></a>
 </p>
 
-[Documentation](https://yivas.github.io/pi-delegation-policy/) · Version **0.32.1**
+[Documentation](https://yivas.github.io/pi-delegation-policy/) · Version **0.33.0**
 
 Requires Pi `0.87.1` or later (`>=0.87.1`). Version `0.14.1` supports Pi `0.84.3` or later.
 
@@ -25,7 +25,7 @@ The block also asks for a brief on every child: the bounded outcome and its owne
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.32.1
+pi install npm:pi-delegation-policy@0.33.0
 # restart Pi, or run /reload
 ```
 
