@@ -597,6 +597,38 @@ These extensions run as trusted host code in the child, with your files and netw
 change the Advisor's prompt. The child does not revalidate them. A prompt layer that prepends text
 means the advice comes from the Advisor role plus your own instructions, in that order.
 
+## How the policy reaches the model
+
+The block is written into the system prompt, and it also travels as one message of its own right
+after the system message on every request, while either axis is on. The message carries a
+`revision:` line: the fingerprint of the block it holds. Two reasons, and the second is the one you
+can observe:
+
+- A host that rebuilds the system prompt every request then carries the same policy twice, once in
+  the system role and once as the delivered message. That is redundant, and it is not free: the block
+  starts around 6 KB and grows past 11 KB with three Advisors, so the duplicate is real input on
+  every request. The cache makes it cheap, not invisible.
+- The final-payload rewrite only reaches payload shapes it recognizes. In the residual case — an
+  unrecognized shape, or the block sitting outside a recognized instruction field — the system copy
+  the host built at session start is what the model reads, and a later change could be invisible.
+  That is the case the delivery covers: the policy in force arrives on the next turn, whatever the
+  system prompt says.
+
+What it costs and what it does not:
+
+- While the configuration holds, the delivery is byte-identical on every request and sits in the same
+  position, so a provider reuses its cached prefix. The turn where something changed replaces that
+  one message and re-bills from there, which is the same turn the system copy changes too.
+- Both axes off: no block, no delivery.
+- The message is ephemeral. It is rebuilt from the current configuration on every request and never
+  written to the session transcript, so older copies never accumulate.
+- The block is not delivered when the host cannot hand over a text system message; the request is
+  then left untouched.
+- Known limit: when the system copy is the stale one, the model reads the current policy as user
+  text while an older copy still sits in the system role. The `revision:` line is the only ordering
+  rule it has, and no test or real run here proves the model resolves it the right way. Replacing the
+  system copy with a short pointer, so only one block ever travels, is the planned follow-up.
+
 ## Persistence and compatibility
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7: intensity, preference, the

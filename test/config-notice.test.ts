@@ -11,6 +11,7 @@ import {
 import {
   BOTH_OFF_LINE,
   CONFIG_NOTICE_TYPE,
+  POLICY_DELIVERY_TYPE,
   changedValueLines,
   noticeLines,
   projectNoticeConfig,
@@ -228,6 +229,13 @@ function createHarness(directory: string, availableModels: TestModel[]) {
   const setBranch = (entries: Array<Record<string, unknown>>) => {
     branch.splice(0, branch.length, ...entries);
   };
+  const policyDelivery = (messages: Messages) => {
+    const deliveries = messages.filter(
+      (message) => message.role === "custom" && message.customType === POLICY_DELIVERY_TYPE,
+    );
+    assert.ok(deliveries.length <= 1, "one request carries at most one policy delivery");
+    return deliveries[0];
+  };
   const noticeMessage = (messages: Messages) => {
     const notices = messages.filter(
       (message) => message.role === "custom" && message.customType === CONFIG_NOTICE_TYPE,
@@ -290,6 +298,7 @@ function createHarness(directory: string, availableModels: TestModel[]) {
     noticeMessage,
     noticeText,
     policyBlock,
+    policyDelivery,
     providerPayload,
     eventLog,
     appended: () => appended,
@@ -441,7 +450,10 @@ test("a session start fixes a silent reference and the first turn carries no not
     await harness.config(defaults);
     await harness.start();
     const first = await harness.turn();
-    assert.equal(first.length, 2);
+    // The system block plus the one delivery that carries the same policy on every request.
+    assert.equal(first.length, 3);
+    assert.equal(first[1]!.role, "custom");
+    assert.equal((first[1] as { customType?: string }).customType, POLICY_DELIVERY_TYPE);
     assert.equal(harness.noticeText(first), undefined);
     assert.match(harness.policyBlock(first), /Intensity: normal/);
     await harness.finish();
@@ -526,9 +538,15 @@ test("changes made before a turn arrive as one notice and leave stored history a
     assert.match(notice, /- Delegation intensity: normal -> orchestrator/);
     assert.match(notice, /- Advisor mode: off -> on/);
     assert.match(notice, /- Advisor launch: role -> tool/);
-    assert.equal(messages.length, 3);
-    assert.equal(messages[2]!.role, "custom");
-    assert.equal(messages[2]!.customType, CONFIG_NOTICE_TYPE);
+    // The delivery carries the block in force right after the system message, and the notice is
+    // appended last.
+    assert.equal(messages.length, 4);
+    assert.equal(messages[1]!.role, "custom");
+    assert.equal(messages.at(-1)!.role, "custom");
+    assert.equal((messages.at(-1) as { customType?: string }).customType, CONFIG_NOTICE_TYPE);
+    const delivered = harness.policyDelivery(messages);
+    assert.ok(delivered && "content" in delivered && typeof delivered.content === "string");
+    assert.match(delivered.content, /Intensity: orchestrator/);
     // The request transcript the host handed over is untouched, and nothing was persisted.
     assert.equal(stored.length, 2);
     assert.equal(harness.branch.length, 12, "the three commands wrote their guarded entries");
@@ -542,7 +560,110 @@ test("changes made before a turn arrive as one notice and leave stored history a
     await harness.finish();
     const clean = await harness.turn();
     assert.equal(harness.noticeText(clean), undefined);
-    assert.equal(clean.length, 2);
+    // The system message, the policy delivery and the stored turn; no notice on a quiet turn.
+    assert.equal(clean.length, 3);
+    await harness.shutdown();
+  });
+});
+
+test("a delivery already in the transcript is replaced, never doubled", async () => {
+  await withHarness(models, async (harness) => {
+    await harness.config({ ...defaults, advisors: [advisor], advisorMode: "on" });
+    await harness.start();
+    await harness.turn();
+    await harness.finish();
+    const stale = {
+      role: "custom",
+      customType: POLICY_DELIVERY_TYPE,
+      content: "<delegation_policy_update>\nrevision: stale\n</delegation_policy_update>",
+      display: false,
+      timestamp: 99,
+    } as unknown as Messages[number];
+    const stored = [...harness.transcript(), stale] as Messages;
+    await harness.prompt();
+    const messages = await harness.request(stored);
+    const deliveries = messages.filter(
+      (message) => message.role === "custom" && message.customType === POLICY_DELIVERY_TYPE,
+    );
+    assert.equal(deliveries.length, 1, "only the current delivery survives");
+    const text = JSON.stringify(deliveries[0]);
+    assert.doesNotMatch(text, /revision: stale/);
+    assert.match(text, /revision: [0-9a-f]{12}/);
+    await harness.shutdown();
+  });
+});
+
+test("every request carries the policy once, and a change replaces that copy", async () => {
+  const content = (messages: Messages): string => {
+    const delivery = harnessDelivery(messages);
+    return delivery && "content" in delivery && typeof delivery.content === "string"
+      ? delivery.content
+      : "";
+  };
+  const harnessDelivery = (messages: Messages) =>
+    messages.find(
+      (message) => message.role === "custom" && message.customType === POLICY_DELIVERY_TYPE,
+    );
+  await withHarness(models, async (harness) => {
+    await harness.config({ ...defaults, advisors: [advisor], advisorMode: "on" });
+    await harness.start();
+    const first = await harness.turn();
+    const firstContent = content(first);
+    assert.match(firstContent, /<delegation_policy_update>/);
+    assert.match(firstContent, /revision: [0-9a-f]{12}/);
+    assert.match(firstContent, /Intensity: normal/);
+    // A fixed position right after the system message: the prefix does not move between turns.
+    assert.equal(first[1], harnessDelivery(first));
+    await harness.finish();
+
+    // Unchanged: byte-identical copy, so the provider keeps its cached prefix.
+    const steady = await harness.turn();
+    assert.equal(content(steady), firstContent);
+    await harness.finish();
+
+    // A change replaces that one copy instead of appending another.
+    await harness.config({
+      ...defaults,
+      preference: "intensive",
+      advisors: [advisor],
+      advisorMode: "on",
+    });
+    const stored = harness.transcript();
+    await harness.prompt();
+    const changed = await harness.request(stored);
+    const changedContent = content(changed);
+    assert.notEqual(changedContent, firstContent);
+    assert.match(changedContent, /Model preference: intensive/);
+    assert.equal(
+      changed.filter(
+        (message) => message.role === "custom" && message.customType === POLICY_DELIVERY_TYPE,
+      ).length,
+      1,
+    );
+    assert.equal(stored.length, 2, "the transcript the host handed over is untouched");
+    await harness.shutdown();
+  });
+});
+
+test("with both axes off nothing is delivered, and turning them on delivers one", async () => {
+  await withHarness(models, async (harness) => {
+    await harness.config({
+      ...defaults,
+      intensity: "off",
+      advisors: [advisor],
+      advisorMode: "off",
+    });
+    await harness.start();
+    const off = await harness.turn();
+    assert.equal(harness.policyDelivery(off), undefined);
+    await harness.finish();
+
+    await harness.config({ ...defaults, advisors: [advisor], advisorMode: "on" });
+    await harness.prompt();
+    const enabled = await harness.request();
+    const delivery = harness.policyDelivery(enabled);
+    assert.ok(delivery && "content" in delivery && typeof delivery.content === "string");
+    assert.match(delivery.content, /<delegation_policy>/);
     await harness.shutdown();
   });
 });
@@ -925,20 +1046,23 @@ test("the host conversion sends the notice as user text and the repair keeps it 
     const messages = await harness.request(stored);
     const text = harness.noticeText(messages);
     assert.ok(text);
-    assert.equal(messages.length, 5);
-    assert.equal(messages[3]!.role, "toolResult");
+    assert.equal(messages.length, 6);
+    assert.equal(messages[1]!.role, "custom");
+    assert.equal(messages[4]!.role, "toolResult");
 
     const converted = convertToLlm(messages);
+    // Both extension messages reach the provider as user text: the delivery first, the notice last.
     const last = converted.at(-1)!;
     assert.equal(last.role, "user");
     assert.deepEqual(last.content, [{ type: "text", text }]);
     assert.equal("customType" in last, false);
     assert.equal("details" in last, false);
+    assert.match(JSON.stringify(converted[1]), /<delegation_policy_update>/);
     assert.equal(converted[0]!.role, "system");
     assert.equal(converted[0]!.content, harness.systemContent(messages));
     assert.equal(converted.length, messages.length);
-    assert.equal(converted[2]!.role, "assistant", "the tool call keeps its position");
-    assert.match(JSON.stringify(converted[3]!.content), /file body/);
+    assert.equal(converted[3]!.role, "assistant", "the tool call keeps its position");
+    assert.match(JSON.stringify(converted[4]!.content), /file body/);
     assert.equal(messages.at(-1)!.role, "custom", "conversion does not rewrite the request copy");
 
     const payload: {

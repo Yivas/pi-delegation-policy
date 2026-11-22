@@ -7,13 +7,16 @@ description: Understand the product boundary, fail-closed behavior, local data, 
 
 ## Product boundary
 
-`pi-delegation-policy` requires Pi `0.87.1` or later and adds one policy block while an active
-configuration is valid. Its public `context_with_system` hook refreshes only the marked block in the
-system message before each LLM request, so a change made during a turn applies to the next request.
-The final provider request re-applies the current marked block inside the recognized instruction
-fields of the outgoing payload, so a host or another extension that replaces the system prompt
-afterwards cannot drop it; a payload whose shape is not recognized is left untouched. Turning
-delegation and Advisor off removes only that block. The host system message, tools, context, other
+`pi-delegation-policy` requires Pi `0.87.1` or later and adds one policy while an active configuration
+is valid. It travels two ways in the same request: the marked block inside the system message, which
+the public `context_with_system` hook refreshes before each LLM request, and one message of its own
+right after the system message, carrying the same block and a `revision:` fingerprint. The second one
+is what reaches the model when a host keeps serving the system prompt it built at session start, and
+it is rebuilt on every request rather than stored in the conversation. The final provider request
+re-applies the current marked block inside the recognized instruction fields of the outgoing payload,
+so a host or another extension that replaces the system prompt afterwards cannot drop it; a payload
+whose shape is not recognized is left untouched, and that is the case the delivered message covers.
+Turning delegation and Advisor off removes both copies. The host system message, tools, context, other
 extension sections, and stored conversation are preserved.
 
 The extension never launches children from hooks. Only explicit tools launch through the authorized

@@ -1173,23 +1173,24 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
       );
     } else if (caseName === "policy-update") {
       const firstRequest = requestsByCase.get(caseName)?.[0];
-      const secondRequest = requestsByCase.get(caseName)?.[1];
       const serializedRequests = JSON.stringify(requestsByCase.get(caseName));
       recordAssertion(
         "policy-update: first request uses the current normal policy",
         payloads[0]?.includes("Intensity: normal") &&
           payloads[0]?.includes("pi-delegation-policy:owned"),
       );
+      // The system block is replaced, and the same policy is also delivered once as its own message:
+      // a host that keeps serving the prompt built at session start cannot hide the change.
       recordAssertion(
-        `policy-update: second request replaces normal (blocks=${
+        `policy-update: second request replaces the system policy and delivers it once (blocks=${
           payloads[1]
             ?.match(/<delegation_policy>[\s\S]*?<\/delegation_policy>/g)
             ?.map((block) => block.match(/Intensity: [a-z]+/)?.[0])
             .join(",") ?? "missing"
-        }; messages=${JSON.stringify(secondRequest?.messages?.map((message) => ({ role: message.role, policies: (typeof message.content === "string" ? (message.content.match(/<delegation_policy>[\s\S]*?<\/delegation_policy>/g) ?? []) : []).map((block) => block.match(/Intensity: [a-z]+/)?.[0]) })))})`,
+        })`,
         payloads[1]?.includes("Intensity: orchestrator") &&
           !payloads[1]?.includes("Intensity: normal") &&
-          (payloads[1]?.match(/pi-delegation-policy:owned/g) ?? []).length === 1,
+          (payloads[1]?.match(/<delegation_policy_update>/g) ?? []).length === 1,
       );
       recordAssertion(
         "policy-update: unrelated structured prompt content remains intact",

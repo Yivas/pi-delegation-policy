@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.32.1 - 2026-11-21
+
+### Fixed
+
+- Deliver the policy as one message on every request, so a change reaches the model even when the
+  final-payload rewrite does not recognize the payload shape.
+
 ## 0.32.0 - 2026-11-21
 
 ### Added

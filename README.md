@@ -8,13 +8,13 @@
   <a href="https://www.npmjs.com/package/pi-delegation-policy"><img src="https://img.shields.io/npm/l/pi-delegation-policy" alt="License on npm"></a>
 </p>
 
-[Documentation](https://yivas.github.io/pi-delegation-policy/) · Version **0.32.0**
+[Documentation](https://yivas.github.io/pi-delegation-policy/) · Version **0.32.1**
 
 Requires Pi `0.87.1` or later (`>=0.87.1`). Version `0.14.1` supports Pi `0.84.3` or later.
 
 ## What it does
 
-It adds one policy block to the request, one ephemeral notice after an effective configuration change, and an optional Advisor reminder. It never changes Pi's main model, thinking level, or tool permissions, and no hook launches a child.
+It adds one policy to the request in two places — the marked system block, and one message carrying the same block with a revision, rebuilt on every request and never stored, so a change reaches the model even when the host keeps the system prompt it built at session start — one ephemeral notice after an effective configuration change, and an optional Advisor reminder. It never changes Pi's main model, thinking level, or tool permissions, and no hook launches a child.
 
 It is not a subagent runner. It does not start, route, supervise, or collect delegated work. Only explicit tools reach the authorized host executor: `context_shunt_delegate`, and `consult_advisor` when Advisor launch is `tool`.
 
@@ -25,7 +25,7 @@ The block also asks for a brief on every child: the bounded outcome and its owne
 ## Install
 
 ```bash
-pi install npm:pi-delegation-policy@0.32.0
+pi install npm:pi-delegation-policy@0.32.1
 # restart Pi, or run /reload
 ```
 

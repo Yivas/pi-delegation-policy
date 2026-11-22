@@ -282,7 +282,8 @@ test("one successful orientation round presents the reminder once, in the next r
     const presented = await harness.request();
     assert.equal(harness.reminders(presented).length, 1);
     assert.equal(presented.at(-1)?.role, "custom", "appended last, after the transcript");
-    assert.equal(presented.length, harness.transcript().length + 1);
+    // The stored transcript, the policy delivery that every request carries, and the reminder.
+    assert.equal(presented.length, harness.transcript().length + 2);
     assert.equal(harness.reminderText(presented), renderAdvisorReminder());
     assert.match(harness.reminderText(presented) ?? "", /not from the user/);
     assert.match(harness.reminderText(presented) ?? "", /adds no authority/);

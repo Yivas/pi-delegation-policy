@@ -1637,14 +1637,26 @@ test("context_with_system applies current branch policy to the next LLM request 
     };
     const policyIn = (messages: typeof original | undefined): string => {
       if (!messages) throw new Error("The hook returns the complete request transcript.");
-      assert.equal(messages.length, original.length);
+      // Every request carries exactly one delivery, right after the system message. The comparison
+      // of the transcript ignores it, and requires that two never travel at once.
+      const isDelivery = (message: (typeof messages)[number]): boolean =>
+        "content" in message &&
+        typeof message.content === "string" &&
+        message.content.includes("<delegation_policy_update>");
+      assert.equal(
+        messages.filter(isDelivery).length,
+        1,
+        "one request carries exactly one delivery",
+      );
+      const withoutDelivery = messages.filter((message) => !isDelivery(message));
+      assert.equal(withoutDelivery.length, original.length);
       const system = firstSystemMessage(messages);
       const content = `${system.content}\n${system.sections?.addendum ?? ""}`;
       assert.equal(content.includes("Available tools:\n- read(path)"), true);
       assert.equal(system.sections?.tools, "Preserve this independent section.");
       assert.ok(content.includes("Other addendum instructions."));
       assert.ok(content.includes("Foreign extension instructions."));
-      assert.deepEqual(messages.slice(1), original.slice(1));
+      assert.deepEqual(withoutDelivery.slice(1), original.slice(1));
       return (
         content.match(
           /<delegation_policy>\n<!-- pi-delegation-policy:owned -->[\s\S]*?<\/delegation_policy>/,
@@ -1727,7 +1739,16 @@ test("context_with_system applies current branch policy to the next LLM request 
       2,
     );
     assert.ok(firstSystemContent(normalMessages).includes(foreignBlock));
-    assert.deepEqual(normalMessages.slice(1), original.slice(1));
+    // Every request carries the delivered block right after the system message, and the rest is the
+    // transcript the host handed over.
+    const deliveredNormal = normalMessages[1]!;
+    assert.ok(
+      "content" in deliveredNormal &&
+        typeof deliveredNormal.content === "string" &&
+        deliveredNormal.content.includes("<delegation_policy_update>") &&
+        deliveredNormal.content.includes("Intensity: normal"),
+    );
+    assert.deepEqual(normalMessages.slice(2), original.slice(1));
 
     const missingSystem = await handlers.get("context_with_system")?.(
       { type: "context_with_system", messages: [] },
@@ -3600,7 +3621,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.32.0");
+  assert.equal(packageJson.version, "0.32.1");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
   assert.deepEqual(packageJson.pi.subagents.agents, ["./agents"]);

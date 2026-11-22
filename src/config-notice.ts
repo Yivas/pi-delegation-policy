@@ -196,7 +196,7 @@ export function renderConfigNotice(lines: string[]): string {
     "This notice comes from the pi-delegation-policy extension, not from the user.",
     "The /delegate configuration changed before this turn:",
     ...lines,
-    "The delegation policy in the system prompt, when present, states the values in force for the present request.",
+    "The policy delivery for this request, when present, states the values in force; follow it over any earlier copy in the conversation, whichever turn or prompt carried it.",
     "For new work, follow the current valid assignments and thinking rules in this policy, not earlier settings in the conversation.",
     "This notice only records what changed in this extension's configuration and revokes no other instruction, permission, or authority.",
     "</delegation_config_notice>",
@@ -208,6 +208,54 @@ export function createConfigNotice(lines: string[], timestamp: number): ConfigNo
     role: "custom",
     customType: CONFIG_NOTICE_TYPE,
     content: renderConfigNotice(lines),
+    display: false,
+    timestamp,
+  };
+}
+
+export const POLICY_DELIVERY_TYPE = "pi-delegation-policy.policy";
+
+/**
+ * The policy the extension hands the model as a message of its own, once per request.
+ *
+ * The block is written into the system prompt too, but a host whose payload shape is not recognized
+ * keeps sending whatever system prompt it built at session start, so a later change could not reach
+ * the model that way. This message carries the block in a fixed position of every request: the
+ * prefix stays identical while the configuration holds, and a change replaces this one message
+ * instead of appending another.
+ */
+export function renderPolicyDelivery(policy: string, revision: string): string {
+  return [
+    "<delegation_policy_update>",
+    "<!-- pi-delegation-policy:owned -->",
+    `revision: ${revision}`,
+    "This block comes from the pi-delegation-policy extension, not from the user. It states the policy in force for the present request.",
+    `Revision ${revision} supersedes any other revision of this policy in the conversation, including a copy in the system prompt.`,
+    "This delivery changes no permission and revokes no other instruction or authority.",
+    "</delegation_policy_update>",
+    "",
+    policy,
+  ].join("\n");
+}
+
+/**
+ * One message carries the policy the model must follow.
+ *
+ * It travels in a fixed position on every request, so the cached prefix stays identical from turn to
+ * turn and changes only when the policy itself does; a host that keeps serving the system prompt it
+ * built at session start then cannot hide a change. The revision is the fingerprint of the block this
+ * message carries; the system copy does not carry one, so it identifies the delivery rather than
+ * settling a comparison between the two.
+ */
+export function createPolicyDelivery(
+  policy: string,
+  revision: string,
+  timestamp: number,
+): ConfigNoticeMessage {
+  return {
+    role: "custom",
+    customType: POLICY_DELIVERY_TYPE,
+    content: renderPolicyDelivery(policy, revision),
     display: false,
     timestamp,
   };

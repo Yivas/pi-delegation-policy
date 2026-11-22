@@ -9,7 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import {
   appendGuardedSessionState,
@@ -56,7 +56,9 @@ import {
   type AdvisorReminderMessage,
 } from "./advisor-reminders.ts";
 import {
+  POLICY_DELIVERY_TYPE,
   createConfigNotice,
+  createPolicyDelivery,
   noticeLines,
   projectNoticeConfig,
   type ConfigNoticeMessage,
@@ -1805,6 +1807,15 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         (sections ??= {}).addendum = addendum;
       }
 
+      // One message carries the policy on every request, always in the same position and with the
+      // same text while the configuration holds, so the cached prefix does not move; a change
+      // replaces it instead of appending another copy.
+      const revision = policy
+        ? createHash("sha256").update(policy).digest("hex").slice(0, 12)
+        : undefined;
+      const policyDelivery =
+        policy && revision ? createPolicyDelivery(policy, revision, Date.now()) : undefined;
+
       // Computed after the early return, so a request this hook cannot rewrite never consumes the
       // one presentation of the task.
       const reminder = advisorReminderMessage(state);
@@ -1816,7 +1827,17 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             content,
             ...(sections && Object.keys(sections).length > 0 ? { sections } : {}),
           },
-          ...event.messages.slice(1),
+          // Older deliveries are ephemeral: only the current block is handed over, so a transcript
+          // that already carries one never accumulates a second.
+          // The current delivery keeps a fixed position right after the system message, so the
+          // prefix is identical across turns; an older copy in the transcript is dropped first.
+          ...(policyDelivery ? [policyDelivery] : []),
+          ...event.messages
+            .slice(1)
+            .filter(
+              (message) =>
+                !("customType" in message && message.customType === POLICY_DELIVERY_TYPE),
+            ),
           // Appended last, never inside the system block: a tool call stays adjacent to its result,
           // the stored transcript prefix of the request is unchanged, and the host already sends
           // user-role text after a tool result for its own custom messages.
