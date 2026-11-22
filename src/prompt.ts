@@ -217,7 +217,11 @@ function advisorFlagsLine(state: RuntimeState): string {
  * profile while a role line names another.
  */
 function advisorPolicy(launch: AdvisorLaunch, count: number, profileStated = false): string {
-  return `Consulting is part of this policy, not delegated execution; the Advisor never implements or runs tool-dependent checks, and direct-work guidance does not rule it out. Consult after orientation, before the first edit or state-changing command, any interpretation, approach or assumption, a substantive analysis or recommendation, a recurring error or stalled progress, and any change of approach; before declaring a multi-step task done, make results durable and ask for remaining correctness risks or overlooked assumptions, not approval; an agreed interface does not replace the first checkpoint. No call for facts already available, short reactive steps, or mechanics inside a settled approach; reuse advice, and a consulted failure is not a new trigger.
+  return `Consulting is part of this policy, not delegated execution; the Advisor never implements or runs tool-dependent checks, and direct-work guidance does not rule it out.
+- If you are about to make the first change of a task that involves a decision (which approach, what the root cause is, how far the change should reach), consult first.
+- If the same error comes back or progress stalls, consult before trying again.
+- If you are about to change approach, publish, or declare a multi-step task done, consult first; make the result durable before that last call and ask for remaining risks, not approval.
+- Otherwise do not: skip short reactive steps, mechanics inside a settled approach, and facts you already have; reuse earlier advice.
 
 ${
   launch === "tool"

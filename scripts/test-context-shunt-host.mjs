@@ -934,6 +934,9 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
     if (caseName === "advisor-reminder") {
       await rpc.prompt("/delegate advisor 1 model loopback/synthetic");
       await rpc.prompt("/delegate advisor on");
+      // The case measures the reminder, not the launch surface: role launch is the mode whose
+      // launcher this synthetic host provides.
+      await rpc.prompt("/delegate advisor launch role");
     }
 
     if (["mutation", "abort", "concurrent"].includes(caseName)) {

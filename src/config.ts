@@ -1213,7 +1213,7 @@ export function resolveDelegateState(
     repeatedRoleEntries: resolvedEntries.repeated,
     ...(advisor ? { advisor } : {}),
     advisors,
-    advisorLaunch: session.advisorLaunch ?? defaults.advisorLaunch ?? "role",
+    advisorLaunch: session.advisorLaunch ?? defaults.advisorLaunch ?? "tool",
     advisorMode: resolveAdvisorMode(defaults, session),
     thinking,
     contextShunt: resolveShunt(defaults, session, intensity),

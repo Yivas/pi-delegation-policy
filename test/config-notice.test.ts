@@ -332,7 +332,7 @@ test("the notice projection keeps effective values and their canonical order", (
     thinking: { small: "range:low..high", medium: null, large: null, uiDesign: null },
     advisors: [{ model: "example/advisor" }],
     advisorMode: "on",
-    advisorLaunch: "role",
+    advisorLaunch: "tool",
     context: { mode: "off", readerEnabled: false, readerRole: "small", answerMaxBytes: 8192 },
   });
 });
@@ -548,7 +548,12 @@ test("a registry another extension fills after start refreshes the footer withou
 
 test("changes made before a turn arrive as one notice and leave stored history alone", async () => {
   await withHarness(models, async (harness) => {
-    await harness.config({ ...defaults, advisors: [advisor], advisorMode: "off" });
+    await harness.config({
+      ...defaults,
+      advisors: [advisor],
+      advisorMode: "off",
+      advisorLaunch: "role",
+    });
     await harness.start();
     await harness.turn();
     await harness.finish();
@@ -1027,7 +1032,12 @@ test("a global change that reaches the session is reported on the next turn", as
 
 test("session usage changes neither the Advisor context nor the notice", async () => {
   await withHarness(models, async (harness) => {
-    await harness.config({ ...defaults, advisors: [advisor], advisorMode: "on" });
+    await harness.config({
+      ...defaults,
+      advisors: [advisor],
+      advisorMode: "on",
+      advisorLaunch: "role",
+    });
     await harness.start();
     const first = await harness.turn();
     assert.match(harness.policyBlock(first), /Context: fresh; do not send this conversation/);

@@ -27,11 +27,10 @@ import {
   type LaunchCorrectionSaveResult,
 } from "./launch-correction-mode.ts";
 import {
-  ADVISOR_REMINDER_MODES,
-  type AdvisorReminderMode,
-  type AdvisorReminderSaveResult,
-  DEFAULT_ADVISOR_REMINDER_MODE,
-} from "./advisor-reminders.ts";
+  type AdvisorLevel,
+  type AdvisorLevelSaveResult,
+  DEFAULT_ADVISOR_LEVEL,
+} from "./advisor-level.ts";
 import { isAdvisorEnabled } from "./runtime.ts";
 import { buildPolicyPreview } from "./prompt.ts";
 import {
@@ -108,7 +107,7 @@ const FIELD_IDS = [
   "advisor",
   "advisor2",
   "advisor3",
-  "advisorReminder",
+  "advisorLevel",
   "launchCorrection",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
@@ -228,7 +227,7 @@ type PanelMode =
   | { kind: "settings" }
   | { kind: "enum"; field: EnumField; selected: number }
   | { kind: "correction"; selected: number }
-  | { kind: "reminder"; selected: number }
+  | { kind: "nudge"; selected: number }
   | { kind: "provider"; index: number; selected: number }
   | { kind: "advisor-read"; index: number; selected: number }
   | { kind: "extension"; index: number; provider: string; selected: number }
@@ -305,12 +304,12 @@ export interface DelegatePanelOptions {
   launchCorrection?: LaunchCorrectionMode;
   /** Stores the global mode; Apply and Save both write a changed value before their own step. */
   onSaveLaunchCorrection?: (mode: LaunchCorrectionMode) => Promise<LaunchCorrectionSaveResult>;
-  /** Global Advisor reminder mode; absent means `remind`. */
-  advisorReminder?: AdvisorReminderMode;
-  /** The companion is unreadable or invalid, so the shown mode is a suspension, not a choice. */
-  advisorReminderInvalid?: boolean;
-  /** Stores the global reminder mode; Apply and Save both write a changed value first. */
-  onSaveAdvisorReminder?: (mode: AdvisorReminderMode) => Promise<AdvisorReminderSaveResult>;
+  /** Global Advisor nudge level as the companion holds it; absent means the file sets none. */
+  advisorLevel?: AdvisorLevel;
+  /** The companion is unreadable or invalid, so the shown level is a suspension, not a choice. */
+  advisorLevelInvalid?: boolean;
+  /** Stores the global nudge level; Apply and Save both write a changed value first. */
+  onSaveAdvisorLevel?: (level: AdvisorLevel) => Promise<AdvisorLevelSaveResult>;
   /** Installed user packages that pass the identity check, offered as provider extensions. */
   extensionCandidates?: readonly ProviderPackage[];
   /** Providers that an extension registered in this session; only these offer the step. */
@@ -372,9 +371,16 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   advisor3: "Advisor 3",
   advisorLaunch: "Advisor launch",
   advisorMode: "Advisor mode",
-  advisorReminder: "Advisor reminder",
+  advisorLevel: "Advisor nudge",
   launchCorrection: "Launch correction",
 };
+
+/**
+ * The level is global here, so the hint and the picker say the same thing: how hard the policy
+ * pushes, and where a session or per-model override is set instead of this file.
+ */
+const NUDGE_DESCRIPTION =
+  "How hard the policy pushes the main agent to consult Advisors. Global for every session; /delegate advisor level sets a session or per-model override.";
 
 /** One alignment column for every field value, wide enough for the longest label. */
 const SETTINGS_LABEL_WIDTH = Math.max(
@@ -425,8 +431,7 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
     "Optional model consulted alongside the others; each advisor adds a consultation at every checkpoint.",
   advisorLaunch:
     "Role asks the main agent to launch; tool uses explicit consult_advisor. Neither launches from hooks.",
-  advisorReminder:
-    "Global for every session; Apply or Save stores it. On adds one short reminder per task while an Advisor can be consulted; it launches nothing.",
+  advisorLevel: NUDGE_DESCRIPTION,
   launchCorrection:
     "Global for every session; Apply or Save stores it. Block refuses the launches the check would correct, to measure the original behavior.",
 };
@@ -437,11 +442,14 @@ const CORRECTION_CHOICES: Record<LaunchCorrectionMode, string> = {
   correct: "correct — fix the launch and tell the agent what was applied",
   block: "block — refuse those launches and measure the original behavior",
 };
-const REMINDER_DESCRIPTION =
-  "Global for every session, not a session setting: Apply or Save stores it in delegation-policy.advisor-reminders.json. On adds at most one short reminder per operative task, only while a valid Advisor and its launcher are active. It launches no consultation, forces none, and adds no authority; off adds nothing.";
-const REMINDER_CHOICES: Record<AdvisorReminderMode, string> = {
-  remind: "remind — one short reminder per task when a consultation is possible",
-  off: "off — never add the reminder",
+/** Offered in this order: the default first, so Enter keeps it, and the silent level last. */
+const NUDGE_LEVELS: readonly AdvisorLevel[] = ["standard", "strict", "off"];
+const NUDGE_CHOICES: Record<AdvisorLevel, string> = {
+  standard:
+    "standard — rules, one reminder per task, and the checkpoint only records when it would have stopped a change (default)",
+  strict:
+    "strict — adds a hard rule and stops the first substantive change of a task once until an Advisor is consulted or the call is repeated",
+  off: "off — only the written rules: no reminder and no checkpoint; Advisors stay available",
 };
 
 /**
@@ -484,10 +492,10 @@ function roleEntriesFailureText(result: RoleEntriesSaveResult): string {
     : "Could not save the optional role entries.";
 }
 
-function reminderFailureText(result: AdvisorReminderSaveResult): string {
+function advisorLevelFailureText(result: AdvisorLevelSaveResult): string {
   return result === "unknown-state"
-    ? "Advisor reminder file is unreadable or invalid; fix or remove delegation-policy.advisor-reminders.json, then retry."
-    : "Could not save the Advisor reminder mode.";
+    ? "Advisor nudge level file is unreadable or invalid; fix or remove delegation-policy.advisor-level.json, then retry."
+    : "Could not save the Advisor nudge level.";
 }
 
 const ACTION_LABELS: Record<PanelAction, string> = {
@@ -634,7 +642,7 @@ export class DelegatePanel implements Component, Focusable {
   private readonly onDone: DelegatePanelOptions["onDone"];
   private readonly onSaveAdmissions: DelegatePanelOptions["onSaveAdmissions"];
   private readonly onSaveLaunchCorrection: DelegatePanelOptions["onSaveLaunchCorrection"];
-  private readonly onSaveAdvisorReminder: DelegatePanelOptions["onSaveAdvisorReminder"];
+  private readonly onSaveAdvisorLevel: DelegatePanelOptions["onSaveAdvisorLevel"];
   private readonly onSaveRoleEntries: DelegatePanelOptions["onSaveRoleEntries"];
   private readonly onSaveAdvisorRead: DelegatePanelOptions["onSaveAdvisorRead"];
   private advisorRead: boolean[];
@@ -648,14 +656,15 @@ export class DelegatePanel implements Component, Focusable {
   private draftAdmissions: ProviderAdmissions;
   private launchCorrection: LaunchCorrectionMode;
   private draftLaunchCorrection: LaunchCorrectionMode;
-  private advisorReminder: AdvisorReminderMode;
-  private draftAdvisorReminder: AdvisorReminderMode;
-  private readonly advisorReminderInvalid: boolean;
+  /** As the companion holds it: absent means the file sets no global level. */
+  private advisorLevel: AdvisorLevel | undefined;
+  private draftAdvisorLevel: AdvisorLevel;
+  private readonly advisorLevelInvalid: boolean;
   /** Global steps already on disk from this editor, so a later failure never denies them. */
   private readonly savedGlobals = new Map<
     | "admissions"
     | "launchCorrection"
-    | "advisorReminder"
+    | "advisorLevel"
     | "roleEntries"
     | "advisorRead"
     | "advisorFilter",
@@ -712,12 +721,12 @@ export class DelegatePanel implements Component, Focusable {
     this.draftAdmissions = structuredClone(options.admissions ?? {});
     this.launchCorrection = options.launchCorrection ?? DEFAULT_LAUNCH_CORRECTION_MODE;
     this.draftLaunchCorrection = this.launchCorrection;
-    this.onSaveAdvisorReminder = options.onSaveAdvisorReminder;
+    this.onSaveAdvisorLevel = options.onSaveAdvisorLevel;
     this.roleEntries = copyRoleEntries(options.roleEntries ?? emptyRoleEntries());
     this.draftRoleEntries = copyRoleEntries(this.roleEntries);
-    this.advisorReminder = options.advisorReminder ?? DEFAULT_ADVISOR_REMINDER_MODE;
-    this.draftAdvisorReminder = this.advisorReminder;
-    this.advisorReminderInvalid = options.advisorReminderInvalid ?? false;
+    this.advisorLevel = options.advisorLevel;
+    this.draftAdvisorLevel = options.advisorLevel ?? DEFAULT_ADVISOR_LEVEL;
+    this.advisorLevelInvalid = options.advisorLevelInvalid ?? false;
   }
 
   get focused(): boolean {
@@ -758,8 +767,8 @@ export class DelegatePanel implements Component, Focusable {
     return this.launchCorrection !== this.draftLaunchCorrection;
   }
 
-  private advisorReminderDirty(): boolean {
-    return this.advisorReminder !== this.draftAdvisorReminder;
+  private advisorLevelDirty(): boolean {
+    return this.draftAdvisorLevel !== (this.advisorLevel ?? DEFAULT_ADVISOR_LEVEL);
   }
 
   private roleEntriesDirty(): boolean {
@@ -825,7 +834,7 @@ export class DelegatePanel implements Component, Focusable {
     return (
       this.admissionsDirty() ||
       this.launchCorrectionDirty() ||
-      this.advisorReminderDirty() ||
+      this.advisorLevelDirty() ||
       this.roleEntriesDirty() ||
       this.advisorReadDirty() ||
       this.advisorFilterDirty()
@@ -914,7 +923,7 @@ export class DelegatePanel implements Component, Focusable {
     if (this.mode.kind === "settings") this.handleSettingsInput(data);
     else if (this.mode.kind === "enum") this.handleEnumInput(data);
     else if (this.mode.kind === "correction") this.handleCorrectionInput(data);
-    else if (this.mode.kind === "reminder") this.handleReminderInput(data);
+    else if (this.mode.kind === "nudge") this.handleNudgeInput(data);
     else if (this.mode.kind === "provider") this.handleProviderInput(data);
     else if (this.mode.kind === "advisor-read") this.handleAdvisorReadInput(data);
     else if (this.mode.kind === "extension") this.handleExtensionInput(data);
@@ -951,7 +960,7 @@ export class DelegatePanel implements Component, Focusable {
     if (mode.kind === "settings") return this.renderSettings(width, budget);
     if (mode.kind === "enum") return this.renderEnum(width, budget, mode);
     if (mode.kind === "correction") return this.renderCorrection(width, budget, mode);
-    if (mode.kind === "reminder") return this.renderReminder(width, budget, mode);
+    if (mode.kind === "nudge") return this.renderNudge(width, budget, mode);
     if (mode.kind === "provider") return this.renderProvider(width, budget, mode);
     if (mode.kind === "advisor-read") return this.renderAdvisorRead(width, budget, mode);
     if (mode.kind === "extension") return this.renderExtension(width, budget, mode);
@@ -1039,8 +1048,8 @@ export class DelegatePanel implements Component, Focusable {
           ? "Delegation policy / Advisor continuity"
           : this.mode.kind === "correction"
             ? "Delegation policy / Launch correction (global)"
-            : this.mode.kind === "reminder"
-              ? "Delegation policy / Advisor reminder (global)"
+            : this.mode.kind === "nudge"
+              ? "Delegation policy / Advisor nudge (global)"
               : this.mode.kind === "advanced" ||
                   this.mode.kind === "advanced-reader-enabled" ||
                   this.mode.kind === "advanced-reader-role" ||
@@ -1170,12 +1179,12 @@ export class DelegatePanel implements Component, Focusable {
         : effective.contextShunt.mode;
     if (field === "contextAdvanced")
       return `reader ${effective.contextShunt.readerEnabled ? "on" : "off"}; ${effective.contextShunt.readerRole}; ${effective.contextShunt.answerMaxBytes} bytes`;
-    // An unreadable companion suspends the reminder; it is not a choice the user made, so the row
+    // An unreadable companion suspends the level; it is not a choice the user made, so the row
     // says so until a different value is staged for the file that would replace it.
-    if (field === "advisorReminder")
-      return this.advisorReminderInvalid && !this.advisorReminderDirty()
+    if (field === "advisorLevel")
+      return this.advisorLevelInvalid && !this.advisorLevelDirty()
         ? "Unavailable/Suspended · global"
-        : `${this.draftAdvisorReminder} · global`;
+        : `${this.draftAdvisorLevel} · ${this.advisorLevel === undefined ? "default" : "global"}`;
     if (field === "launchCorrection")
       return this.draftLaunchCorrection === "block"
         ? "block · global · measurement"
@@ -1481,7 +1490,7 @@ export class DelegatePanel implements Component, Focusable {
     }
     if (field === "advisorLaunch")
       return [
-        "built-in role",
+        "built-in tool",
         `global ${this.global.advisorLaunch ?? "—"}`,
         `session ${this.draft.advisorLaunch ?? "inherit"}`,
       ];
@@ -1499,11 +1508,13 @@ export class DelegatePanel implements Component, Focusable {
         `session ${this.draft.preference ?? "inherit"}`,
       ];
     }
-    if (field === "advisorReminder")
+    if (field === "advisorLevel")
       return [
-        `built-in ${DEFAULT_ADVISOR_REMINDER_MODE}`,
-        `global ${this.advisorReminderInvalid ? "unreadable or invalid" : this.advisorReminder}`,
-        "not a session setting",
+        `built-in ${DEFAULT_ADVISOR_LEVEL}`,
+        `global ${
+          this.advisorLevelInvalid ? "unreadable or invalid" : (this.advisorLevel ?? "none")
+        }`,
+        "session or model override: /delegate advisor level",
       ];
     if (field === "launchCorrection")
       return [
@@ -1652,16 +1663,15 @@ export class DelegatePanel implements Component, Focusable {
     }
   }
 
-  private handleReminderInput(data: string): void {
-    if (this.mode.kind !== "reminder") return;
-    const count = ADVISOR_REMINDER_MODES.length;
+  private handleNudgeInput(data: string): void {
+    if (this.mode.kind !== "nudge") return;
+    const count = NUDGE_LEVELS.length;
     if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
     else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
     else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
       this.mode = { kind: "settings" };
     else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
-      this.draftAdvisorReminder =
-        ADVISOR_REMINDER_MODES[this.mode.selected] ?? this.draftAdvisorReminder;
+      this.draftAdvisorLevel = NUDGE_LEVELS[this.mode.selected] ?? this.draftAdvisorLevel;
       this.mode = { kind: "settings" };
     }
   }
@@ -1754,16 +1764,16 @@ export class DelegatePanel implements Component, Focusable {
     ];
   }
 
-  private renderReminder(
+  private renderNudge(
     width: number,
     budget: number,
-    mode: Extract<PanelMode, { kind: "reminder" }>,
+    mode: Extract<PanelMode, { kind: "nudge" }>,
   ): string[] {
-    const blocks = ADVISOR_REMINDER_MODES.map((value, index) => [
-      selectedLine(this.theme, REMINDER_CHOICES[value], width, index === mode.selected),
+    const blocks = NUDGE_LEVELS.map((value, index) => [
+      selectedLine(this.theme, NUDGE_CHOICES[value], width, index === mode.selected),
     ]);
     // Reserve the choices first, so a wrapped explanation never hides the selection.
-    const description = wrapTextWithAnsi(REMINDER_DESCRIPTION, width).slice(
+    const description = wrapTextWithAnsi(NUDGE_DESCRIPTION, width).slice(
       0,
       Math.max(0, budget - Math.min(blocks.length, budget)),
     );
@@ -1826,7 +1836,7 @@ export class DelegatePanel implements Component, Focusable {
           (mode.field === "intensity"
             ? "off"
             : mode.field === "advisorLaunch"
-              ? "role"
+              ? "tool"
               : mode.field === "advisorMode"
                 ? "with-delegation"
                 : "standard"));
@@ -2267,10 +2277,10 @@ export class DelegatePanel implements Component, Focusable {
       this.mode = { kind: "thinking", field: item, selected: this.thinkingSelection(item) };
       return;
     }
-    if (item === "advisorReminder") {
+    if (item === "advisorLevel") {
       this.mode = {
-        kind: "reminder",
-        selected: ADVISOR_REMINDER_MODES.indexOf(this.draftAdvisorReminder),
+        kind: "nudge",
+        selected: NUDGE_LEVELS.indexOf(this.draftAdvisorLevel),
       };
       return;
     }
@@ -3097,22 +3107,19 @@ export class DelegatePanel implements Component, Focusable {
   }
 
   /**
-   * The reminder mode is global, so Apply and Save both write a changed value before their own
+   * The nudge level is global, so Apply and Save both write a changed value before their own
    * step. A failure stops that step: an unreadable file is reported instead of overwritten.
    */
-  private async saveAdvisorReminder(): Promise<AdvisorReminderSaveResult> {
-    let result: AdvisorReminderSaveResult;
+  private async saveAdvisorLevel(): Promise<AdvisorLevelSaveResult> {
+    let result: AdvisorLevelSaveResult;
     try {
-      result = (await this.onSaveAdvisorReminder?.(this.draftAdvisorReminder)) ?? "failed";
+      result = (await this.onSaveAdvisorLevel?.(this.draftAdvisorLevel)) ?? "failed";
     } catch {
       result = "failed";
     }
     if (result === "saved" || result === "unchanged") {
-      this.advisorReminder = this.draftAdvisorReminder;
-      this.savedGlobals.set(
-        "advisorReminder",
-        `the Advisor reminder mode (${this.draftAdvisorReminder})`,
-      );
+      this.advisorLevel = this.draftAdvisorLevel;
+      this.savedGlobals.set("advisorLevel", `the Advisor nudge level (${this.draftAdvisorLevel})`);
     }
     return result;
   }
@@ -3159,12 +3166,12 @@ export class DelegatePanel implements Component, Focusable {
         return false;
       }
     }
-    if (this.advisorReminderDirty()) {
-      const result = await this.saveAdvisorReminder();
+    if (this.advisorLevelDirty()) {
+      const result = await this.saveAdvisorLevel();
       if (result !== "saved" && result !== "unchanged") {
         this.message = {
           kind: "error",
-          text: `${reminderFailureText(result)}${
+          text: `${advisorLevelFailureText(result)}${
             savedClause(this.savedGlobalsList()) || " Nothing else was changed."
           }`,
         };

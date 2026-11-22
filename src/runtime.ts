@@ -96,6 +96,8 @@ export type RuntimeState = {
   advisorLevel?: ResolvedAdvisorLevel;
   /** The level companion as read, so a write preserves the level, models and context it holds. */
   advisorLevelFile?: AdvisorLevelFile;
+  /** The level companion was unreadable or invalid, so the level above is suspended. */
+  advisorLevelInvalid?: boolean;
   /** Who writes a consultation brief: the extension from what it observed, or the agent. */
   advisorContextMode?: AdvisorContextMode;
   /** "provider/id" of the host's current main model; absent when it cannot be named. */
@@ -366,6 +368,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
       model: mainModel,
     }),
     advisorLevelFile: level.file,
+    advisorLevelInvalid: level.invalid,
     advisorContextMode: level.file.context ?? DEFAULT_ADVISOR_CONTEXT_MODE,
     ...(mainModel === undefined ? {} : { mainModel }),
     modelStatuses: new Map(),

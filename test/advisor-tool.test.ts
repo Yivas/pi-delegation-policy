@@ -805,7 +805,7 @@ test("schema 9 preserves the first advisor on downgrade and isolates stale exten
         schemaVersion: CURRENT_SCHEMA_VERSION,
       });
       assert.deepEqual(effective.advisors, [first]);
-      assert.equal(effective.advisorLaunch, "role");
+      assert.equal(effective.advisorLaunch, "tool");
       const state: RuntimeState = {
         global: loaded.defaults,
         session: { schemaVersion: CURRENT_SCHEMA_VERSION },

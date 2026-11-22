@@ -1259,7 +1259,7 @@ test("Advisor guidance names observable checkpoints and asks for a brief in fres
 
   const configured = runtime(
     { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
-    { ...defaults, advisor, thinking: { advisor: { level: "high" } } },
+    { ...defaults, advisor, advisorLaunch: "role", thinking: { advisor: { level: "high" } } },
   );
   validateRuntime(
     context({
@@ -1279,17 +1279,16 @@ test("Advisor guidance names observable checkpoints and asks for a brief in fres
   );
   assert.doesNotMatch(advisorSection, /MUST/);
   for (const expected of [
-    "Consult after orientation, before the first edit or state-changing command",
-    "any interpretation, approach or assumption",
-    "a recurring error or stalled progress",
-    "any change of approach",
-    "before declaring a multi-step task done",
-    "remaining correctness risks or overlooked assumptions, not approval",
+    "make the first change of a task that involves a decision",
+    "If the same error comes back or progress stalls, consult before trying again",
+    "If you are about to change approach, publish, or declare a multi-step task done",
+    "ask for remaining risks, not approval",
+    "skip short reactive steps, mechanics inside a settled approach, and facts you already have",
+    "reuse earlier advice",
     "not delegated execution",
     'agent "pi-delegation-policy.advisor" exactly',
     'never a host agent or alias named "advisor" or "oracle"',
     "in the background unless the host or the user requires foreground",
-    "No call for facts already available",
     "never switch silently",
     "user decisions remain theirs",
   ]) {
@@ -3820,7 +3819,7 @@ test("schema 2 and schema 3 migrate in memory while schema 4 preserves ordinary 
     schemaVersion: CURRENT_SCHEMA_VERSION,
     intensity: "off",
     advisorMode: "with-delegation",
-    advisorLaunch: "role",
+    advisorLaunch: "tool",
     preference: "standard",
     small: null,
     medium,
@@ -5232,7 +5231,7 @@ test("the reading step is offered after an Advisor model and writes its flag", a
   const saved: boolean[][] = [];
   const harness = createPanelHarness({
     rows: 30,
-    global: { ...defaults, advisor, advisorMode: "on" },
+    global: { ...defaults, advisor, advisorMode: "on", advisorLaunch: "role" },
     onSaveAdvisorRead: async (flags) => {
       saved.push(flags);
       return "saved";
@@ -5420,7 +5419,7 @@ test("two Advisors that share a model keep their own reading flag", () => {
   const shared = { provider: "example", model: "advisor" };
   const state = runtime(
     { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
-    { ...defaults, advisors: [shared, { ...shared }], advisorMode: "on" },
+    { ...defaults, advisors: [shared, { ...shared }], advisorMode: "on", advisorLaunch: "role" },
   );
   state.advisorRead = [true, false];
   assert.equal(advisorAgentNameFor(state, shared, 0).includes("advisor-read"), true);
@@ -5586,7 +5585,7 @@ test("each flagged Advisor carries the rewrite rule under its role, in both laun
 test("a slot can be flagged and able to read without one erasing the other", () => {
   const state = runtime(
     { schemaVersion: CURRENT_SCHEMA_VERSION, intensity: "normal" },
-    { ...defaults, advisors: [advisor], advisorMode: "on" },
+    { ...defaults, advisors: [advisor], advisorMode: "on", advisorLaunch: "role" },
   );
   validateRuntime(
     context({

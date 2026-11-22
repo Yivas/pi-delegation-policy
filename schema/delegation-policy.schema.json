@@ -50,7 +50,7 @@
     },
     "advisorLaunch": {
       "enum": ["role", "tool"],
-      "default": "role"
+      "default": "tool"
     }
   },
   "allOf": [

@@ -11,7 +11,7 @@ import { ANTHROPIC_PROVIDER_PACKAGE } from "./advisor-anthropic-provider.ts";
 import { DelegatePanel, type DelegatePanelResult } from "./delegate-panel.ts";
 import { getProviderAdmissionsPath, writeProviderAdmissions } from "./provider-admissions.ts";
 import { getLaunchCorrectionPath, writeLaunchCorrectionMode } from "./launch-correction-mode.ts";
-import { getAdvisorRemindersPath, writeAdvisorReminderMode } from "./advisor-reminders.ts";
+import { emptyAdvisorLevelFile, writeAdvisorLevelFile } from "./advisor-level.ts";
 import { writeRoleEntries } from "./role-entries.ts";
 import { trimAdvisorRead, writeAdvisorRead } from "./advisor-read-mode.ts";
 import { trimAdvisorFilter, writeAdvisorFilters } from "./advisor-filter-mode.ts";
@@ -93,8 +93,8 @@ export async function openDelegateEditor(
         advisorRead: state.advisorRead,
         advisorFilter: state.advisorFilters,
         launchCorrection: state.launchCorrection,
-        advisorReminder: state.advisorReminder,
-        advisorReminderInvalid: state.advisorReminderInvalid,
+        advisorLevel: state.advisorLevelFile?.level,
+        advisorLevelInvalid: state.advisorLevelInvalid,
         extensionCandidates,
         extensionProviders,
         ...(continuity
@@ -139,12 +139,21 @@ export async function openDelegateEditor(
           if (result === "saved" || result === "unchanged") state.launchCorrection = mode;
           return result;
         },
-        onSaveAdvisorReminder: async (mode) => {
-          const result = await writeAdvisorReminderMode(
-            mode,
-            getAdvisorRemindersPath(getGlobalConfigPath()),
+        onSaveAdvisorLevel: async (level) => {
+          // The file also holds the per-model overrides and the brief mode, and a save here only
+          // states the global level.
+          const result = await writeAdvisorLevelFile(
+            { ...(state.advisorLevelFile ?? emptyAdvisorLevelFile()), level },
+            getGlobalConfigPath(),
           );
-          if (result === "saved" || result === "unchanged") state.advisorReminder = mode;
+          if (result === "saved" || result === "unchanged") {
+            // The resolved level also follows the branch entry and the main model, and loadRuntime
+            // already owns that rule; re-resolving it here would duplicate it.
+            const refreshed = await loadRuntime(ctx);
+            state.advisorLevel = refreshed.advisorLevel;
+            state.advisorLevelFile = refreshed.advisorLevelFile;
+            state.advisorLevelInvalid = refreshed.advisorLevelInvalid;
+          }
           return result;
         },
         onApply: async (draft) => {
@@ -169,6 +178,7 @@ export async function openDelegateEditor(
           state.advisorReminderInvalid = refreshed.advisorReminderInvalid;
           state.advisorLevel = refreshed.advisorLevel;
           state.advisorLevelFile = refreshed.advisorLevelFile;
+          state.advisorLevelInvalid = refreshed.advisorLevelInvalid;
           state.advisorContextMode = refreshed.advisorContextMode;
           state.mainModel = refreshed.mainModel;
           return result === "success";

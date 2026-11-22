@@ -18,7 +18,7 @@ import {
 } from "../src/advisor-reminders.ts";
 import { getGlobalConfigPath, isAbsentPathError, writeConfig } from "../src/config.ts";
 import { CHECKPOINT_MESSAGE } from "../src/advisor-checkpoint.ts";
-import { getAdvisorLevelPath } from "../src/advisor-level.ts";
+import { getAdvisorLevelPath, readAdvisorLevelFile } from "../src/advisor-level.ts";
 import { getEventLogPath } from "../src/advisor-log.ts";
 import { DelegatePanel, type DelegatePanelOptions } from "../src/delegate-panel.ts";
 import piDelegationPolicy from "../src/index.ts";
@@ -558,9 +558,9 @@ function sendKeys(component: InteractiveComponent, ...keys: string[]): void {
 
 function createPanelHarness(
   options: {
-    advisorReminder?: DelegatePanelOptions["advisorReminder"];
-    advisorReminderInvalid?: DelegatePanelOptions["advisorReminderInvalid"];
-    onSaveAdvisorReminder?: DelegatePanelOptions["onSaveAdvisorReminder"];
+    advisorLevel?: DelegatePanelOptions["advisorLevel"];
+    advisorLevelInvalid?: DelegatePanelOptions["advisorLevelInvalid"];
+    onSaveAdvisorLevel?: DelegatePanelOptions["onSaveAdvisorLevel"];
     onSaveDefaults?: DelegatePanelOptions["onSaveDefaults"];
   } = {},
 ) {
@@ -579,24 +579,25 @@ function createPanelHarness(
     hasRuntimeError: false,
     onApply: async () => true,
     onSaveDefaults: options.onSaveDefaults ?? (async () => ({ kind: "saved", defaults })),
-    advisorReminder: options.advisorReminder,
-    advisorReminderInvalid: options.advisorReminderInvalid,
-    onSaveAdvisorReminder: options.onSaveAdvisorReminder,
+    advisorLevel: options.advisorLevel,
+    advisorLevelInvalid: options.advisorLevelInvalid,
+    onSaveAdvisorLevel: options.onSaveAdvisorLevel,
     onDone: (result) => done.push(result),
   });
   panel.focused = true;
   return { panel, done };
 }
 
-/** The reminder row sits five rows above the last one: launch correction, then the four actions. */
-function focusReminderRow(panel: InteractiveComponent): void {
+/** The nudge row sits five rows above the last one: launch correction, then the four actions. */
+function focusNudgeRow(panel: InteractiveComponent): void {
   sendKeys(panel, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
 }
 
-test("the panel shows the reminder mode, stores it on Apply and leaves it alone on Cancel", async () => {
+test("the panel shows the nudge level, stores it on Apply and leaves it alone on Cancel", async () => {
   await withAgentDirectory(async (directory) => {
-    await writeConfig(getGlobalConfigPath(directory), defaults);
-    const path = getAdvisorRemindersPath(getGlobalConfigPath(directory));
+    // The level reader takes the config path and derives its companion from it, like the writer.
+    const configPath = getGlobalConfigPath(directory);
+    await writeConfig(configPath, defaults);
     const applied: Array<Record<string, unknown>> = [];
     const applyContext = {
       cwd: "/project",
@@ -638,19 +639,26 @@ test("the panel shows the reminder mode, stores it on Apply and leaves it alone 
               resolve,
             ) as InteractiveComponent;
             try {
-              focusReminderRow(component);
+              focusNudgeRow(component);
               const settings = component.render(100).join("\n");
-              assert.match(settings, /^> Advisor reminder\s+remind · global\s*$/m);
-              assert.match(settings, /Global for every session; Apply or Save stores it/);
+              assert.match(settings, /^> Advisor nudge\s+standard · default\s*$/m);
+              assert.match(
+                settings,
+                /How hard the policy pushes the main agent to consult Advisors/,
+              );
               sendKeys(component, KEY_ENTER);
-              const picker = component.render(100).join("\n");
-              assert.match(picker, /Delegation policy \/ Advisor reminder \(global\)/);
-              assert.match(picker, /off — never add the reminder/);
-              assert.match(picker, /launches no consultation, forces none/);
+              const picker = component.render(140).join("\n");
+              assert.match(picker, /Delegation policy \/ Advisor nudge \(global\)/);
+              assert.match(
+                picker,
+                /strict — adds a hard rule and stops the first substantive change of a task once/,
+              );
+              assert.match(picker, /off — only the written rules: no reminder and no checkpoint/);
               sendKeys(component, KEY_DOWN, KEY_ENTER);
+              // The staged level is shown at once; the source is still the absent file.
               assert.match(
                 component.render(100).join("\n"),
-                /^> Advisor reminder\s+off · global\s*$/m,
+                /^> Advisor nudge\s+strict · default\s*$/m,
               );
               sendKeys(component, "a");
             } catch (error) {
@@ -663,7 +671,7 @@ test("the panel shows the reminder mode, stores it on Apply and leaves it alone 
       appendEntry: (customType: string, data?: unknown) =>
         applied.push({ type: "custom", customType, data }),
     } as never);
-    assert.deepEqual(await readAdvisorReminderMode(path), { mode: "off" });
+    assert.equal((await readAdvisorLevelFile(configPath)).file.level, "strict");
 
     // Reopening shows the stored mode; cancelling a staged change writes nothing.
     let reopened = "";
@@ -690,7 +698,7 @@ test("the panel shows the reminder mode, stores it on Apply and leaves it alone 
               {},
               resolve,
             ) as InteractiveComponent;
-            focusReminderRow(component);
+            focusNudgeRow(component);
             reopened = component.render(100).join("\n");
             sendKeys(component, KEY_ENTER, KEY_UP, KEY_ENTER, KEY_ESCAPE);
             sendKeys(component, KEY_DOWN, KEY_ENTER);
@@ -698,54 +706,54 @@ test("the panel shows the reminder mode, stores it on Apply and leaves it alone 
       },
     } as unknown as ExtensionContext;
     await openDelegateEditor(cancelContext, { appendEntry: () => undefined } as never);
-    assert.match(reopened, /^> Advisor reminder\s+off · global\s*$/m);
-    assert.deepEqual(await readAdvisorReminderMode(path), { mode: "off" });
+    assert.match(reopened, /^> Advisor nudge\s+strict · global\s*$/m);
+    assert.equal((await readAdvisorLevelFile(configPath)).file.level, "strict");
   });
 });
 
-test("a failed reminder write stops Apply and names what was saved", async () => {
-  const { panel, done } = createPanelHarness({ onSaveAdvisorReminder: async () => "failed" });
-  focusReminderRow(panel);
+test("a failed nudge write stops Apply and names what was saved", async () => {
+  const { panel, done } = createPanelHarness({ onSaveAdvisorLevel: async () => "failed" });
+  focusNudgeRow(panel);
   sendKeys(panel, KEY_ENTER, KEY_DOWN, KEY_ENTER, "a");
   await new Promise((resolve) => setImmediate(resolve));
   const view = panel.render(140).join("\n");
-  assert.match(view, /Could not save the Advisor reminder mode\. Nothing else was changed\./);
+  assert.match(view, /Could not save the Advisor nudge level\. Nothing else was changed\./);
   assert.deepEqual(done, [], "the editor stays open instead of reporting success");
-  assert.match(view, /^> Advisor reminder\s+off · global\s*$/m);
+  assert.match(view, /^> Advisor nudge\s+strict · default\s*$/m);
 
-  // An unreadable companion is shown as suspended, never as a mode the user chose.
-  const suspended = createPanelHarness({ advisorReminder: "off", advisorReminderInvalid: true });
-  focusReminderRow(suspended.panel);
+  // An unreadable companion is shown as suspended, never as a level the user chose.
+  const suspended = createPanelHarness({ advisorLevel: "off", advisorLevelInvalid: true });
+  focusNudgeRow(suspended.panel);
   assert.match(
     suspended.panel.render(120).join("\n"),
-    /^> Advisor reminder\s+Unavailable\/Suspended · global\s*$/m,
+    /^> Advisor nudge\s+Unavailable\/Suspended · global\s*$/m,
   );
 
   // An unreadable file is reported by name instead of being overwritten.
-  const blocked = createPanelHarness({ onSaveAdvisorReminder: async () => "unknown-state" });
-  focusReminderRow(blocked.panel);
+  const blocked = createPanelHarness({ onSaveAdvisorLevel: async () => "unknown-state" });
+  focusNudgeRow(blocked.panel);
   sendKeys(blocked.panel, KEY_ENTER, KEY_DOWN, KEY_ENTER, "a");
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(
     blocked.panel.render(160).join("\n"),
-    /Advisor reminder file is unreadable or invalid; fix or remove delegation-policy\.advisor-reminders\.json/,
+    /Advisor nudge level file is unreadable or invalid; fix or remove delegation-policy\.advisor-level\.json/,
   );
 });
 
-test("a reminder saved before a failing defaults step is named, not denied", async () => {
+test("a nudge level saved before a failing defaults step is named, not denied", async () => {
   const { panel } = createPanelHarness({
-    onSaveAdvisorReminder: async () => "saved",
+    onSaveAdvisorLevel: async () => "saved",
     onSaveDefaults: async () => ({ kind: "unchanged" }),
   });
-  focusReminderRow(panel);
+  focusNudgeRow(panel);
   sendKeys(panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
-  // The reminder is staged but not written yet; saving the defaults writes it first.
+  // The level is staged but not written yet; saving the defaults writes it first.
   sendKeys(panel, KEY_END, KEY_UP, KEY_UP, KEY_ENTER);
   await new Promise((resolve) => setImmediate(resolve));
   const view = panel.render(160).join("\n");
   assert.match(
     view,
-    /Could not save global defaults\. The Advisor reminder mode \(off\) was saved\./,
+    /Could not save global defaults\. The Advisor nudge level \(strict\) was saved\./,
   );
   assert.doesNotMatch(view, /Nothing was changed on disk/);
 });

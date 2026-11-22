@@ -242,7 +242,7 @@ test("Advisor-only validates its exact model and thinking without ordinary roles
   assert.match(policy, /Advisor consultation:/);
   assert.match(
     policy,
-    /Consult after orientation, before the first edit or state-changing command/,
+    /If you are about to make the first change of a task that involves a decision/,
   );
   assert.match(policy, /normal executor\/provider retention/);
   assert.doesNotMatch(
@@ -332,7 +332,8 @@ test("an incomplete session write or invalid restoration cannot inherit Advisor 
 
 test("Advisor commands and request hooks independently update and remove the owned block", async () => {
   await withDirectory(async (path) => {
-    await writeConfig(path, { ...empty, advisor });
+    // This case is about the role-launch context guidance, so it names that mode explicitly.
+    await writeConfig(path, { ...empty, advisor, advisorLaunch: "role" });
     const branch: Array<Record<string, unknown>> = [];
     const handlers = new Map<
       string,
@@ -880,7 +881,7 @@ test("Advisors 2 and 3 appear in order, pick their profile with the model and st
   const panel = new DelegatePanel({
     tui: { terminal: { rows: 30 }, requestRender: () => undefined } as never,
     theme: theme as never,
-    global: { ...empty, advisors: [advisor], advisorMode: "on" },
+    global: { ...empty, advisors: [advisor], advisorMode: "on", advisorLaunch: "role" },
     session: empty,
     candidates: [advisorModel as never, workerModel as never, anthropicModel as never],
     diagnostics: [],
