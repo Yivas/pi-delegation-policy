@@ -41,7 +41,7 @@ export type NoticeProjection = {
   roles: Record<ModelRole, RoleText>;
   uiDesign: RoleText;
   thinking: Record<ModelRole | "uiDesign", ThinkingText>;
-  advisors: Array<{ model: string; providerExtension?: "anthropic-auth" }>;
+  advisors: Array<{ model: string; providerExtension?: "anthropic-auth"; cyberFilter?: true }>;
   advisorMode: AdvisorMode;
   advisorLaunch: AdvisorLaunch;
   context: {
@@ -68,7 +68,10 @@ function optionalRoleText(setting: ModelRef | undefined): RoleText {
   return { kind: "model", reference: `${setting.provider}/${setting.model}` };
 }
 
-export function projectNoticeConfig(effective: EffectiveDelegateState): NoticeProjection {
+export function projectNoticeConfig(
+  effective: EffectiveDelegateState,
+  advisorFilters: readonly boolean[] = [],
+): NoticeProjection {
   return {
     intensity: effective.intensity,
     preference: effective.preference,
@@ -84,9 +87,11 @@ export function projectNoticeConfig(effective: EffectiveDelegateState): NoticePr
       large: thinkingText(effective.thinking.large),
       uiDesign: thinkingText(effective.thinking.uiDesign),
     },
-    advisors: effective.advisors.map((advisor) => ({
+    advisors: effective.advisors.map((advisor, index) => ({
       model: `${advisor.provider}/${advisor.model}`,
       ...(advisor.providerExtension ? { providerExtension: advisor.providerExtension } : {}),
+      // The flag lives in its own file, so it is projected here or a change would report nothing.
+      ...(advisorFilters[index] === true ? { cyberFilter: true as const } : {}),
     })),
     advisorMode: effective.advisorMode,
     advisorLaunch: effective.advisorLaunch,
@@ -100,7 +105,19 @@ export function projectNoticeConfig(effective: EffectiveDelegateState): NoticePr
   };
 }
 
-type NoticeField = { label: string; value: string };
+/** `note` is what the model must do with the new value, when a bare `a -> b` would not say it. */
+type NoticeField = { label: string; value: string; note?: string };
+
+/**
+ * A flag change is restated as an instruction, and it overrides what the conversation said before:
+ * a smaller model otherwise keeps repeating its own earlier claim about the flag.
+ */
+function cyberFilterNote(index: number, on: boolean): string {
+  const supersedes = "This replaces anything said earlier in this conversation about this flag.";
+  return on
+    ? ` From now on, rewrite security-related questions and briefs for Advisor ${index + 1} before sending: purpose first, ordinary technical terms, same facts and scope. ${supersedes}`
+    : ` No special wording is needed for Advisor ${index + 1}. ${supersedes}`;
+}
 
 const TEXT_ROLES: readonly (ModelRole | "uiDesign")[] = ["small", "medium", "large", "uiDesign"];
 
@@ -122,7 +139,7 @@ function thinkingValue(text: ThinkingText | undefined): string {
 
 /**
  * Fields in one canonical order. Advisor count is taken from both projections so a removed Advisor
- * still reports its own two fields.
+ * still reports its own fields.
  */
 function projectionFields(projection: NoticeProjection, advisorCount: number): NoticeField[] {
   return [
@@ -145,6 +162,12 @@ function projectionFields(projection: NoticeProjection, advisorCount: number): N
         {
           label: `Advisor ${index + 1} provider extension`,
           value: advisor?.providerExtension ?? "standard",
+        },
+        {
+          label: `Advisor ${index + 1} cyber filter`,
+          value: advisor?.cyberFilter ? "ON" : "off",
+          // A removed Advisor has no slot left to instruct, so only its values are reported.
+          ...(advisor ? { note: cyberFilterNote(index, advisor.cyberFilter === true) } : {}),
         },
       ];
     }).flat(),
@@ -170,7 +193,9 @@ export function changedValueLines(previous: NoticeProjection, current: NoticePro
     const previousValue = before[index]!.value;
     return previousValue === field.value
       ? []
-      : [`- ${field.label}: ${previousValue} -> ${field.value}`];
+      : [
+          `- ${field.label}: ${previousValue} -> ${field.value}${field.note ? `.${field.note}` : ""}`,
+        ];
   });
 }
 

@@ -4504,6 +4504,14 @@ test("child briefs carry the six fields, allow open questions, and follow the en
   );
   const consultationOnly = buildDelegationPolicy(advisorOnly) ?? "";
   assert.match(consultationOnly, /Only consultation guidance is active/);
+  // The Advisor-only branch states the flags too, right under Purpose.
+  assert.match(consultationOnly, /Purpose\n[^\n]+\nAdvisor flags: none\.\n/);
+  advisorOnly.advisorFilters = [true];
+  assert.match(
+    buildDelegationPolicy(advisorOnly) ?? "",
+    /Purpose\n[^\n]+\nAdvisor flags: Advisor = cyber filter ON\. The rule is under that Advisor in Roles\.\n/,
+  );
+  advisorOnly.advisorFilters = [];
   assert.doesNotMatch(consultationOnly, /Child briefs:/);
   assert.doesNotMatch(consultationOnly, /\n- Small: /);
 });
@@ -5521,14 +5529,16 @@ test("no flagged Advisor keeps the policy block byte identical", () => {
   };
   const reference = build();
   assert.match(reference, /Advisor \(optional\)/);
-  assert.doesNotMatch(reference, /content filter|cyber/);
+  // No flag is a stated fact, so a model can tell "none" from "not found".
+  assert.match(reference, /^Advisor flags: none\.$/m);
+  assert.doesNotMatch(reference, /CYBER FILTER/);
   assert.equal(build([false]), reference);
   assert.equal(build([false, false]), reference);
   // A flag on a slot with no Advisor is not a flagged Advisor: nothing is rendered for it.
   assert.equal(build([false, true]), reference);
 });
 
-test("a flagged Advisor is told to soften its brief, once, in both launch modes", () => {
+test("each flagged Advisor carries the rewrite rule under its role, in both launch modes", () => {
   for (const launch of ["role", "tool"] as const) {
     const second = { provider: "example", model: "second" };
     const state = runtime(
@@ -5550,25 +5560,23 @@ test("a flagged Advisor is told to soften its brief, once, in both launch modes"
     );
     state.advisorFilters = [true, true];
     const block = buildDelegationPolicy(state) ?? "";
+    // The status line sits right under Purpose, before any long section.
     assert.match(
       block,
-      /content filter: cyber, flagged by the user for this slot; soften the wording and framing of its question and brief when the work is security-related, so that provider does not refuse them/,
+      /Purpose\n[^\n]+\nAdvisor flags: Advisor 1 = cyber filter ON\. Advisor 2 = cyber filter ON\. The rule is under that Advisor in Roles\./,
     );
-    assert.match(block, /Some listed Advisors are flagged with a cyber content filter\./);
+    // The rule is its own line directly under each flagged role: condition first, then the action.
     assert.match(
       block,
-      /when a question or brief concerns security or cyber work, soften its wording/,
+      /- Advisor 1 \(optional\): [^\n]+\n {2}- CYBER FILTER: ON \(set by the user\)\. If a question or brief for this Advisor is security-related, rewrite it before sending:/,
     );
-    assert.match(
-      block,
-      /Anything else you send that Advisor stays as you would write it for any other model/,
-    );
-    assert.match(block, /keep the same subject, facts, constraints and scope/);
+    assert.match(block, /keep the same facts, constraints and scope/);
+    assert.match(block, /Still consult, and do not change what is being asked/);
+    assert.match(block, /Write every other brief as usual/);
     // The outcome is never promised, which is the difference between a register change and a claim.
-    assert.match(block, /may still refuse; it does not promise that a phrasing will be accepted/);
-    // Two flagged Advisors share one sentence instead of repeating the rule per slot.
-    assert.equal(block.match(/Some listed Advisors are flagged/g)?.length, 1);
-    assert.equal(block.match(/content filter: cyber/g)?.length, 2);
+    assert.match(block, /The provider may still refuse\./);
+    assert.equal(block.match(/CYBER FILTER: ON/g)?.length, 2);
+    assert.equal(block.match(/Advisor flags:/g)?.length, 1);
   }
 });
 
@@ -5587,10 +5595,12 @@ test("a slot can be flagged and able to read without one erasing the other", () 
   state.advisorFilters = [true];
   const block = buildDelegationPolicy(state) ?? "";
   assert.match(block, /reading: on, open only the paths the brief names/);
-  assert.match(block, /content filter: cyber/);
-  const line =
-    block.split("\n").find((candidate) => candidate.includes("Advisor (optional)")) ?? "";
-  assert.equal(line.indexOf("reading: on") < line.indexOf("content filter: cyber"), true);
+  assert.match(block, /^Advisor flags: Advisor = cyber filter ON\./m);
+  // Reading stays on the role line; the filter rule is the line right under it.
+  const lines = block.split("\n");
+  const role = lines.findIndex((candidate) => candidate.includes("Advisor (optional)"));
+  assert.match(lines[role] ?? "", /reading: on, open only the paths the brief names\.?$/);
+  assert.match(lines[role + 1] ?? "", /^ {2}- CYBER FILTER: ON/);
 });
 
 test("the Advisor row shows the content filter, and Apply writes the flag", async () => {
@@ -5627,7 +5637,7 @@ test("an invalid Advisor content-filter file costs only the flag and leaves the 
     const policy = buildDelegationPolicy(state) ?? "";
     assert.match(policy, /pi-delegation-policy:owned/);
     assert.match(policy, /Enabled ordinary roles: Small, Medium, Large/);
-    assert.doesNotMatch(policy, /content filter/);
+    assert.doesNotMatch(policy, /CYBER FILTER|Advisor flags/);
   });
 });
 
@@ -5694,8 +5704,8 @@ test("a flagged Advisor behind an unlaunchable one still emits the shared rule",
   );
   state.advisorFilters = [false, true];
   const block = buildDelegationPolicy(state) ?? "";
-  assert.match(block, /Some listed Advisors are flagged with a cyber content filter\./);
-  assert.match(block, /Advisor 2 \(optional\)/);
+  assert.match(block, /^Advisor flags: Advisor 2 = cyber filter ON\./m);
+  assert.match(block, /- Advisor 2 \(optional\): [^\n]+\n {2}- CYBER FILTER: ON/);
 });
 
 test("a flag on an unlaunchable Advisor claims nothing about the Advisor the block lists", () => {
@@ -5713,7 +5723,8 @@ test("a flag on an unlaunchable Advisor claims nothing about the Advisor the blo
   state.advisorFilters = [true, false];
   const block = buildDelegationPolicy(state) ?? "";
   // The marked slot has no role line, so the shared sentence would promise a filter nothing shows.
-  assert.doesNotMatch(block, /Some listed Advisors are flagged with a cyber content filter/);
+  assert.match(block, /^Advisor flags: none\.$/m);
+  assert.doesNotMatch(block, /CYBER FILTER/);
   assert.match(block, /Advisor 2 \(optional\)/);
 });
 

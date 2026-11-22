@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- State Advisor flags in one status line under Purpose, including `none` when no Advisor is flagged.
+- Put the cyber filter rule on its own line under the flagged Advisor, condition first, in one place.
+- Report a cyber filter toggle in the configuration notice, with the rule and an override of earlier
+  claims.
+
 ## 0.32.1 - 2026-11-21
 
 ### Fixed

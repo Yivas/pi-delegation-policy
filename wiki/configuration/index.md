@@ -287,9 +287,21 @@ has nothing to flag, so that row appears once the slot is configured. Choosing i
 that slot and leaves the selector open, so nothing about the model changes. The flags live in
 `delegation-policy.advisor-filters.json`, one boolean per slot, with trailing offs dropped.
 
-With the flag on, the injected block names it in that Advisor's role line (`content filter: cyber,
-flagged by the user for this slot`) and adds one shared paragraph to the consultation contract. What it
-asks for, and what it does not do:
+The flag is stated in three places, two in the block and one in the configuration notice, written so
+that a smaller model finds and applies it:
+
+- One status line right under `Purpose`, present whenever Advisors are listed: `Advisor flags: none.`
+  or `Advisor flags: Advisor 1 = cyber filter ON. Advisor 2 = none. The rule is under that Advisor in
+Roles.` Saying `none` lets a model tell
+  "no flag" from "flag not found".
+- The rule as its own line directly under the flagged Advisor's role, condition first:
+  `- CYBER FILTER: ON (set by the user). If a question or brief for this Advisor is security-related,
+rewrite it before sending: …`. That line is the only place the rule lives.
+- The configuration notice on the turn after you toggle it:
+  `- Advisor 1 cyber filter: off -> ON. From now on, rewrite … This replaces anything said earlier in
+this conversation about this flag.`
+
+What the rule asks for, and what it does not do:
 
 - For questions and briefs about security or cyber work, soften the wording and the framing: state the
   purpose plainly, name components and actions in ordinary technical language instead of

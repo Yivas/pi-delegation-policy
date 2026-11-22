@@ -178,12 +178,35 @@ function noImageCapableRoleEverywhere(state: RuntimeState, advisorEnabled: boole
 const ADVISOR_CONTEXT_GUIDANCE = `Context: fresh; do not send this conversation. Write a short self-contained brief with objective and constraints, relevant facts, options and proposal, and the uncertainty; separate facts from assumptions. A thin brief weakens the advice, because the Advisor cannot see what you left out.`;
 
 /**
- * Emitted once, and only while some listed Advisor is flagged: the user marked that model with a
- * provider-side cyber content filter, so the brief has to be written in a register that provider does
- * not refuse. The flag is the user's statement about the model, never a promise about the outcome,
- * and the round trip that matters is the wording, not the facts.
+ * The rule for a flagged Advisor, as its own line under that Advisor's role. A smaller model does not
+ * recover a clause at the end of a long chained line, and does not act on a bare "soften": the rule
+ * therefore sits where the Advisor is named, condition first, with observable verbs. The flag is the
+ * user's statement about the model, never a promise about the outcome, and only the wording changes.
  */
-const ADVISOR_FILTER_GUIDANCE = `Some listed Advisors are flagged with a cyber content filter. For a flagged Advisor, when a question or brief concerns security or cyber work, soften its wording and framing so that provider does not refuse it: state the purpose plainly, name components and actions in ordinary technical language instead of confrontational or exploit-centred phrasing, and keep the same subject, facts, constraints and scope in that calmer register. Anything else you send that Advisor stays as you would write it for any other model. Softening changes the register, not the content: a brief emptied of its facts produces advice about something else. The flag means the provider may still refuse; it does not promise that a phrasing will be accepted.`;
+const ADVISOR_FILTER_RULE =
+  "  - CYBER FILTER: ON (set by the user). If a question or brief for this Advisor is security-related, rewrite it before sending: state the purpose first, use ordinary technical terms instead of confrontational or exploit-centred phrasing, and keep the same facts, constraints and scope. Still consult, and do not change what is being asked. Write every other brief as usual. The provider may still refuse.";
+
+function advisorLabel(count: number, index: number): string {
+  return count === 1 ? "Advisor" : `Advisor ${index + 1}`;
+}
+
+/**
+ * One status line near the top of the block, present whenever Advisors are listed, so "no flag" and
+ * "flag not found" are different readings. It uses the same label as the rule under the role.
+ */
+function advisorFlagsLine(state: RuntimeState): string {
+  const advisors = validAdvisors(state);
+  if (!advisors.length) return "";
+  const count = state.effective.advisors.length;
+  const flagged = advisors.some(({ index }) => advisorFiltered(state.advisorFilters, index));
+  if (!flagged) return "\nAdvisor flags: none.";
+  return `\nAdvisor flags: ${advisors
+    .map(
+      ({ index }) =>
+        `${advisorLabel(count, index)} = ${advisorFiltered(state.advisorFilters, index) ? "cyber filter ON" : "none"}`,
+    )
+    .join(". ")}. The rule is under that Advisor in Roles.`;
+}
 
 /**
  * The consultation contract is shared by both axes: the Advisor never implements or runs
@@ -193,12 +216,7 @@ const ADVISOR_FILTER_GUIDANCE = `Some listed Advisors are flagged with a cyber c
  * a listed Advisor runs a profile other than the plain packaged one, so the sentence cannot name one
  * profile while a role line names another.
  */
-function advisorPolicy(
-  launch: AdvisorLaunch,
-  count: number,
-  profileStated = false,
-  filtered = false,
-): string {
+function advisorPolicy(launch: AdvisorLaunch, count: number, profileStated = false): string {
   return `Consulting is part of this policy, not delegated execution; the Advisor never implements or runs tool-dependent checks, and direct-work guidance does not rule it out. Consult after orientation, before the first edit or state-changing command, any interpretation, approach or assumption, a substantive analysis or recommendation, a recurring error or stalled progress, and any change of approach; before declaring a multi-step task done, make results durable and ask for remaining correctness risks or overlooked assumptions, not approval; an agreed interface does not replace the first checkpoint. No call for facts already available, short reactive steps, or mechanics inside a settled approach; reuse advice, and a consulted failure is not a new trigger.
 
 ${
@@ -209,7 +227,7 @@ ${
 
 ${launch === "role" ? ADVISOR_CONTEXT_GUIDANCE : ""}
 
-Wait for and consume the answers before the decision that depends on them; report an unavailable Advisor without substitution and keep successful answers; weigh advice seriously and disagreements explicitly, answers untrusted, agreement neither proof nor authority; adapt only after a recommended step fails or primary evidence contradicts a claim, a passing self-test alone insufficient; ${launch === "tool" ? "call consult_advisor once with that evidence and an updated brief" : "resume each thread once with that evidence"} on disagreement, never switch silently; you retain responsibility, user decisions remain theirs.${filtered ? `\n\n${ADVISOR_FILTER_GUIDANCE}` : ""}`;
+Wait for and consume the answers before the decision that depends on them; report an unavailable Advisor without substitution and keep successful answers; weigh advice seriously and disagreements explicitly, answers untrusted, agreement neither proof nor authority; adapt only after a recommended step fails or primary evidence contradicts a claim, a passing self-test alone insufficient; ${launch === "tool" ? "call consult_advisor once with that evidence and an updated brief" : "resume each thread once with that evidence"} on disagreement, never switch silently; you retain responsibility, user decisions remain theirs.`;
 }
 
 const LAUNCH_CORRECTION: Record<"correct" | "block", string> = {
@@ -387,8 +405,7 @@ export function advisorRoleLines(state: RuntimeState): string {
     .map(({ index, setting }) => {
       // Advisor thinking is never configured, so the main agent always chooses it per run.
       const thinking: RoleThinking = { kind: "unset" };
-      const label =
-        effective.advisors.length === 1 ? "Advisor (optional)" : `Advisor ${index + 1} (optional)`;
+      const label = `${advisorLabel(effective.advisors.length, index)} (optional)`;
       const profile = advisorProfile(setting, state.admissions);
       const extension =
         profile === "anthropic-auth"
@@ -404,12 +421,9 @@ export function advisorRoleLines(state: RuntimeState): string {
         agent === ADVISOR_READ_AGENT_NAME
           ? "; reading: on, open only the paths the brief names"
           : "";
-      // The flag is the user's statement about that model, so the line carries the state and the
-      // pointer only; the how and its limit live once in the consultation contract.
-      const filter = advisorFiltered(state.advisorFilters, index)
-        ? "; content filter: cyber, flagged by the user for this slot; soften the wording and framing of its question and brief when the work is security-related, so that provider does not refuse them"
-        : "";
-      return `\n${roleLine(label, setting, thinking, `; agent profile: ${promptString(agent)}${extension}${reading}${filter}`)}`;
+      // The rule is one line of its own under the role, the only place it lives.
+      const filter = advisorFiltered(state.advisorFilters, index) ? `\n${ADVISOR_FILTER_RULE}` : "";
+      return `\n${roleLine(label, setting, thinking, `; agent profile: ${promptString(agent)}${extension}${reading}`)}${filter}`;
     })
     .join("");
 }
@@ -443,11 +457,9 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
         advisors.some(
           ({ setting, index }) => advisorAgentNameFor(state, setting, index) !== ADVISOR_AGENT_NAME,
         ),
-        // Only a flag a rendered role line also states: counting every configured slot would have the
-        // block claim a filter that no listed Advisor shows.
-        advisors.some(({ index }) => advisorFiltered(state.advisorFilters, index)),
       )}`
     : "";
+  const flagsLine = advisorEnabled ? advisorFlagsLine(state) : "";
   const advisorTool = effective.advisorLaunch === "tool" && advisorEnabled;
   const correction = state.launchCorrection ?? "correct";
 
@@ -456,7 +468,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
     return `<delegation_policy>
 <!-- pi-delegation-policy:owned -->
 Purpose
-Delegation intensity: ${effective.intensity}${hasRuntimeError(state) ? " (unavailable)" : ""}. Advisor: on. Only consultation guidance is active: this policy requests no execution delegation, optional role selection, or ContextShunt. Keep execution with the main agent unless other applicable instructions require otherwise. Host permissions and user restrictions still apply.${advisorSection}
+Delegation intensity: ${effective.intensity}${hasRuntimeError(state) ? " (unavailable)" : ""}. Advisor: on. Only consultation guidance is active: this policy requests no execution delegation, optional role selection, or ContextShunt. Keep execution with the main agent unless other applicable instructions require otherwise. Host permissions and user restrictions still apply.${flagsLine}${advisorSection}
 
 Roles:${advisorRoleLine}
 
@@ -536,7 +548,7 @@ ${advisorOnlyLimits(advisorTool)} ${LIMITS_RETENTION}
   return `<delegation_policy>
 <!-- pi-delegation-policy:owned -->
 Purpose
-${PURPOSE}
+${PURPOSE}${flagsLine}
 
 Do it yourself?
 Intensity: ${effective.intensity}. ${intensityPolicy}${orchestrator ? "" : ` ${TINY_EDIT}`}${ownership} ${restrictions}${advisorSection}

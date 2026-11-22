@@ -358,6 +358,33 @@ test("a not-configured role and a disabled role are different configurations", (
   assert.deepEqual(changedValueLines(disabled, disabled), []);
 });
 
+test("a cyber filter change reports the rule and overrides what was said before", () => {
+  const effective = resolveDelegateState(
+    { ...defaults, advisors: [advisor], advisorMode: "on" },
+    emptySession,
+  );
+  const off = projectNoticeConfig(effective);
+  const on = projectNoticeConfig(effective, [true]);
+  // The flag lives in its own file; without projecting it a change would report nothing.
+  assert.deepEqual(changedValueLines(off, off), []);
+  const turnedOn = changedValueLines(off, on);
+  assert.equal(turnedOn.length, 1);
+  assert.match(
+    turnedOn[0]!,
+    /^- Advisor 1 cyber filter: off -> ON\. From now on, rewrite security-related questions and briefs for Advisor 1 before sending: purpose first, ordinary technical terms, same facts and scope\./,
+  );
+  assert.match(turnedOn[0]!, /This replaces anything said earlier in this conversation/);
+  assert.match(
+    changedValueLines(on, off)[0]!,
+    /^- Advisor 1 cyber filter: ON -> off\. No special wording is needed for Advisor 1\./,
+  );
+  // A removed Advisor reports its values and no instruction about a slot that no longer exists.
+  const removed = projectNoticeConfig(
+    resolveDelegateState({ ...defaults, advisors: [], advisorMode: "on" }, emptySession),
+  );
+  assert.ok(changedValueLines(on, removed).includes("- Advisor 1 cyber filter: ON -> off"));
+});
+
 test("changed fields report in one order, an Advisor list keeps its position, and a reversion is no change", () => {
   const before = projectNoticeConfig(
     resolveDelegateState(

@@ -922,7 +922,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       { runToken: number; reference: ConfigReference; message: ConfigNoticeMessage } | undefined;
     const startConfigBaseline = (state: RuntimeState): void => {
       configBaseline = {
-        projection: projectNoticeConfig(state.effective),
+        projection: projectNoticeConfig(state.effective, state.advisorFilters),
         axesOff: bothAxesOff(state),
       };
       userTurn = 0;
@@ -936,7 +936,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         diffedTurn = userTurn;
         presentedNotice = undefined;
         const current: ConfigReference = {
-          projection: projectNoticeConfig(state.effective),
+          projection: projectNoticeConfig(state.effective, state.advisorFilters),
           axesOff: bothAxesOff(state),
         };
         // Every session start and tree move sets a baseline. Only an unreadable configuration
