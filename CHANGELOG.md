@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.33.1 - 2026-11-23
+
 ### Fixed
 
 - Serve `pi-antigravity-acp-provider` `0.1.22` in the packaged provider-extension profile, whose
@@ -9,7 +11,9 @@
   quota event subscription and one provider registration. An admission of the installed `0.1.22` no
   longer leaves the Advisor out. The diagnostic now splits by state: an unreviewed version of the
   pinned package names both versions and the two ways out, and another admitted package says it
-  needs its own profile instead of pointing at a selection that cannot serve it.
+  needs its own profile instead of pointing at a selection that cannot serve it. An admission saved
+  for a version this pin does not name still stops being served, so it needs the pinned version
+  installed and the extension selected again.
 
 ## 0.33.0 - 2026-11-22
 
