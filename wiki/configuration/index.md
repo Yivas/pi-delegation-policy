@@ -528,22 +528,28 @@ Only a package you already load qualifies: your user settings must list exactly
 project candidate or links, and its manifest must declare exactly one extension entry inside the
 package. The panel offers only packages that pass this check, and `/delegate` validation repeats it.
 The Advisor child does not, and cannot: it resolves its model and its provider before any extension
-`session_start` runs, so a check inside the child would arrive too late to matter. After `pi update`
-changes the version, the Advisor reports an error until you select the extension again; it never
-follows the new version on its own. An invalid file is ignored with a diagnostic and leaves the other
+`session_start` runs, so a check inside the child would arrive too late to matter. The admission is a
+saved value: it never follows the installed version on its own, and selecting the extension again is
+what records the installed one. An invalid file is ignored with a diagnostic and leaves the other
 Advisors running.
 
 The packaged profile pins the admitted package in `subagentOnlyExtensions` and keeps `extensions:`
 empty, so the host loads exactly that package for the child and no ambient extension. The pin is one
-package and one version: `pi-antigravity-acp-provider` `0.1.21`. Its registration is the only one
+package and one version: `pi-antigravity-acp-provider` `0.1.22`. Its registration is the only one
 reviewed, and it may register `antigravity_acp_permission`, the tool that asks Antigravity for a
 permission decision the provider itself issued. The Advisor child launches with an empty tool
 allowlist, so that tool never reaches the model. A second admitted package, or a new version of this
 one, needs its own profile and its own review: a static profile can pin only one.
 
-Because the pin is fixed, an admission that names another package is not served. Routing checks it
-before any launch and leaves the Advisor out, rather than loading a package the current admission no
-longer authorizes.
+Because the pin is fixed, an admission that names another version of the pinned package, or another
+package, is not served. Routing checks it before any launch and leaves the Advisor out, rather than
+loading a package the current admission no longer authorizes. The two states get different advice.
+For a version the pin does not name, the admitted version has to become the pinned one: install the
+pinned version and select the provider extension again so the admission records it, or update
+`pi-delegation-policy` to a release that reviews the version you admitted. Selecting the extension
+again only re-records the installed version, so on its own it cannot help while that version is not
+the pinned one. Another package needs its own profile, so selecting it helps only once a release
+ships one; until then that Advisor needs a provider that needs no extension.
 
 This is trusted code, not a sandbox. The package identity is checked in this session, and that is the
 only check: the child loads the pinned package before it can inspect anything. It can read files,

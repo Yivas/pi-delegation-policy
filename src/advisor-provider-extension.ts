@@ -12,14 +12,15 @@
 export const PROVIDER_EXTENSION_ADVISOR_AGENT = "pi-delegation-policy.advisor-provider-extension";
 
 /**
- * The one package the packaged profile pins, and the single tool whose registration was reviewed for
- * it. The tool field records what that review covered: no runtime check reads it, because the child
- * cannot inspect the loaded package. What keeps the tool away from the model is the empty tool
- * allowlist in the profile. A static frontmatter can pin only one package, so a second admitted
+ * The one package the packaged profile pins, and the single tool its review details. The review
+ * covered what the package registers as a whole — tool, commands, events and provider — and this
+ * field names the one capability that could reach a model. No runtime check reads it, because the
+ * child cannot inspect the loaded package. What keeps the tool away from the model is the empty
+ * tool allowlist in the profile. A static frontmatter can pin only one package, so a second admitted
  * package needs its own profile and its own review.
  */
 export const KNOWN_TOOL_SURFACE = [
-  { package: "pi-antigravity-acp-provider", version: "0.1.21", tool: "antigravity_acp_permission" },
+  { package: "pi-antigravity-acp-provider", version: "0.1.22", tool: "antigravity_acp_permission" },
 ] as const;
 
 /** The admitted package the packaged profile can serve. */

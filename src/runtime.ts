@@ -514,18 +514,25 @@ function providerExtensionCheck(
   admissions: ProviderAdmissions,
 ): { kind: "error" | "warning"; message: string } | undefined {
   const pkg = admissionFor(admissions, setting.provider);
-  if (pkg)
-    return isPinnedAdmission(pkg)
-      ? locateInstalledPackage(ctx.cwd, pkg, { configured: true }).ok
-        ? undefined
-        : {
-            kind: "error",
-            message: `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; re-select the provider extension in /delegate.`,
-          }
+  if (pkg) {
+    // Two states reach this point with different remedies: a version of the pinned package that was
+    // never reviewed, and a second package the single packaged profile cannot load. Each message
+    // offers only what actually resolves its own state.
+    if (!isPinnedAdmission(pkg))
+      return {
+        kind: "error",
+        message:
+          pkg.package === PINNED_PACKAGE.package
+            ? `${label} provider extension ${pkg.package} ${pkg.version} cannot be served: this pi-delegation-policy release serves only ${PINNED_PACKAGE.package} ${PINNED_PACKAGE.version} in the packaged profile. Install that version and select the provider extension again in /delegate so the admission records it, or update pi-delegation-policy to a release that reviews ${pkg.version}.`
+            : `${label} provider extension ${pkg.package} ${pkg.version} cannot be served: the packaged profile pins ${PINNED_PACKAGE.package} ${PINNED_PACKAGE.version}, and a second package needs its own profile and its own review. Use an Advisor whose provider needs no extension, or wait for a pi-delegation-policy release that adds a profile for ${pkg.package}.`,
+      };
+    return locateInstalledPackage(ctx.cwd, pkg, { configured: true }).ok
+      ? undefined
       : {
           kind: "error",
-          message: `${label} provider extension ${pkg.package} ${pkg.version} cannot be served: the packaged profile pins ${PINNED_PACKAGE.package} ${PINNED_PACKAGE.version}. Re-admit that package, or use an Advisor whose provider needs no extension.`,
+          message: `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; install that exact version, then re-select the provider extension in /delegate.`,
         };
+  }
   if (setting.provider === RESERVED_PROVIDER) return undefined;
   const native = ctx.modelRegistry?.getRegisteredNativeProvider?.(setting.provider);
   return native

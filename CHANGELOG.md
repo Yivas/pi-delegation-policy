@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Serve `pi-antigravity-acp-provider` `0.1.22` in the packaged provider-extension profile, whose
+  reviewed registration is one tool, `antigravity_acp_permission`, two commands, two events, the
+  quota event subscription and one provider registration. An admission of the installed `0.1.22` no
+  longer leaves the Advisor out. The diagnostic now splits by state: an unreviewed version of the
+  pinned package names both versions and the two ways out, and another admitted package says it
+  needs its own profile instead of pointing at a selection that cannot serve it.
+
 ## 0.33.0 - 2026-11-22
 
 ### Added

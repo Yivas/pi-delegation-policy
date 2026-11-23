@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { KNOWN_TOOL_SURFACE, PINNED_PACKAGE } from "../src/advisor-provider-extension.ts";
+import {
+  KNOWN_TOOL_SURFACE,
+  PINNED_PACKAGE,
+  isPinnedAdmission,
+} from "../src/advisor-provider-extension.ts";
 import { advisorAgentName } from "../src/advisor-executor.ts";
 import { getGlobalConfigPath } from "../src/config.ts";
 import { DelegatePanel } from "../src/delegate-panel.ts";
@@ -14,13 +18,22 @@ import {
   readProviderAdmissions,
   writeProviderAdmissions,
 } from "../src/provider-admissions.ts";
-import { listProviderExtensionCandidates, packageSource } from "../src/provider-package.ts";
+import {
+  isProviderPackage,
+  listProviderExtensionCandidates,
+  packageSource,
+} from "../src/provider-package.ts";
 import { resolveDelegateState } from "../src/config.ts";
 import { validateRuntime, type RuntimeState } from "../src/runtime.ts";
 import { CURRENT_SCHEMA_VERSION, type GlobalDefaults } from "../src/types.ts";
 
 const PACKAGE = "synthetic-go-provider";
 const VERSION = "1.0.0";
+
+// The pinned version with its last number raised: a valid exact version this release never reviewed.
+const UNREVIEWED_VERSION = PINNED_PACKAGE.version.replace(/(\d+)(?=[-+]|$)/, (number) =>
+  String(Number(number) + 1),
+);
 
 // The candidate check reads only the manifest, the pinned user source and one entry file inside the
 // package, so the entry has to exist but does not have to do anything.
@@ -168,13 +181,33 @@ function routeAndReport(): void {
   // An admitted package that is no longer installed is reported before any launch.
   const missing = state(admissions);
   validateRuntime(context(["example-provider"]), missing);
-  assert.match(missing.advisorEntries?.[0]?.errors[0] ?? "", /re-select the provider extension/);
+  const missingMessage = missing.advisorEntries?.[0]?.errors[0] ?? "";
+  assert.match(missingMessage, /re-select the provider extension/);
+  assert.match(missingMessage, /install that exact version/);
+
+  // A version of the pinned package this release never reviewed and a second admitted package are
+  // different states, and each message offers only what resolves its own state.
+  const unreviewed = state({
+    "example-provider": { package: PINNED_PACKAGE.package, version: UNREVIEWED_VERSION },
+  });
+  validateRuntime(context(["example-provider"]), unreviewed);
+  const unreviewedMessage = unreviewed.advisorEntries?.[0]?.errors[0] ?? "";
+  assert.match(unreviewedMessage, /cannot be served/);
+  assert.ok(unreviewedMessage.includes(UNREVIEWED_VERSION));
+  assert.ok(unreviewedMessage.includes(PINNED_PACKAGE.version));
+  assert.match(unreviewedMessage, /select the provider extension again/);
+  assert.doesNotMatch(unreviewedMessage, /needs its own profile/);
 
   // The packaged profile pins one package, so an admission naming another one is an error, not a
-  // silent route to the ordinary profile.
+  // silent route to the ordinary profile, and selecting it cannot serve it.
   const foreign = state({ "example-provider": { package: PACKAGE, version: VERSION } });
   validateRuntime(context(["example-provider"]), foreign);
-  assert.match(foreign.advisorEntries?.[0]?.errors[0] ?? "", /cannot be served/);
+  const foreignMessage = foreign.advisorEntries?.[0]?.errors[0] ?? "";
+  assert.match(foreignMessage, /cannot be served/);
+  assert.ok(foreignMessage.includes(`${PACKAGE} ${VERSION}`));
+  assert.match(foreignMessage, /needs its own profile/);
+  assert.match(foreignMessage, /provider needs no extension/);
+  assert.doesNotMatch(foreignMessage, /select the provider extension again/);
 
   const unaffected = state({});
   validateRuntime(context([]), unaffected);
@@ -322,4 +355,21 @@ test("the packaged profile pins the reviewed provider package the host loads", a
   assert.match(frontmatter, /^tools:$/m);
   // A static profile can pin one package, so the reviewed exception has to stay a single one.
   assert.equal(KNOWN_TOOL_SURFACE.length, 1);
+});
+
+// The pin compares package and version exactly, so an admission this release did not review stays
+// unreviewed even when the other half matches.
+test("an admission naming another package or version is not the pinned admission", () => {
+  // A derived version that is not a valid exact version would make the case below vacuous.
+  assert.ok(isProviderPackage({ package: PINNED_PACKAGE.package, version: UNREVIEWED_VERSION }));
+  assert.notEqual(UNREVIEWED_VERSION, PINNED_PACKAGE.version);
+  assert.equal(
+    isPinnedAdmission({ package: PINNED_PACKAGE.package, version: PINNED_PACKAGE.version }),
+    true,
+  );
+  assert.equal(
+    isPinnedAdmission({ package: PINNED_PACKAGE.package, version: UNREVIEWED_VERSION }),
+    false,
+  );
+  assert.equal(isPinnedAdmission({ package: PACKAGE, version: PINNED_PACKAGE.version }), false);
 });
