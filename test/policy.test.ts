@@ -3663,7 +3663,9 @@ test("public documentation states the versioned Pi requirements without release-
   const readme = await readFile(join(process.cwd(), "README.md"), "utf8");
   versionedRequirements(readme, "README.md");
 
-  for (const path of ["wiki/index.md", "wiki/getting-started/index.md"]) {
+  // `SECURITY.md` ships in the package and names the supported version, so it is checked too: it was
+  // the one file a release could leave behind.
+  for (const path of ["wiki/index.md", "wiki/getting-started/index.md", "SECURITY.md"]) {
     versionedRequirements(await readFile(join(process.cwd(), path), "utf8"), path);
   }
 });
@@ -3674,7 +3676,7 @@ test("public package contents exclude private planning, tests, archives, and old
   await assert.rejects(readFile(join(process.cwd(), "examples", "project.json"), "utf8"));
 
   const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.33.1");
+  assert.equal(packageJson.version, "0.34.0");
   assert.equal(packageJson.private, false);
   assert.equal(packageJson.pi.extensions[0], "./src/index.ts");
   assert.deepEqual(packageJson.pi.subagents.agents, ["./agents"]);
