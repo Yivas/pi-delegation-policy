@@ -36,6 +36,13 @@ import {
   type AdvisorTerminalIdentity,
 } from "./advisor-resume.ts";
 import {
+  UNANSWERABLE_EVIDENCE,
+  applyAdvisorContinuity,
+  isAdvisorContinuityPlanEmpty,
+  planAdvisorContinuity,
+  type AdvisorContinuityEvidence,
+} from "./advisor-reconcile.ts";
+import {
   ADVISOR_THREAD_MAX_RUN_IDS,
   AdvisorThreadJournal,
   advisorAnswerPath,
@@ -141,7 +148,10 @@ export type AdvisorContinuityCode =
   | "cancelled";
 
 const RECOVERY =
-  "Run /delegate advisor threads recover to reconcile it with the host before consulting again.";
+  "The next consultation reconciles it with the host before it blocks again; /delegate advisor threads recover does it now.";
+/** A journal this process cannot take is not reconciled by consulting: the lock has to be freed. */
+const JOURNAL_REPAIR =
+  "Run /delegate advisor threads recover to reclaim the journal once no other Pi process uses this configuration. It changes nothing while another owner is alive.";
 
 /**
  * Bounded English cause for a blocked continuation. Closed codes only: no host error text, path,
@@ -154,11 +164,11 @@ export function advisorContinuityText(code: AdvisorContinuityCode): string {
     case "busy":
       return "Advisor busy: one consultation group is already in flight for this session. Wait for its result before starting another consultation; do not duplicate the pending group.";
     case "journal-busy":
-      return `Advisor continuity is blocked: another process holds the Advisor journal for this session. ${RECOVERY}`;
+      return `Advisor continuity is blocked: another process holds the Advisor journal for this session. ${JOURNAL_REPAIR}`;
     case "journal-unreadable":
-      return `Advisor continuity is blocked: the Advisor journal cannot be read, so no turn was started and nothing was overwritten. ${RECOVERY}`;
+      return `Advisor continuity is blocked: the Advisor journal cannot be read, so no turn was started and nothing was overwritten. ${JOURNAL_REPAIR}`;
     case "journal-write-failed":
-      return `Advisor continuity is blocked: the Advisor journal could not be written, so the turn was not accepted as recorded. ${RECOVERY}`;
+      return "Advisor continuity is blocked: the Advisor journal could not be written, so no turn was recorded. Nothing can reconcile a write that never happened; the next consultation records its own turn.";
     case "journal-gate-stale":
       return "Advisor continuity is blocked: the reclamation gate is stale, ownerless or unreadable, and it is never reclaimed automatically. Nothing was changed. Stop every Pi process that uses this configuration, confirm none is running, then remove the gate directory named in /delegate advisor threads status.";
     case "rpc-unavailable":
@@ -186,7 +196,7 @@ export function advisorContinuityText(code: AdvisorContinuityCode): string {
     case "answer-outside":
       return `Advisor continuation is blocked: this turn's answer path left the private output tree, so it was refused. ${RECOVERY}`;
     case "closing-failed":
-      return "Advisor continuity is blocked: the closing state of an earlier task could not be persisted, so its records only look settled. Run /delegate advisor threads recover to reconcile it with the host before consulting again.";
+      return "Advisor continuity is blocked: the closing state of an earlier task could not be persisted, so its records only look settled. The next consultation persists that closure before it starts; /delegate advisor threads recover does it now.";
     case "brief-required":
       return "Advisor error: a first consultation requires brief. Fresh context sends only your question and brief, so supply a short self-contained objective, constraints, relevant facts, options, and uncertainty; a continuation sends only the question and evidence.";
     case "answer-missing":
@@ -546,6 +556,10 @@ export class AdvisorExecutor {
             invalidateAdvisorPartition(latest, invalidation, this.now()),
           );
         if (!this.isCurrent(input, generation, signal))
+          return this.blockedGroup(input.slots, "cancelled");
+        // A parent whose earlier turn was cut does not need a command to move again: what the host can
+        // prove is over is closed here, before the guards read the partition.
+        if (!(await this.reconcile(input, host, session, generation, signal)))
           return this.blockedGroup(input.slots, "cancelled");
         if (unresolvedAdvisorThread(session.partition()))
           return this.blockedGroup(input.slots, "unresolved");
@@ -920,8 +934,9 @@ export class AdvisorExecutor {
           : answer.code === "answer-missing"
             ? "answer-missing"
             : "answer-invalid";
-      // Terminal proof reconciles the activity, but the thread stays blocked and non-resumable: a
-      // turn without a usable answer is never retried inside the same task.
+      // Terminal proof reconciles the activity, but a turn without a usable answer is never resumed:
+      // the record stays blocked for this call, and the next consultation may close it once the host
+      // proves the run terminal and start a new thread.
       await this.apply(session, (latest) =>
         upsertAdvisorThread(
           latest,
@@ -1038,6 +1053,57 @@ export class AdvisorExecutor {
       context: "unknown",
       code,
       detail: advisorContinuityText(code),
+    };
+  }
+
+  /**
+   * Settle what the host can prove is over. Nothing is closed on a guess: when a record is unresolved
+   * and no bridge can be admitted, the journal is left exactly as it was and the guards below block as
+   * they always did. A closing debt of a retired task needs no bridge and is paid here regardless.
+   */
+  private async reconcile(
+    input: AdvisorExecution,
+    host: AgentLaunchHost,
+    session: AdvisorJournalSession,
+    generation: number,
+    signal: AbortSignal | undefined,
+  ): Promise<boolean> {
+    const partition = session.partition();
+    const unresolved = unresolvedAdvisorThread(partition) !== undefined;
+    const retiring = unclosedAdvisorTask(partition, input.task.taskToken) !== undefined;
+    if (!unresolved && !retiring) return true;
+
+    // A closing debt is local: it needs no host, so a bridge that cannot be admitted must not hold it.
+    const evidence = unresolved ? await this.continuityEvidence(host) : undefined;
+    if (unresolved && evidence === undefined) return true;
+
+    const plan = await planAdvisorContinuity({
+      partition,
+      activeTaskToken: input.task.taskToken,
+      evidence: evidence ?? UNANSWERABLE_EVIDENCE,
+    });
+    // Holds alone write nothing: rewriting the journal with identical bytes would only add contention.
+    if (isAdvisorContinuityPlanEmpty(plan)) return true;
+    if (!this.isCurrent(input, generation, signal)) return false;
+    await this.apply(session, (latest) => applyAdvisorContinuity(latest, plan, this.now()));
+    return true;
+  }
+
+  /**
+   * The host questions a reconciliation may ask, after admitting the same bridge a continuation needs:
+   * a bridge that cannot be admitted here answers nothing about its own runs either. A slot that then
+   * resumes admits the bridge again on its own, because a continuation checks the advertisement it
+   * uses instead of trusting this pass.
+   */
+  private async continuityEvidence(
+    host: AgentLaunchHost,
+  ): Promise<AdvisorContinuityEvidence | undefined> {
+    const client = this.resumeFactory(host.events);
+    const capability = await client.probe(host.sessionId);
+    if (!capability.ok) return undefined;
+    return {
+      runState: (runId) => client.runState(runId),
+      runs: () => client.runs(),
     };
   }
 

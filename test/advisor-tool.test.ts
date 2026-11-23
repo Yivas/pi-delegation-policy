@@ -2303,9 +2303,17 @@ class RpcHost {
     `example/${["first", "second", "third"][slot] ?? "first"}`;
   /** The receipt the host returns for a revival; a test can drop it or make it unusable. */
   receipt: (slot: number, runId: string) => Payload = (_slot, runId) => ({ runId });
+  /** Runs the session holds besides the ones this fake launched, for an absence proof. */
+  extraRuns: Array<{ id: string; label: string; state: string; startedAt?: number }> = [];
+  /** What the host reports it trimmed: a non-zero count makes absence mean nothing. */
+  omittedRuns = 0;
+  byteLimitExceeded = false;
+  /** A bridge without the running projection answers no untargeted question at all. */
+  untargetedStatus = true;
   /** Opens the exact window between sending a request and receiving its reply. */
   beforeReply?: (method: string) => Promise<void>;
   private readonly runs = new Map<string, number>();
+  private readonly startedAt = new Map<string, number>();
   private seq = 0;
   private readonly bus: Bus;
 
@@ -2340,9 +2348,45 @@ class RpcHost {
       this.seq += 1;
       const runId = `resume-run-${this.seq}`;
       this.runs.set(runId, slot);
+      this.startedAt.set(runId, Date.now());
       const text = this.answer(slot);
       if (text !== undefined) await writeFile(String(params.output), text, "utf8");
       return this.reply(request.requestId, { text: "", details: this.receipt(slot, runId) });
+    }
+    if (request.method === "status" && params.id === undefined) {
+      // Untargeted: what the session still holds. It is the only answer that can rule a thread out.
+      if (!this.untargetedStatus) return this.reply(request.requestId, { text: "" });
+      return this.reply(request.requestId, {
+        text: "",
+        details: { mode: "management", results: [] },
+        asyncSnapshot: {
+          kind: "pi-subagents.async-status-snapshot",
+          version: 1,
+          generatedAt: Date.now(),
+          caps: {
+            maxRuns: 20,
+            maxChildrenPerNode: 8,
+            maxDepth: 3,
+            maxStringLength: 160,
+            maxSerializedBytes: 32_768,
+          },
+          omitted: {
+            runs: this.omittedRuns,
+            children: 0,
+            byteLimitExceeded: this.byteLimitExceeded,
+          },
+          runs: [
+            ...this.extraRuns,
+            ...[...this.runs.entries()].map(([id, slot]) => ({
+              id,
+              kind: "subagent",
+              label: this.agent,
+              state: this.state(slot),
+              startedAt: this.startedAt.get(id),
+            })),
+          ],
+        },
+      });
     }
     if (request.method === "status") {
       const runId = String(params.id);
@@ -2446,7 +2490,7 @@ test("a second turn resumes the exact new run id and returns its own file", asyn
   }
 });
 
-test("a completed turn without a usable answer blocks the parent until the host proves it", async () => {
+test("a turn without a usable answer closes its thread once the host proves it", async () => {
   const run = await harness();
   const rpc = new RpcHost(run.bus);
   try {
@@ -2455,27 +2499,28 @@ test("a completed turn without a usable answer blocks the parent until the host 
     rpc.answer = () => undefined;
     assert.match(await run.call({ question: "second question" }), /wrote no answer file/);
 
-    // No retry inside the task, and no fresh launch behind the block.
-    const requests = run.bus.requests.length;
-    const resumes = rpc.resumes.length;
-    assert.match(
-      await run.call({ question: "third question" }),
-      /an earlier turn may still be running/,
+    // The answer-less turn is blocked, and it still carries its receipt.
+    assert.deepEqual(
+      (await answeredSlots())
+        .filter((entry) => entry.state === "blocked")
+        .map((entry) => [entry.slot, entry.reason])
+        .sort(),
+      [
+        [0, "answer-missing"],
+        [1, "answer-missing"],
+      ],
     );
-    assert.equal(run.bus.requests.length, requests);
-    assert.equal(rpc.resumes.length, resumes);
 
-    // The uncertainty survives the end of the task and an explicit reset.
-    await run.newTask();
-    assert.match(await run.call(), /an earlier turn may still be running/);
-    await run.command("advisor threads reset");
-    assert.match(run.notifications.at(-1)?.message ?? "", /reset changed nothing/);
-
-    // Public terminal proof reconciles it, and the next consultation starts a new thread.
-    await run.command("advisor threads recover");
-    assert.match(run.notifications.at(-1)?.message ?? "", /proven, closed/);
-    assert.match(await run.call(), /Consultation complete/);
-    assert.equal(run.bus.requests.length, requests + 2);
+    // The host's own terminal status settles it, so the next turn runs with no command. It is never
+    // resumed: a thread that lost its answer starts a new one.
+    const resumes = rpc.resumes.length;
+    assert.match(await run.call({ question: "third question" }), /Consultation complete/);
+    assert.equal(rpc.resumes.length, resumes, "a turn without an answer is never resumed");
+    assert.equal(
+      (await answeredSlots()).filter((entry) => entry.state === "blocked").length,
+      0,
+      "no thread stays blocked once the host proved the turn terminal",
+    );
   } finally {
     await run.close();
   }
@@ -2747,7 +2792,7 @@ const answeredSlots = async (path = getAdvisorThreadsPath()): Promise<Payload[]>
   return Object.values(loaded.parents).flatMap((parent) => parent.threads);
 };
 
-test("a lost receipt blocks recovery instead of proving the previous turn", async () => {
+test("a lost receipt blocks only while the host still lists a run for that profile", async () => {
   const run = await harness();
   const rpc = new RpcHost(run.bus);
   try {
@@ -2758,12 +2803,8 @@ test("a lost receipt blocks recovery instead of proving the previous turn", asyn
     rpc.receipt = () => ({});
     assert.match(await run.call({ question: "third" }), /without a usable run id/);
 
-    // The previous turn is complete in the public snapshot, yet it proves nothing about this one.
-    await run.command("advisor threads recover");
-    const recovered = run.notifications.at(-1)?.message ?? "";
-    assert.match(recovered, /no receipt for the current turn/);
-    assert.match(recovered, /stays blocked/);
-
+    // The session still lists a live run of this profile, so nothing may be closed for it.
+    rpc.extraRuns = [{ id: "orphan-run", label: ADVISOR_AGENT_NAME, state: "running" }];
     const requests = run.bus.requests.length;
     const resumes = rpc.resumes.length;
     await run.newTask();
@@ -2772,12 +2813,78 @@ test("a lost receipt blocks recovery instead of proving the previous turn", asyn
     assert.equal(rpc.resumes.length, resumes);
     await run.command("advisor threads reset");
     assert.match(run.notifications.at(-1)?.message ?? "", /reset changed nothing/);
+    // The command reports the same evidence the consultation used, never a closure.
+    await run.command("advisor threads recover");
+    assert.match(run.notifications.at(-1)?.message ?? "", /still running/);
+
+    // With no live run left, the same consultation settles the thread by itself.
+    rpc.extraRuns = [];
+    const before = rpc.requests.length;
+    assert.match(await run.call(), /Consultation complete/);
+    const records = await answeredSlots();
+    assert.equal(
+      records.filter((entry) => entry.state === "blocked").length,
+      0,
+      "the turn with no receipt is settled once the host lists nothing running",
+    );
+    assert.ok(
+      records.some((entry) => entry.state === "closed" && entry.reason === "recovered"),
+      "it closed through the session list, not through a receipt",
+    );
+    // Every ancestor in the chain is complete, and asking about one would prove the wrong turn: this
+    // record has no run id of its own, so the session list is the only question asked.
+    assert.ok(
+      !rpc.requests
+        .slice(before)
+        .some((request) => request.method === "status" && request.params?.id !== undefined),
+      "only the session list decided, never a run id",
+    );
+    // And with nothing left, the command has nothing to report or to write.
+    await run.command("advisor threads recover");
+    assert.match(run.notifications.at(-1)?.message ?? "", /nothing to reconcile/);
   } finally {
     await run.close();
   }
 });
 
-test("a receipt that cannot be persisted blocks the parent with no current operation id", async () => {
+test("an incomplete session list closes nothing for a turn with no receipt", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    rpc.receipt = () => ({});
+    assert.match(await run.call({ question: "second" }), /without a usable run id/);
+
+    // The host trimmed its list, so the absence of a live run proves nothing.
+    rpc.omittedRuns = 1;
+    const requests = run.bus.requests.length;
+    await run.newTask();
+    assert.match(await run.call(), /an earlier turn may still be running/);
+    assert.equal(run.bus.requests.length, requests);
+
+    // So is a list the host had to trim by bytes: the accounting is the same, and it is the only
+    // thing that makes absence mean anything.
+    rpc.omittedRuns = 0;
+    rpc.byteLimitExceeded = true;
+    assert.match(await run.call(), /an earlier turn may still be running/);
+    assert.equal(run.bus.requests.length, requests);
+
+    // A bridge that cannot answer the untargeted question is in the same position.
+    rpc.byteLimitExceeded = false;
+    rpc.untargetedStatus = false;
+    assert.match(await run.call(), /an earlier turn may still be running/);
+    assert.equal(run.bus.requests.length, requests);
+
+    // With a whole list and nothing running, the same consultation settles it by itself.
+    rpc.untargetedStatus = true;
+    assert.match(await run.call(), /Consultation complete/);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a receipt that cannot be persisted is settled once the host lists nothing running", async () => {
   const directory = await mkdtemp(join(tmpdir(), "advisor-accepted-"));
   const journal = new GatedJournal(join(directory, "threads.json"));
   const run = await harness(base, models, 10_000, { journal });
@@ -2793,16 +2900,59 @@ test("a receipt that cannot be persisted blocks the parent with no current opera
     const record = records.find((entry) => entry.slot === 0);
     assert.equal(record?.state, "pending", JSON.stringify(records));
     assert.equal(record?.operationRunId, undefined, JSON.stringify(records));
-    // Recovery cannot prove it, and a new task does not unlock generation.
-    await run.command("advisor threads recover");
-    assert.match(run.notifications.at(-1)?.message ?? "", /no receipt for the current turn/);
+
+    // No receipt and no live run: only the session list can settle it, and it does.
     const requests = run.bus.requests.length;
     await run.newTask();
-    assert.match(await run.call(), /an earlier turn may still be running/);
-    assert.equal(run.bus.requests.length, requests);
+    assert.match(await run.call(), /Consultation complete/);
+    assert.ok(run.bus.requests.length > requests);
+    const settled = (await answeredSlots(journal.filePath)).filter(
+      (entry) => entry.taskToken === record?.taskToken,
+    );
+    assert.deepEqual(
+      settled.map((entry) => entry.state),
+      ["closed", "closed"],
+      "both slots of the turn with no receipt were closed with proof",
+    );
+    assert.deepEqual(
+      settled.map((entry) => Number(entry.slot)).sort((left, right) => left - right),
+      [0, 1],
+    );
   } finally {
     await run.close();
     await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("a reset abandons only the turn nothing can prove", async () => {
+  const run = await harness();
+  const rpc = new RpcHost(run.bus);
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    assert.match(await run.call(), /Consultation complete/);
+    // The host accepts slot 1 without a usable receipt, so that record keeps no run id at all.
+    rpc.receipt = (slot, runId) => (slot === 0 ? { runId } : {});
+    assert.match(await run.call({ question: "second" }), /without a usable run id/);
+    // The bridge is admitted, but it cannot answer the session-wide question absence needs.
+    rpc.untargetedStatus = false;
+
+    await run.command("advisor threads reset");
+    assert.match(
+      run.notifications.at(-1)?.message ?? "",
+      /threads reset \(1 abandoned without proof\)/,
+    );
+    const records = await answeredSlots();
+    assert.ok(
+      records.every((entry) => entry.state === "closed"),
+      JSON.stringify(records),
+    );
+    assert.ok(
+      records.some((entry) => entry.reason === "reset"),
+      "the unprovable turn was abandoned",
+    );
+    assert.match(await run.call({ question: "third" }), /Consultation complete/);
+  } finally {
+    await run.close();
   }
 });
 
@@ -3205,7 +3355,7 @@ test("a resolved thinking change fences a turn that is still running", async () 
   }
 });
 
-test("a task whose closing tombstones fail stays blocked until reconciliation", async () => {
+test("a task whose closing tombstones fail pays the debt on the next consultation", async () => {
   for (const mode of ["busy", "write"] as const) {
     const directory = await mkdtemp(join(tmpdir(), `advisor-close-${mode}-`));
     const path = join(directory, "threads.json");
@@ -3243,16 +3393,24 @@ test("a task whose closing tombstones fail stays blocked until reconciliation", 
       assert.equal(run.bus.requests.length, requests);
       await run.hook("input", { source: "interactive" });
       await run.hook("before_agent_start");
-      assert.match(await run.call(), /closing state of an earlier task could not be persisted/);
-      await run.command("advisor threads recover");
-      assert.match(run.notifications.at(-1)?.message ?? "", /closed/);
-      assert.ok((await answeredSlots(path)).every((record) => record.state === "closed"));
+      // The debt needs no command: the consultation persists the closing tombstone itself.
       const resumes = rpc.resumes.length;
       assert.match(
         await run.call({ question: "again", brief: "new task" }),
         /Consultation complete/,
       );
       assert.equal(rpc.resumes.length, resumes, "a settled task is never resumed");
+      assert.equal(rpc.requests.length, 0, "a local closing debt asks the host nothing");
+      const records = await answeredSlots(path);
+      assert.equal(
+        records.filter((record) => record.state === "closed").length,
+        2,
+        "both retired records were closed by the consultation",
+      );
+      assert.ok(
+        records.every((record) => record.state === "closed" || record.state === "answered"),
+        JSON.stringify(records),
+      );
       assert.equal(run.bus.requests.length, requests + 2);
     } finally {
       await run.close();
@@ -3704,7 +3862,7 @@ test("ownership: revocation during the final journal cleanup discards all answer
   }
 });
 
-test("ownership: closing T2 never satisfies the failed closing obligation of T1", async () => {
+test("ownership: the next consultation pays only the failed closing obligation it finds", async () => {
   const directory = await mkdtemp(join(tmpdir(), "advisor-retired-"));
   const journal = new GatedJournal(join(directory, "threads.json"));
   const run = await harness(base, models, 10_000, { journal });
@@ -3720,12 +3878,14 @@ test("ownership: closing T2 never satisfies the failed closing obligation of T1"
     await run.hook("input", { source: "interactive" });
     await run.hook("before_agent_start");
     const requests = run.bus.requests.length;
-    assert.match(await run.call(), /closing state of an earlier task/);
-    assert.equal(run.bus.requests.length, requests);
-    await run.command("advisor threads recover");
-    assert.ok((await answeredSlots(journal.filePath)).every((record) => record.state === "closed"));
     assert.match(await run.call(), /Consultation complete/);
     assert.equal(run.bus.requests.length, requests + 2);
+    const records = await answeredSlots(journal.filePath);
+    assert.equal(
+      records.filter((record) => record.state === "closed").length,
+      2,
+      "the two retired records were closed by the consultation",
+    );
   } finally {
     await run.close();
     await rm(directory, { recursive: true, force: true });
@@ -3768,10 +3928,10 @@ test("ownership: concurrent parents retain closing debts across a reload and ano
       rpc.sessionId = sessionId;
       try {
         fresh.bus.respond = (request) => fresh.bus.finish(request);
-        assert.match(await fresh.call(), /closing state of an earlier task/, sessionId);
-        assert.equal(fresh.bus.requests.length, 0);
-        if (sessionId === "parent-a") await fresh.command("advisor threads recover");
-        // Closing the reload's unrelated token cannot erase the other parent's obligation.
+        // A reload keeps the debt: paying another parent's obligation never erases this one.
+        await fresh.command("advisor threads status");
+        assert.match(fresh.notifications.at(-1)?.message ?? "", /guard=closing-failed/, sessionId);
+        assert.match(await fresh.call(), /Consultation complete/, sessionId);
         await fresh.hook("agent_settled");
       } finally {
         await fresh.close();
@@ -3805,8 +3965,13 @@ test("ownership: answered obligations are never evicted for another parent", asy
     });
     try {
       reloaded.bus.respond = (request) => reloaded.bus.finish(request);
-      assert.match(await reloaded.call(), /closing state of an earlier task/);
+      // The oldest parent keeps its obligation: it was not evicted to make room for the others.
+      await reloaded.command("advisor threads status");
+      assert.match(reloaded.notifications.at(-1)?.message ?? "", /guard=closing-failed/);
       assert.equal(reloaded.bus.requests.length, 0);
+      // And the consultation pays it instead of waiting for a command.
+      assert.match(await reloaded.call(), /Consultation complete/);
+      assert.equal(reloaded.bus.requests.length, 2);
     } finally {
       await reloaded.close();
     }

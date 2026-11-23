@@ -329,10 +329,10 @@ type ContinuityAction = (typeof CONTINUITY_ACTIONS)[number];
 const CONTINUITY_LABELS: Record<ContinuityAction, string> = {
   status: "Show Advisor continuity status",
   recover: "Reconcile a possibly live turn with the host",
-  reset: "Reset Advisor threads (only when nothing may be live)",
+  reset: "Reset Advisor threads (only the turns nothing can prove)",
 };
 const CONTINUITY_DESCRIPTION =
-  "Advisor continuity is private to this extension: the journal, the lock and the per-turn answer files are never edited by hand. Recover asks the host for terminal proof of each unresolved turn; reset only abandons threads when nothing may still be running.";
+  "Advisor continuity is private to this extension: the journal, the lock and the per-turn answer files are never edited by hand. Recover asks the host for terminal proof of each unresolved turn, and a consultation does the same before it starts. Reset abandons only the turns that never returned a run id and that no evidence resolves, and refuses while a run may be live or a record holds a run id it cannot settle.";
 const PROVIDER_CHOICES = [
   "Standard profile (no provider extension)",
   "Anthropic auth 3.4.3/3.4.4/3.6.0 (explicit opt-in)",

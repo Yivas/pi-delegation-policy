@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { AgentLaunchEventBus } from "./agent-launch.ts";
+import type {
+  AdvisorRunEvidence,
+  AdvisorRunsSnapshot,
+  AdvisorRunState,
+} from "./advisor-reconcile.ts";
 import { isAdvisorRunId } from "./advisor-threads.ts";
 
 /**
@@ -53,6 +58,14 @@ type RpcReply =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Whether the host listed every run it holds. `omitted` is its own accounting of what the caps removed,
+ * and an unrecognised shape is never read as whole: absence of a run may only be believed here.
+ */
+function isCompleteSnapshot(omitted: unknown): boolean {
+  return isRecord(omitted) && omitted.runs === 0 && omitted.byteLimitExceeded === false;
 }
 
 export type AdvisorResumeClientOptions = {
@@ -156,6 +169,65 @@ export class AdvisorResumeClient {
       return { ok: false, code: "status-unavailable" };
     const node = snapshot.runs.find((candidate) => isRecord(candidate) && candidate.id === runId);
     return isRecord(node) ? { ok: true, node } : { ok: false, code: "status-unavailable" };
+  }
+
+  /**
+   * The runs this session still holds, and whether the list is whole. It is the only question that can
+   * rule out a thread whose turn never returned a receipt; a trimmed list proves nothing, so `complete`
+   * is what the caller reads before closing anything.
+   *
+   * The untargeted `status` this depends on, and the `omitted` accounting it reads, are documented by
+   * the host's extension API and were verified against the installed bridge by reading its source; no
+   * admitted build has been exercised from here, so the synthetic host in the tests is the only
+   * executable check of that contract.
+   */
+  async runs(): Promise<AdvisorRunsSnapshot> {
+    const reply = await this.call("status", {});
+    if (!reply.ok) return { ok: false };
+    const snapshot = reply.data.asyncSnapshot;
+    if (
+      !isRecord(snapshot) ||
+      snapshot.kind !== ASYNC_STATUS_SNAPSHOT_KIND ||
+      snapshot.version !== ASYNC_STATUS_SNAPSHOT_VERSION ||
+      !Array.isArray(snapshot.runs)
+    )
+      return { ok: false };
+    const runs: AdvisorRunEvidence[] = [];
+    for (const node of snapshot.runs) {
+      // One node this reader cannot describe is a list it cannot vouch for, so nothing is concluded.
+      if (!isRecord(node) || typeof node.label !== "string" || typeof node.state !== "string")
+        return { ok: false };
+      runs.push({
+        label: node.label,
+        state: node.state,
+        ...(typeof node.startedAt === "number" ? { startedAt: node.startedAt } : {}),
+      });
+    }
+    return { ok: true, runs, complete: isCompleteSnapshot(snapshot.omitted) };
+  }
+
+  /**
+   * The state of one run, and whether the host answered about it at all. A host that answers without
+   * that run is the only reading that lets absence decide; a bridge that stays silent proves nothing.
+   */
+  async runState(runId: string): Promise<AdvisorRunState> {
+    const reply = await this.call("status", { id: runId });
+    if (!reply.ok) return { ok: false, reason: "unavailable" };
+    const snapshot = reply.data.asyncSnapshot;
+    if (
+      !isRecord(snapshot) ||
+      snapshot.kind !== ASYNC_STATUS_SNAPSHOT_KIND ||
+      snapshot.version !== ASYNC_STATUS_SNAPSHOT_VERSION ||
+      !Array.isArray(snapshot.runs)
+    )
+      return { ok: false, reason: "unavailable" };
+    const node = snapshot.runs.find((candidate) => isRecord(candidate) && candidate.id === runId);
+    if (!isRecord(node) || typeof node.state !== "string")
+      // Absence only counts in a list the host says is whole: a trimmed one may have dropped it.
+      return isCompleteSnapshot(snapshot.omitted)
+        ? { ok: false, reason: "unknown-run" }
+        : { ok: false, reason: "unavailable" };
+    return { ok: true, state: node.state };
   }
 
   /** A stop request acknowledges the operation, never termination: it is not proof of anything. */

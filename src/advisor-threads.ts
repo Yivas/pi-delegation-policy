@@ -348,8 +348,11 @@ export async function readAdvisorThreads(path: string): Promise<LoadedAdvisorThr
 /**
  * A record that may still describe a live run. `blocked` counts: a turn that ended without public
  * terminal proof is uncertainty, not progress, and keeps blocking new work for its parent.
+ *
+ * Exported because reconciliation walks the partition record by record to decide each one from its own
+ * evidence; the single-record predicate is the only definition of that class in the codebase.
  */
-function isUnresolved(record: AdvisorThreadRecord): boolean {
+export function isUnresolvedAdvisorThread(record: AdvisorThreadRecord): boolean {
   return record.state === "pending" || record.state === "accepted" || record.state === "blocked";
 }
 
@@ -365,7 +368,7 @@ export function findAdvisorThread(
 export function unresolvedAdvisorThread(
   partition: AdvisorParentPartition,
 ): AdvisorThreadRecord | undefined {
-  return partition.threads.find(isUnresolved);
+  return partition.threads.find(isUnresolvedAdvisorThread);
 }
 
 /** An answered turn from a retired task is still owed a persisted closing tombstone. */
@@ -458,7 +461,7 @@ export function settleAdvisorThread(
   now: number,
 ): AdvisorParentPartition {
   const threads = partition.threads.map((record) =>
-    record.taskToken === taskToken && record.slot === slot && isUnresolved(record)
+    record.taskToken === taskToken && record.slot === slot && isUnresolvedAdvisorThread(record)
       ? { ...record, state: "closed" as const, reason, updatedAt: now }
       : record,
   );

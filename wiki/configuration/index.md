@@ -354,8 +354,17 @@ timeout or missing answer blocks the thread: it is never retried, replaced by a 
 continued from an older run id, and recovery can only use the receipt of the turn that is actually
 pending, never an earlier one. A task ends when it settles and cannot be resumed, even if persisting
 its closure fails. Its answered records remain closing obligations in the same journal; a new task
-cannot bypass them, and recovery must persist their closures before consultation can restart.
-Uncertain turns still require terminal proof for their current operation. A fresh prompt, a branch
+still cannot bypass them, but the next consultation persists their closures itself, so no command is
+needed. Uncertain turns — including a turn that never returned a run id — are settled by two pieces
+of host evidence, in this order: the exact run id when the record has one, and otherwise the
+session's run list. A record with a run id closes when that run is in a terminal state (`complete`,
+`failed`, `partial`, `paused`, `stopped`, `rejected`), or when the host no longer holds that run and
+a whole list proves it absent. A record with no run id closes only when the list is whole — the host
+reports nothing omitted or byte-trimmed — and it holds no run that may belong to that thread: a live
+(`queued` or `running`) one attributed by the advisor agent name in the run label and its start time,
+a state this reader does not know, or one of our own started after the thread, which cannot be ruled
+out either. A trimmed list, an unreachable bridge or a live run of that profile closes
+nothing and keeps blocking. Nothing is ever stopped on a guess. A fresh prompt, a branch
 move or a configuration change starts a new thread, and a prompt an extension sends opens no task,
 so a consultation from one starts nothing. The journal is private and content-free; the answer
 files and child sessions keep the host's and provider's normal retention. Output paths are checked
@@ -364,9 +373,11 @@ symlinks and junctions in the owned tree are refused. This is not protection aga
 host runtime replacing paths concurrently.
 
 Every configured advisor keeps its position and gets an explicit result, so two answers out of
-three report `partial`. `/delegate advisor threads status|recover|reset`, or `C` in the
-`/delegate` panel, reports the continuity state, reconciles a possibly live turn with public
-terminal proof, and abandons threads only when nothing may still be running.
+three report `partial`. The same reconciliation runs by itself before a consultation reports
+continuity as blocked; `/delegate advisor threads status|recover|reset`, or `C` in the `/delegate`
+panel, exposes the manual actions: `recover` runs it on demand and `status` only reports. `reset`
+abandons the turns that never returned a run id and that no evidence resolves; it refuses while a run
+may be live or while a record still holds a run id it cannot settle.
 
 Continuity uses three lock directories of its own beside the journal, all under the same agent
 directory: `delegation-policy.advisor-threads.json.lock/<parent>` per session,

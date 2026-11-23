@@ -33,11 +33,18 @@ import {
   getAdvisorThreadsPath,
   invalidateAdvisorPartition,
   readAdvisorThreads,
-  settleAdvisorThread,
   unresolvedAdvisorThread,
   unclosedAdvisorTask,
 } from "./advisor-threads.ts";
-import { AdvisorResumeClient } from "./advisor-resume.ts";
+import { AdvisorResumeClient, type AdvisorResumeFailure } from "./advisor-resume.ts";
+import {
+  UNANSWERABLE_EVIDENCE,
+  applyAdvisorContinuity,
+  planAdvisorContinuity,
+  planAdvisorContinuityAbandon,
+  type AdvisorContinuityEvidence,
+  type AdvisorRunState,
+} from "./advisor-reconcile.ts";
 import { registerChildExtensions, type AgentLaunchEventBus } from "./agent-launch.ts";
 import { readAdvisorExtensions, setAdvisorChildExtensions } from "./advisor-extensions.ts";
 import { admissionFor } from "./provider-admissions.ts";
@@ -922,18 +929,42 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         ...(threads.length ? [threads.join(" | ")] : []),
         ...(unresolved || closing
           ? [
-              "Run /delegate advisor threads recover to reconcile a possibly live turn with the host.",
+              "The next consultation reconciles this before it starts; /delegate advisor threads recover does it now.",
             ]
           : []),
       ].join("\n");
     };
-    const isTerminalNodeState = (value: unknown): boolean =>
-      value === "complete" ||
-      value === "failed" ||
-      value === "partial" ||
-      value === "paused" ||
-      value === "stopped" ||
-      value === "rejected";
+    /**
+     * The host questions one reconciliation may ask, after admitting the same bridge a continuation
+     * needs: a bridge that cannot be admitted here answers nothing about its own runs either.
+     */
+    const continuityEvidence = async (
+      client: AdvisorResumeClient,
+      sessionId: string,
+    ): Promise<
+      { ok: true; evidence: AdvisorContinuityEvidence } | { ok: false; code: AdvisorResumeFailure }
+    > => {
+      const probe = await client.probe(sessionId);
+      if (!probe.ok) return { ok: false, code: probe.code };
+      // Per-run answers are cached for the life of this pass, so a caller may plan twice — once
+      // outside the journal lock and once inside it over the freshest partition — without repeating
+      // the per-record questions. The session list is deliberately not cached: it is one call, and
+      // the pass inside the lock must see the runs as they are then, not as they were before it.
+      const states = new Map<string, AdvisorRunState>();
+      return {
+        ok: true,
+        evidence: {
+          runState: async (runId) => {
+            const cached = states.get(runId);
+            if (cached) return cached;
+            const state = await client.runState(runId);
+            states.set(runId, state);
+            return state;
+          },
+          runs: () => client.runs(),
+        },
+      };
+    };
     const recoverContinuity = async (
       ctx: ExtensionContext,
       parentKey: string,
@@ -975,69 +1006,47 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const lines: string[] = [];
       let unproven = false;
       let unavailable: string | undefined;
-      const settled: Array<{ taskToken: string; slot: number }> = [];
       const result = await journal.exclusive(parentKey, async (session) => {
         const partition = session.partition();
-        const closing = partition.threads.filter(
-          (record) => record.state === "answered" && record.taskToken !== taskToken,
-        );
-        const unresolved = partition.threads.filter(
-          (record) =>
-            record.state === "pending" || record.state === "accepted" || record.state === "blocked",
-        );
-        if (!unresolved.length && !closing.length) return "clear" as const;
-        // Answered turns already have terminal proof. Only uncertain operations need fresh host
-        // status, and only their current receipt can prove them.
-        if (unresolved.length) {
-          const probe = await client.probe(sessionId);
-          if (!probe.ok) {
-            unavailable = advisorContinuityText(probe.code);
-            return "unavailable" as const;
-          }
+        const owes =
+          unresolvedAdvisorThread(partition) !== undefined ||
+          unclosedAdvisorTask(partition, taskToken) !== undefined;
+        if (!owes) return "clear" as const;
+        // An answered record of a retired task needs no host. Only an unresolved one does, and only
+        // an admitted bridge can say whether its run is still alive.
+        const readiness =
+          unresolvedAdvisorThread(partition) === undefined
+            ? undefined
+            : await continuityEvidence(client, sessionId);
+        if (readiness && !readiness.ok) {
+          unavailable = advisorContinuityText(readiness.code);
+          return "unavailable" as const;
         }
-        for (const record of closing) lines.push(`slot ${record.slot + 1}: settled task, closed`);
-        for (const record of unresolved) {
-          // Only the run id of this operation can prove it. An ancestor in the chain proves an
-          // earlier turn, so a lost receipt stays unproven instead of reconciling the wrong run.
-          const runId = record.operationRunId;
-          if (!runId) {
-            unproven = true;
-            lines.push(
-              `slot ${record.slot + 1}: no receipt for the current turn, so termination cannot be proven`,
-            );
-            continue;
-          }
-          const status = await client.status(runId);
-          if (!status.ok) {
-            unproven = true;
-            lines.push(`slot ${record.slot + 1}: status unavailable`);
-            continue;
-          }
-          if (!isTerminalNodeState(status.node.state)) {
-            unproven = true;
-            lines.push(`slot ${record.slot + 1}: still ${String(status.node.state)}`);
-            continue;
-          }
-          settled.push({ taskToken: record.taskToken, slot: record.slot });
-          lines.push(`slot ${record.slot + 1}: ${String(status.node.state)} proven, closed`);
+        const plan = await planAdvisorContinuity({
+          partition,
+          activeTaskToken: taskToken,
+          evidence: readiness?.ok ? readiness.evidence : UNANSWERABLE_EVIDENCE,
+        });
+        for (const held of plan.kept) {
+          unproven = true;
+          lines.push(
+            `slot ${held.slot + 1}: ${
+              held.cause === "unknown"
+                ? "no attributable run provable"
+                : held.cause === "late"
+                  ? "still running, started after the thread"
+                  : "still running"
+            }`,
+          );
         }
-        // Derived from the freshest partition, after the reads, so no snapshot can roll back a
-        // record another slot wrote in the meantime.
-        if (settled.length || closing.length)
-          await session.mutate((latest) => {
-            let next = latest;
-            for (const token of new Set(closing.map((record) => record.taskToken)))
-              next = closeAdvisorTask(next, token, "task-settled", Date.now());
-            for (const target of settled)
-              next = settleAdvisorThread(
-                next,
-                target.taskToken,
-                target.slot,
-                "recovered",
-                Date.now(),
-              );
-            return next;
-          });
+        for (const closure of plan.closures)
+          lines.push(
+            `slot ${closure.slot + 1}: ${closure.proof === "absent" ? "absent" : "terminal"} proven, closed`,
+          );
+        for (const token of plan.retiredTasks)
+          lines.push(`retired task ${token.slice(0, 8)}: closed`);
+        if (plan.closures.length || plan.retiredTasks.length)
+          await session.mutate((latest) => applyAdvisorContinuity(latest, plan, Date.now()));
         return "done" as const;
       });
       if (!result.ok)
@@ -1074,18 +1083,75 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       reset: async () => {
         const parentKey = parentKeyFor(ctx);
         return parentKey
-          ? resetContinuity(parentKey)
+          ? resetContinuity(ctx, parentKey)
           : { message: "Advisor continuity needs a host session identity.", type: "error" };
       },
     });
     const resetContinuity = async (
+      ctx: ExtensionContext,
       parentKey: string,
     ): Promise<{ message: string; type: "info" | "error" }> => {
+      const sessionId = currentSessionId(ctx);
+      const client = sessionId ? resumeClient(pi.events) : undefined;
+      let abandoned = 0;
+      let refusal: string | undefined;
+      // The per-record questions happen before the lock: a journal held across a queue of RPC calls
+      // turns a slow bridge into `journal-busy` for every other writer of this session. The session
+      // list is asked once more inside, because one call is cheap and it must be current.
+      const before = await journal.read(parentKey);
+      const unresolvedBefore = unresolvedAdvisorThread(before.partition) !== undefined;
+      const readiness =
+        unresolvedBefore && client && sessionId
+          ? await continuityEvidence(client, sessionId)
+          : undefined;
+      if (readiness?.ok)
+        // Plans once outside to warm the per-run answers; the pass inside reuses them and re-reads
+        // only the list, so a record written between the two reads is not decided on stale evidence.
+        await planAdvisorContinuity({
+          partition: before.partition,
+          activeTaskToken: taskToken,
+          evidence: readiness.evidence,
+        });
       const result = await journal.exclusive(parentKey, async (session) => {
         const partition = session.partition();
-        // A reset abandons threads; it never proves that a possibly live turn has stopped.
-        if (unresolvedAdvisorThread(partition)) return "blocked" as const;
-        await session.mutate((latest) => invalidateAdvisorPartition(latest, "reset", Date.now()));
+        if (unresolvedAdvisorThread(partition) === undefined) {
+          await session.mutate((latest) => invalidateAdvisorPartition(latest, "reset", Date.now()));
+          return "done" as const;
+        }
+        // A reset abandons threads; it never proves that a turn has stopped. Without an admitted bridge
+        // nothing can show that a turn is gone, so nothing is abandoned.
+        if (!readiness?.ok) {
+          refusal = readiness
+            ? `nothing was abandoned because the host bridge could not be admitted (${readiness.code}).`
+            : unresolvedBefore
+              ? "the host supplied no session identity, so nothing could be checked and nothing was abandoned."
+              : "the journal gained an unresolved turn while reset was starting, so nothing was abandoned; retry.";
+          return "blocked" as const;
+        }
+        // The evidence is already cached, so planning here answers from memory instead of the host.
+        const plan = await planAdvisorContinuity({
+          partition,
+          activeTaskToken: taskToken,
+          evidence: readiness.evidence,
+        });
+        const abandonment = planAdvisorContinuityAbandon(plan, partition);
+        const abandonable = new Set(
+          abandonment.map((closure) => `${closure.taskToken}:${closure.slot}`),
+        );
+        if (plan.kept.some((held) => !abandonable.has(`${held.taskToken}:${held.slot}`)))
+          return "blocked" as const;
+        await session.mutate((latest) =>
+          invalidateAdvisorPartition(
+            applyAdvisorContinuity(
+              latest,
+              { ...plan, closures: [...plan.closures, ...abandonment] },
+              Date.now(),
+            ),
+            "reset",
+            Date.now(),
+          ),
+        );
+        abandoned = abandonment.length;
         return "done" as const;
       });
       if (!result.ok)
@@ -1095,13 +1161,13 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         };
       return result.value === "blocked"
         ? {
-            message:
-              "Advisor continuity: a turn may still be live, so reset changed nothing. Recover it with the host first.",
+            message: `Advisor continuity: ${refusal ?? "a turn may still be live, so reset changed nothing."}`,
             type: "error",
           }
         : {
-            message:
-              "Advisor continuity: threads reset. The next consultation starts a new thread.",
+            message: `Advisor continuity: threads reset${
+              abandoned ? ` (${abandoned} abandoned without proof)` : ""
+            }. The next consultation starts a new thread.`,
             type: "info",
           };
     };
@@ -1878,7 +1944,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           const outcome =
             action.action === "recover"
               ? await recoverContinuity(ctx, parentKey)
-              : await resetContinuity(parentKey);
+              : await resetContinuity(ctx, parentKey);
           ctx.ui.notify(outcome.message, outcome.type);
           return;
         }
@@ -2292,7 +2358,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         const closed = await closeTaskThreads(parentKey, settledToken);
         if (!closed.ok)
           ctx.ui.notify(
-            `Advisor continuity: this task's closing state could not be persisted (${closed.code ?? "journal-write-failed"}). Advisor stays blocked until /delegate advisor threads recover succeeds.`,
+            `Advisor continuity: this task's closing state could not be persisted (${closed.code ?? "journal-write-failed"}). The next consultation persists it before it starts, and /delegate advisor threads recover does it now. Until then no consultation runs.`,
             "error",
           );
       }

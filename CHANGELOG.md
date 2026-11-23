@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- A consultation interrupted before the host returned its run id, or one whose run ended in a state
+  other than `complete`, left the Advisor blocked for that session with no command able to clear it:
+  `recover` needed a run id and `reset` refused while anything looked unresolved. Reconciliation now
+  runs before a consultation reports continuity as blocked and reuses the same evidence as
+  `recover`, closing what the host proves terminal, what it no longer holds once a whole list proves
+  it absent, and — for a record with no run id — what that same list proves absent. A live run, a
+  trimmed list, an unfamiliar run state or an unanswerable bridge still blocks.
+  `reset` can now abandon a turn that never returned a run id and that no evidence resolves, and it
+  still refuses while a run may be live or while a record holds a run id it cannot settle.
+
 ## 0.33.1 - 2026-11-23
 
 ### Fixed
