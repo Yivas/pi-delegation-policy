@@ -2924,6 +2924,102 @@ test("a receipt that cannot be persisted is settled once the host lists nothing 
   }
 });
 
+test("guard covers the close with a consultation that reached an Advisor, not with a call", async () => {
+  const run = await harness(base, models, 10_000, { activeTools: ["consult_advisor"] });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    await run.command("advisor level guard");
+    await run.command("advisor context manual");
+    await run.newTask();
+    const boundary = async (): Promise<{ continue?: boolean } | undefined> =>
+      (await run.hook("agent_before_settle", {
+        type: "agent_before_settle",
+        entries: [],
+        continue: false,
+        outcome: "completed",
+        // What the host really reports at a completed run: the draft we return is what makes it
+        // continuable afterwards.
+        context: { canContinue: false },
+      })) as { continue?: boolean } | undefined;
+    const edit = async (): Promise<void> => {
+      await run.hook("tool_call", {
+        toolCallId: `edit-${Math.random()}`,
+        toolName: "edit",
+        input: { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] },
+      });
+      await run.hook("tool_result", {
+        toolCallId: `edit-${Math.random()}`,
+        toolName: "edit",
+        input: { path: "src/a.ts" },
+        isError: false,
+        content: [],
+      });
+    };
+
+    // A call that dispatches nothing — manual mode with no question never reaches the executor.
+    await edit();
+    assert.match(await run.call({}), /question must not be blank/);
+    assert.equal(
+      (await boundary())?.continue,
+      true,
+      "a consultation call that never dispatched covers nothing",
+    );
+
+    // One that reaches an Advisor covers the changes made before it.
+    await run.newTask();
+    await edit();
+    assert.match(
+      await run.call({ question: "¿qué opción?", brief: "Un encargo sintético y autocontenido." }),
+      /Consultation complete/,
+    );
+    assert.equal(await boundary(), undefined, "an answer covers the close");
+  } finally {
+    await run.close();
+  }
+});
+
+test("guard does not cover the close with a redirect that launched nothing", async () => {
+  // In `role` mode `consult_advisor` only returns the redirect, so the launcher is the host tool.
+  const run = await harness(base, models, 10_000, { activeTools: ["subagent"] });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    await run.command("advisor level guard");
+    await run.command("advisor context manual");
+    await run.command("advisor launch role");
+    await run.newTask();
+    await run.hook("tool_call", {
+      toolCallId: "role-edit",
+      toolName: "edit",
+      input: { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] },
+    });
+    await run.hook("tool_result", {
+      toolCallId: "role-edit",
+      toolName: "edit",
+      input: { path: "src/a.ts" },
+      isError: false,
+      content: [],
+    });
+    // The coverage this change fixes is credited from the `tool_call` hook, not from the tool body,
+    // so the regression guard has to go through that hook.
+    await run.hook("tool_call", {
+      toolCallId: "role-consult",
+      toolName: "consult_advisor",
+      input: { question: "¿qué opción?" },
+    });
+    assert.match(await run.call({ question: "¿qué opción?" }), /does not launch Advisors/);
+    const boundary = (await run.hook("agent_before_settle", {
+      type: "agent_before_settle",
+      entries: [],
+      continue: false,
+      outcome: "completed",
+      context: { canContinue: false },
+    })) as { continue?: boolean } | undefined;
+    assert.equal(boundary?.continue, true, "a redirect that launched nothing covers nothing");
+  } finally {
+    await run.close();
+  }
+});
+
 test("a reset abandons only the turn nothing can prove", async () => {
   const run = await harness();
   const rpc = new RpcHost(run.bus);

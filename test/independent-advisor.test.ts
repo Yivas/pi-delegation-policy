@@ -452,14 +452,17 @@ test("Advisor commands and request hooks independently update and remove the own
       "advisor level off",
       "advisor level standard",
       "advisor level strict",
+      "advisor level guard",
       "advisor level default",
       "advisor level global off",
       "advisor level global standard",
       "advisor level global strict",
+      "advisor level global guard",
       "advisor level global default",
       "advisor level model off",
       "advisor level model standard",
       "advisor level model strict",
+      "advisor level model guard",
       "advisor level model default",
       "advisor context composed",
       "advisor context manual",
@@ -472,6 +475,11 @@ test("Advisor commands and request hooks independently update and remove the own
     kind: "advisor-level",
     target: "session",
     level: "strict",
+  });
+  assert.deepEqual(parseCommand("advisor level guard"), {
+    kind: "advisor-level",
+    target: "session",
+    level: "guard",
   });
   assert.deepEqual(parseCommand("advisor level default"), {
     kind: "advisor-level",

@@ -80,8 +80,11 @@ another extension and does not itself cancel children or initiate a turn.
 
 Pi converts the custom message to user-role text and drops its custom metadata. Its text identifies
 it as an extension notice, not something the user wrote. The extension does not write notice text to
-session history or its local log, so stored summaries and branches cannot inherit the notice. This
-is not a promise about request retention by providers or other authorized host components.
+session history or its local log, so stored summaries and branches cannot inherit the notice. The
+`guard` close interruption is the one exception: the host commits it once per interruption as an
+extension-owned message with `display: false`, and it carries counts and instructions only, never a
+path, a prompt or a reply. This is not a promise about request retention by providers or other
+authorized host components.
 
 The presented revision is consumed at final settlement when the last recorded assistant response
 completed; a failed attempt followed by a successful retry counts as completed. A final reported
@@ -98,15 +101,17 @@ lists the tracked settings.
 
 ## Advisor nudge level
 
-The setting is `advisorLevel`: `off`, `standard` (the default) or `strict`. It replaces the old
+The setting is `advisorLevel`: `off`, `standard` (the default), `strict` or `guard`. It replaces the old
 reminder setting, which is now read only as a fallback when the level file does not exist, and with
 Advisor off it has no effect. `off` leaves the written rules alone, `standard` adds the reminder and
-lets the checkpoint record only, and `strict` also states the hard rule in the reminder and lets the
-checkpoint stop a call. [Configuration](/configuration/#advisor-nudge-level) describes the levels, the
-precedence and the file.
+lets the checkpoint record only, `strict` also states the hard rule in the reminder and lets the
+checkpoint stop a call, and `guard` refuses no call: it interrupts the close of a task that changed
+state until a consultation covers those changes. [Configuration](/configuration/#advisor-nudge-level)
+describes the levels, the precedence and the file.
 
-In `standard` and `strict` an automatic reminder adds one short extension-owned line to the request
-context at most once per operative task of each instance. It is armed by one successful builtin
+In `standard`, `strict` and `guard` an automatic reminder adds one short extension-owned line to the
+request context: once per operative task of each instance in `standard` and `strict`, and once per
+message that changes state in `guard`, where a change re-arms it. It is armed by one successful builtin
 orientation result (`read`, `find`, `grep`, `ls`) or by the same builtin tool failing in two different
 rounds, and
 it is presented only while a valid Advisor is active, the task is live and the configured launch mode
@@ -135,7 +140,8 @@ the file.
 In `strict` the checkpoint refuses one state-changing call per task, and in `standard` it only records
 what it would have refused. It never refuses when a consultation is not possible, so it cannot loop,
 and a `??` at the start of a prompt forces it for that task whatever the level, as long as an Advisor
-is available. The commands it recognizes
+is available; `guard` does not open that checkpoint at all, since it refuses no call, so `??` has no
+effect there. The commands it recognizes
 are a nudge, not a security boundary: it reads the leading words of a shell segment, matches nothing
 else, grants no permission and inspects no argument, so it neither authorizes nor blocks anything
 beyond that one refusal. Known limit: in this version a long task is stopped at most once, at its
@@ -284,7 +290,10 @@ the exact `provider/id` key or `null`, and `advisorLevel`. A `consultation` reco
 evidence, and `contextBytes`, which is `0` in manual mode. One `checkpoint` record is written per task
 in which the checkpoint fired: `mode` (`shadow` or `active`), `signals`, `resolution` (`consult`,
 `repeat` or `none`), `priorCalls`, `filesRead`, `promptChars`, `editLines`, `mainModel` and
-`advisorLevel`. Every field is an enum, a boolean, a number or a bounded identifier such as the policy
+`advisorLevel`. A `guard` record is written per interruption: `block` (`1` or `2`), `changes`,
+`consulted`, `blocks`, `mainModel` and `advisorLevel`, plus one with `block` set to `null` when a task
+closes having changed state with no consultation covering it. Every field is an enum, a boolean, a
+number or a bounded identifier such as the policy
 hash and model keys. `advisorConsults` counts attempts: a
 `consult_advisor` call counts whether or not it reached a model, and its real outcome is the
 `consultation` event. `subagentLaunches` counts allowed calls that launch a child other than an

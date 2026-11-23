@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   ADVISOR_REMINDER_TYPE,
+  AdvisorReminderState,
   DEFAULT_ADVISOR_REMINDER_MODE,
   getAdvisorRemindersPath,
   readAdvisorReminderMode,
@@ -224,6 +225,35 @@ function createHarness(
   const settled = async (): Promise<void> => {
     await handler("agent_settled")({ type: "agent_settled" }, ctx);
   };
+  /** The host's final actionable boundary: it can append entries and ask for one more request. */
+  const settleBoundary = async (
+    overrides: {
+      outcome?: string;
+      canContinue?: boolean;
+      /** Drafts another handler already appended at this boundary. */
+      entries?: Array<Record<string, unknown>>;
+    } = {},
+  ): Promise<
+    { entries?: Array<{ customType?: string; content?: unknown }>; continue?: boolean } | undefined
+  > =>
+    (await handler("agent_before_settle")(
+      {
+        type: "agent_before_settle",
+        entries: overrides.entries ?? [],
+        continue: false,
+        outcome: overrides.outcome ?? "completed",
+        context: {
+          // The host computes this before the handler runs, and at a completed run it is false: the
+          // appending draft is what makes the continuation valid afterwards.
+          canContinue: overrides.canContinue ?? false,
+          contextEntries: [],
+          contextMessages: [],
+          llmMessages: [],
+          pendingMessages: [],
+        },
+      },
+      ctx,
+    )) as never;
   const start = async (): Promise<void> => {
     await handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
   };
@@ -253,6 +283,7 @@ function createHarness(
     toolCall,
     toolResult,
     settled,
+    settleBoundary,
     start,
     tree,
     shutdown,
@@ -818,6 +849,129 @@ test("standard presents the reminder as before and records the first change in t
   });
 });
 
+test("guard interrupts the close instead of refusing a call", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "guard" });
+    await harness.prompt();
+    // The log only records under the policy the request carried, so the turn is a real one.
+    await harness.request();
+    // This level refuses nothing: the change runs and the close is what waits for a consultation. A
+    // change counts once its call ran, so its result is reported as a real one would be.
+    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
+    await harness.toolResult("edit");
+    const otherDraft = { type: "custom", customType: "another-extension", data: {} };
+    const first = await harness.settleBoundary({ entries: [otherDraft] });
+    assert.equal(first?.continue, true);
+    // The host replaces the boundary's entries with what a handler returns, so another extension's
+    // draft has to come back with ours.
+    assert.deepEqual(first?.entries?.[0], otherDraft);
+    const instruction = String(first?.entries?.[1]?.content ?? "");
+    assert.match(instruction, /Advisor guard/);
+    assert.match(instruction, /Roles section/, "role mode names the Roles section, not the tool");
+
+    // Finishing again without new work closes it: the second interruption is not free.
+    assert.equal(await harness.settleBoundary(), undefined);
+    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+    await harness.toolResult("edit");
+    assert.equal((await harness.settleBoundary())?.continue, true);
+    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+    await harness.toolResult("edit");
+    assert.equal(
+      await harness.settleBoundary(),
+      undefined,
+      "two interruptions, then the close passes",
+    );
+
+    await harness.settled();
+    const interruptions = (await logEventsNamed("guard")).filter((event) => event.block !== null);
+    assert.deepEqual(
+      interruptions.map((event) => event.block),
+      [1, 2],
+    );
+  });
+});
+
+test("guard arms the reminder once per message that changes state", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "guard" });
+    await harness.prompt();
+    // A message that changes nothing does not arm it; only a change does. A command is not a change
+    // unless it publishes or pushes.
+    await harness.toolResult("bash");
+    assert.equal(harness.reminders(await harness.request()).length, 0);
+    await harness.toolCall("edit", SMALL_EDIT);
+    await harness.toolResult("edit");
+    const armed = await harness.request();
+    assert.equal(harness.reminders(armed).length, 1);
+    assert.match(harness.reminderText(armed) ?? "", /does not close until an Advisor consultation/);
+    // A retry of the same request repeats it, and adds no second copy.
+    assert.equal(harness.reminders(await harness.request()).length, 1);
+    // The next message with a change arms it again; one without changes does not.
+    await harness.toolCall("edit", SMALL_EDIT);
+    await harness.toolResult("edit");
+    assert.equal(harness.reminders(await harness.request()).length, 1);
+    await harness.settled();
+    const record = await logEventsNamed("guard");
+    assert.equal(record.length, 1, "a task that closed uncovered is recorded once");
+  });
+});
+
+/** A presentation this task already spent is never resurrected by a later change. */
+test("a suspended presentation is not resurrected by a change", () => {
+  const state = new AdvisorReminderState();
+  state.openTask();
+  state.observeToolResult({ toolName: "read", isError: false, builtin: true });
+  assert.ok(state.presentation(1, false, true));
+  state.suspend();
+  state.armForChanges();
+  assert.equal(state.presentation(2, false, true), undefined);
+});
+
+test("a failed change is not a change guard must cover", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "guard" });
+    await harness.prompt();
+    await harness.request();
+    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+    await harness.toolResult("edit", true);
+    assert.equal(await harness.settleBoundary(), undefined, "an edit that failed changed nothing");
+    // The same tool succeeding does count, so the previous assertion is about the failure.
+    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+    await harness.toolResult("edit");
+    assert.equal((await harness.settleBoundary())?.continue, true);
+  });
+});
+
+test("guard never interrupts when no Advisor can be consulted", async () => {
+  await withHarness({ activeTools: [] }, async (harness) => {
+    // The level is frozen when the task opens, so it is set before the prompt.
+    await writeLevel({ level: "guard" });
+    await harness.prompt();
+    await harness.request();
+    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+    await harness.toolResult("edit");
+    assert.equal(await harness.settleBoundary(), undefined, "no launcher, no interruption");
+    // An aborted or failed run is not a close either.
+    assert.equal(await harness.settleBoundary({ outcome: "aborted" }), undefined);
+    assert.equal(await harness.settleBoundary({ outcome: "error" }), undefined);
+  });
+});
+
+test("a level other than guard never interrupts a close and writes no guard record", async () => {
+  for (const level of ["off", "standard", "strict"] as const) {
+    await withHarness({}, async (harness) => {
+      await writeLevel({ level });
+      await harness.prompt();
+      await harness.request();
+      await harness.toolCall("edit", SUBSTANTIVE_EDIT);
+      await harness.toolResult("edit");
+      assert.equal(await harness.settleBoundary(), undefined, level);
+      await harness.settled();
+      assert.deepEqual(await logEventsNamed("guard"), [], level);
+    });
+  }
+});
+
 test("strict presents the hard rule and refuses the first change and its whole batch once", async () => {
   await withHarness({}, async (harness) => {
     await writeLevel({ level: "strict" });
@@ -923,6 +1077,14 @@ test("a leading `??` forces the first change at any level, and only with an Advi
       assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
     },
   );
+
+  // `guard` never opens that checkpoint, so the forced prompt changes nothing at that level: the
+  // level's whole definition is that it refuses no call.
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "guard" });
+    await harness.prompt("interactive", "?? rewrite the loader");
+    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
+  });
 });
 
 test("the level frozen when a task opens survives a change during it", async () => {

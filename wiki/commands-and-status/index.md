@@ -10,30 +10,30 @@ description: Operate the /delegate panel and interpret its status in Pi.
 Use `/delegate` in Pi's TUI to open the keyboard-first editor; `Alt+G` opens the same editor when
 available. The editor requires TUI mode, while these arguments also work in other modes:
 
-| Command                                                         | Effect                                                                    |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `/delegate`                                                     | Open the keyboard-first selector.                                         |
-| `/delegate off`                                                 | Disable execution-delegation guidance; an enabled Advisor stays active.   |
-| `/delegate normal`                                              | Enable balanced delegation guidance.                                      |
-| `/delegate aggressive`                                          | Enable delegation-first guidance.                                         |
-| `/delegate orchestrator`                                        | Delegate all transferable execution while the main agent keeps ownership. |
-| `/delegate status`                                              | Show the effective session state.                                         |
-| `/delegate reset`                                               | Turn delegation and Advisor off for the branch.                           |
-| `/delegate advisor off`                                         | Silence consultation and keep its model.                                  |
-| `/delegate advisor on`                                          | Enable consultation even with delegation off.                             |
-| `/delegate advisor with-delegation`                             | Keep the default coupling to active delegation.                           |
-| `/delegate advisor level off\|standard\|strict\|default`        | Set the branch Advisor nudge level; `default` clears it.                  |
-| `/delegate advisor level global off\|standard\|strict\|default` | Set the global Advisor nudge level; `default` clears it.                  |
-| `/delegate advisor level model off\|standard\|strict\|default`  | Set the level for the current main model; `default` clears it.            |
-| `/delegate advisor context composed\|manual`                    | Choose who writes the consultation context.                               |
-| `/delegate context off`                                         | Stop ContextShunt work for this branch.                                   |
-| `/delegate context observe`                                     | Record what enforcement would block without changing calls.               |
-| `/delegate context enforce`                                     | Enforce recognized budgets and bounded recovery.                          |
-| `/delegate context status`                                      | Show the effective ContextShunt state.                                    |
-| `/delegate context allow TOKEN MAX_LINES MAX_BYTES`             | Approve the next matching blocked read once.                              |
-| `/delegate vision [2\|3] PROVIDER/MODEL`                        | Set a Vision entry; `remove` clears it.                                   |
-| `/delegate visual-design 2\|3 PROVIDER/MODEL`                   | Set Visual Design entry 2 or 3; `remove` clears it.                       |
-| `/delegate writing [2\|3] PROVIDER/MODEL`                       | Set a Writing entry; `remove` clears it.                                  |
+| Command                                                                | Effect                                                                    |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `/delegate`                                                            | Open the keyboard-first selector.                                         |
+| `/delegate off`                                                        | Disable execution-delegation guidance; an enabled Advisor stays active.   |
+| `/delegate normal`                                                     | Enable balanced delegation guidance.                                      |
+| `/delegate aggressive`                                                 | Enable delegation-first guidance.                                         |
+| `/delegate orchestrator`                                               | Delegate all transferable execution while the main agent keeps ownership. |
+| `/delegate status`                                                     | Show the effective session state.                                         |
+| `/delegate reset`                                                      | Turn delegation and Advisor off for the branch.                           |
+| `/delegate advisor off`                                                | Silence consultation and keep its model.                                  |
+| `/delegate advisor on`                                                 | Enable consultation even with delegation off.                             |
+| `/delegate advisor with-delegation`                                    | Keep the default coupling to active delegation.                           |
+| `/delegate advisor level off\|standard\|strict\|guard\|default`        | Set the branch Advisor nudge level; `default` clears it.                  |
+| `/delegate advisor level global off\|standard\|strict\|guard\|default` | Set the global Advisor nudge level; `default` clears it.                  |
+| `/delegate advisor level model off\|standard\|strict\|guard\|default`  | Set the level for the current main model; `default` clears it.            |
+| `/delegate advisor context composed\|manual`                           | Choose who writes the consultation context.                               |
+| `/delegate context off`                                                | Stop ContextShunt work for this branch.                                   |
+| `/delegate context observe`                                            | Record what enforcement would block without changing calls.               |
+| `/delegate context enforce`                                            | Enforce recognized budgets and bounded recovery.                          |
+| `/delegate context status`                                             | Show the effective ContextShunt state.                                    |
+| `/delegate context allow TOKEN MAX_LINES MAX_BYTES`                    | Approve the next matching blocked read once.                              |
+| `/delegate vision [2\|3] PROVIDER/MODEL`                               | Set a Vision entry; `remove` clears it.                                   |
+| `/delegate visual-design 2\|3 PROVIDER/MODEL`                          | Set Visual Design entry 2 or 3; `remove` clears it.                       |
+| `/delegate writing [2\|3] PROVIDER/MODEL`                              | Set a Writing entry; `remove` clears it.                                  |
 
 Optional-role entries fill in order too, and the first Visual Design entry is edited in the panel
 because it shares the legacy `uiDesign` key in the delegation document.
@@ -56,9 +56,9 @@ Advisor configuration also works without the panel:
 
 ```text
 /delegate advisor launch role|tool
-/delegate advisor level off|standard|strict|default
-/delegate advisor level global off|standard|strict|default
-/delegate advisor level model off|standard|strict|default
+/delegate advisor level off|standard|strict|guard|default
+/delegate advisor level global off|standard|strict|guard|default
+/delegate advisor level model off|standard|strict|guard|default
 /delegate advisor context composed|manual
 /delegate advisor 1|2|3 model PROVIDER/MODEL
 /delegate advisor 1|2|3 model remove
@@ -108,7 +108,7 @@ configured, or its model is not selectable, the panel states the reason and offe
 actions. Fixed and range are distinguishable from their text, not only from colour.
 
 The Advisor rows are **Advisor mode** (inheritance, `off`, `on`, `with-delegation`), **Advisor
-launch** (`role` or `tool`), **Advisor nudge** (`standard`, `strict` or `off`) and **Advisor 1**.
+launch** (`role` or `tool`), **Advisor nudge** (`standard`, `strict`, `guard` or `off`) and **Advisor 1**.
 **Advisor nudge** is global, is saved to `delegation-policy.advisor-level.json`, and reads for example
 `standard · global`, `standard · default` when the file sets no level, or `Invalid · standard` when it
 cannot be read, because the level then falls back to `standard` and stays active. **Advisor 2** appears once Advisor 1 exists and

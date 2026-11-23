@@ -30,6 +30,11 @@ test("the level file accepts unknown keys but rejects a wrong version or a bad k
     level: "strict",
     models: {},
   });
+  // A level this build knows is stored like any other: the file validates by membership.
+  assert.deepEqual(parseAdvisorLevelFile({ schemaVersion: 1, level: "guard" }), {
+    level: "guard",
+    models: {},
+  });
   assert.deepEqual(
     parseAdvisorLevelFile({
       schemaVersion: 1,
@@ -180,6 +185,22 @@ test("writing round-trips, reports an unchanged save, sorts model keys and remov
     assert.equal(await writeAdvisorLevelFile(emptyAdvisorLevelFile(), configPath), "saved");
     assert.equal((await readAdvisorLevelFile(configPath)).present, false);
     assert.equal(await writeAdvisorLevelFile(emptyAdvisorLevelFile(), configPath), "unchanged");
+  } finally {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("the newest level round-trips like the older ones", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-delegation-advisor-guard-"));
+  try {
+    const configPath = join(directory, "delegation-policy.json");
+    // `guard` is a value of the same document, not a new shape: nothing about the file changes.
+    assert.equal(await writeAdvisorLevelFile({ level: "guard", models: {} }, configPath), "saved");
+    assert.deepEqual(await readAdvisorLevelFile(configPath), {
+      file: { level: "guard", models: {} },
+      present: true,
+      invalid: false,
+    });
   } finally {
     await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }

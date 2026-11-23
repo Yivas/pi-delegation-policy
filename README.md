@@ -80,9 +80,9 @@ ContextShunt is a separate opt-in layer, off by default. `observe` records what 
 /delegate reset                                Turn both axes off for the branch
 /delegate advisor off|on|with-delegation       Set the Advisor mode
 /delegate advisor launch role|tool             Select the launch surface
-/delegate advisor level off|standard|strict|default  Set the branch nudge level
-/delegate advisor level global off|standard|strict|default  Set the global nudge level
-/delegate advisor level model off|standard|strict|default  Set the level for this main model
+/delegate advisor level off|standard|strict|guard|default  Set the branch nudge level
+/delegate advisor level global off|standard|strict|guard|default  Set the global nudge level
+/delegate advisor level model off|standard|strict|guard|default  Set the level for this main model
 /delegate advisor context composed|manual      Choose who writes the consultation context
 /delegate advisor 1|2|3 model PROVIDER/MODEL   Configure an entry
 /delegate advisor 1|2|3 model inherit          Return every entry to inheritance

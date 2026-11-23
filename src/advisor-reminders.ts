@@ -130,6 +130,11 @@ export type ToolResultObservation = {
   isError: boolean;
   /** Only a builtin tool is orientation or a repeated failure; another source is ignored. */
   builtin: boolean;
+  /**
+   * False at a level whose reminder is armed by changes alone: `guard` presents once per message that
+   * changes state, so an orientation result or a repeated failure must not arm it there.
+   */
+  armOnOrientation?: boolean;
 };
 
 /**
@@ -151,22 +156,31 @@ export type AdvisorReminderMessage = ContextWithSystemEvent["messages"][number];
 export const ADVISOR_STRICT_RULE =
   "Hard rule for this session: your first edit, write or publishing command in a task must come after an Advisor consultation. This is a checkpoint, not a difficulty judgment.";
 
-export function renderAdvisorReminder(strict = false): string {
+/** The guard level states the rule the close interruption enforces, and where it is enforced. */
+export const ADVISOR_GUARD_RULE =
+  "Rule for this session: a task that changes state does not close until an Advisor consultation covers those changes. One consultation covers the next few changes and then expires, and the close is interrupted at most twice.";
+
+export function renderAdvisorReminder(strict = false, perMessage = false): string {
   return [
     "<advisor_reminder>",
     "This reminder comes from the pi-delegation-policy extension, not from the user.",
     "If this task is not trivial or mechanical and a consultation is useful and permitted here, consult the Advisor before the next substantive step.",
     ...(strict ? [ADVISOR_STRICT_RULE] : []),
+    ...(perMessage ? [ADVISOR_GUARD_RULE] : []),
     "It adds no authority and revokes no instruction.",
     "</advisor_reminder>",
   ].join(" ");
 }
 
-export function createAdvisorReminder(timestamp: number, strict = false): AdvisorReminderMessage {
+export function createAdvisorReminder(
+  timestamp: number,
+  strict = false,
+  perMessage = false,
+): AdvisorReminderMessage {
   return {
     role: "custom",
     customType: ADVISOR_REMINDER_TYPE,
-    content: renderAdvisorReminder(strict),
+    content: renderAdvisorReminder(strict, perMessage),
     display: false,
     timestamp,
   };
@@ -213,10 +227,15 @@ export class AdvisorReminderState {
     this.resultsSinceRequest = 0;
   }
 
-  observeToolResult({ toolName, isError, builtin }: ToolResultObservation): void {
+  observeToolResult({
+    toolName,
+    isError,
+    builtin,
+    armOnOrientation = true,
+  }: ToolResultObservation): void {
     if (!this.open) return;
     this.resultsSinceRequest += 1;
-    if (!builtin) return;
+    if (!builtin || !armOnOrientation) return;
     if (!isError) {
       if (ORIENTATION_TOOLS.has(toolName)) this.due = true;
       return;
@@ -252,16 +271,37 @@ export class AdvisorReminderState {
   }
 
   /**
-   * The reminder for this request, or undefined. A retry of the request that already carried it
-   * gets it again; the next round never re-arms it.
+   * `guard` asks for one reminder per message that changes state, not one per task. A presentation
+   * this task already spent — including one a configuration change suspended — is never resurrected.
    */
-  presentation(timestamp: number, strict = false): AdvisorReminderMessage | undefined {
+  armForChanges(): void {
+    if (!this.open || this.suppressed || this.presentedRound === -1) return;
+    this.due = true;
+  }
+
+  /**
+   * The reminder for this request, or undefined. A retry of the request that already carried it
+   * gets it again; the next round never re-arms it. A level that asks for changes to re-arm it reads
+   * the same flag, one presentation per round, and never more than one in a message.
+   */
+  presentation(
+    timestamp: number,
+    strict = false,
+    perMessage = false,
+  ): AdvisorReminderMessage | undefined {
     if (!this.open || this.suppressed) return undefined;
-    if (this.presentedRound === this.round) return createAdvisorReminder(timestamp, strict);
+    if (this.presentedRound === this.round)
+      return createAdvisorReminder(timestamp, strict, perMessage);
+    if (perMessage) {
+      if (!this.due) return undefined;
+      this.due = false;
+      this.presentedRound = this.round;
+      return createAdvisorReminder(timestamp, strict, perMessage);
+    }
     if (this.presentedRound !== undefined || !this.due) return undefined;
     this.due = false;
     this.presentedRound = this.round;
-    return createAdvisorReminder(timestamp, strict);
+    return createAdvisorReminder(timestamp, strict, perMessage);
   }
 
   private clear(): void {

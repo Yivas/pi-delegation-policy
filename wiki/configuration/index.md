@@ -619,16 +619,32 @@ towards a consultation, and `advisorLevel` holds the same setting in configurati
   Hard rule for this session: your first edit, write or publishing command in a task must come after an Advisor consultation. This is a checkpoint, not a difficulty judgment.
   ```
 
+- `guard`: refuses no tool call at all. It counts every call that changes state, reminds once per
+  message that changes state, and interrupts the **close** of a task instead, through the host's final
+  settle boundary, which appends one instruction and asks for one more request. A consultation that
+  reached at least one Advisor covers the changes made before it and five more; after that the close is
+  interrupted again. A call that never dispatched — a redirect, a rejected launch, a refused
+  continuation — covers nothing, so it cannot be used to close the task. In `role` mode the launch
+  happens in the host tool this extension only observes, so there an attempt covers; that is the one
+  residual of the level. Each task is
+  interrupted at most twice, and the second interruption is only earned by new changes since the
+  first, so a task that ignores the first one still closes on its second attempt. Availability is
+  checked at that instant, not when the task started: with no Advisor or no launcher, nothing is
+  interrupted. This is the only level that cannot be satisfied by repeating a call, because it does
+  not refuse one.
+
 With Advisor off the level has no effect. It is resolved from a session override first, then from the
 entry for the current main model, then from the global level, then from `standard`, and a task keeps
-the level it started with. The commands are `/delegate advisor level off|standard|strict|default` for
+the level it started with. The commands are `/delegate advisor level off|standard|strict|guard|default` for
 the branch, `/delegate advisor level global …` for every session and `/delegate advisor level model …`
 for the current main model, where `default` clears the value at that scope.
 
-Two observable events arm the reminder. One successful builtin orientation result (`read`, `find`,
-`grep` or `ls`) presents it in the next request, and the same builtin tool failing in two different
-rounds presents it as well. A batch of results is one round, and a retry of the same request keeps the
-presentation it already carried; the next round never re-arms it. An attempted consultation ends the
+In `standard` and `strict` two observable events arm the reminder. One successful builtin orientation
+result (`read`, `find`, `grep` or `ls`) presents it in the next request, and the same builtin tool
+failing in two different rounds presents it as well. In `guard` only a message that changes state arms
+it, and every such message may present it once: that level states the rule it enforces per change, not
+the one presentation a task gets. A batch of results is one round, and a retry of the same request
+keeps the presentation it already carried. An attempted consultation ends the
 reminder for that task even when it fails, and a control action that only names an Advisor is not a
 consultation. Turning the level off, a branch move, a new task or the task settling discards it,
 and re-enabling it never restores a presentation the same task already used.
@@ -702,7 +718,8 @@ never half applied, and from the next request on any call passes. It never refus
 It refuses nothing when a consultation is not possible: no valid Advisor, no launcher for the
 configured launch mode, no open task, a consultation already running, or a subagent child process. After a session resume, fork or compaction the task counts as covered. A `??` at the
 start of a prompt forces the checkpoint for that task whatever the level, the thresholds and the 30
-minutes, as long as an Advisor is available.
+minutes, as long as an Advisor is available — except in `guard`, which never opens that checkpoint
+because its own definition is that it refuses no call; there `??` has no effect.
 
 The command list is a nudge, not a security boundary: it reads the leading words of a shell segment,
 matches nothing else, and never authorizes, blocks or inspects the call. Known limit: in this version

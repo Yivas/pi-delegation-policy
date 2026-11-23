@@ -443,10 +443,12 @@ const CORRECTION_CHOICES: Record<LaunchCorrectionMode, string> = {
   block: "block — refuse those launches and measure the original behavior",
 };
 /** Offered in this order: the default first, so Enter keeps it, and the silent level last. */
-const NUDGE_LEVELS: readonly AdvisorLevel[] = ["standard", "strict", "off"];
+const NUDGE_LEVELS: readonly AdvisorLevel[] = ["standard", "strict", "guard", "off"];
 const NUDGE_CHOICES: Record<AdvisorLevel, string> = {
   standard:
     "standard — rules, one reminder per task, and the checkpoint only records when it would have stopped a change (default)",
+  guard:
+    "guard — refuses no call; a task that changes state does not close until an Advisor consultation covers those changes, and one consultation expires after five more changes",
   strict:
     "strict — adds a hard rule and stops the first substantive change of a task once until an Advisor is consulted or the call is repeated",
   off: "off — only the written rules: no reminder and no checkpoint; Advisors stay available",

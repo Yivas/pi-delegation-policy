@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- A fourth Advisor nudge level, `guard`, for what `strict` could not do: it refuses no tool call, so
+  it cannot be satisfied by repeating one. It counts every call that changes state, and reminds once per
+  message that changes state, and interrupts the close of the task through the host's final settle
+  boundary, asking for one more request. A consultation that reached at least one Advisor covers the
+  changes made before it and five more, while a call that never dispatched covers nothing; each task
+  is interrupted at most twice, and the second interruption is only earned by new changes since the
+  first, so ignoring an interruption closes the task on the next finish. Two consequences worth
+  knowing: in `role` mode the launch happens in the host tool, so there an attempt covers, and
+  registering the boundary makes the host evaluate it on every session, including the levels that
+  never add an entry there. Availability is checked at that instant,
+  so a bridge that is down never stops the work. `strict`, `standard` and `off` are unchanged.
+
 ### Fixed
 
 - A consultation interrupted before the host returned its run id, or one whose run ended in a state
