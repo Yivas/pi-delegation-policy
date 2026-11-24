@@ -609,12 +609,12 @@ failure leaves the previous file in place.
 The **Advisor nudge** row, formerly **Advisor reminder**, chooses how hard this extension pushes
 towards a consultation, and `advisorLevel` holds the same setting in configuration:
 
-| Level      | Note                                               | Changes                                                                                                        |
-| ---------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `off`      | None                                               | Never held                                                                                                     |
-| `standard` | One after every 8 tool results of a task (default) | Never held                                                                                                     |
+| Level      | Note                                               | Changes                                                                                                                               |
+| ---------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `off`      | None                                               | Never held                                                                                                                            |
+| `standard` | One after every 8 tool results of a task (default) | Never held                                                                                                                            |
 | `strict`   | One warning after 3 changes with no consultation   | Held from the 6th change until an Advisor answers, or until the operator changes the level and sends a new prompt or cancels the task |
-| `guard`    | Same as `strict`                                   | Same as `strict`                                                                                               |
+| `guard`    | Same as `strict`                                   | Same as `strict`                                                                                                                      |
 
 A prompt that starts with `??` is the one exception to "never held": it holds the changes of its task
 at any level. At `off` and `standard` the hold ends with the first answered consultation and no
