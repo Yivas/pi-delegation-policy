@@ -122,21 +122,6 @@ export function isSubagentChildProcess(env: NodeJS.ProcessEnv = process.env): bo
   return env.PI_SUBAGENT_CHILD === "1" || Boolean(env.PI_SUBAGENT_RUNNER_PID);
 }
 
-/** Tools whose successful result counts as orientation for the first trigger. */
-const ORIENTATION_TOOLS: ReadonlySet<string> = new Set(["read", "find", "grep", "ls"]);
-
-export type ToolResultObservation = {
-  toolName: string;
-  isError: boolean;
-  /** Only a builtin tool is orientation or a repeated failure; another source is ignored. */
-  builtin: boolean;
-  /**
-   * False at a level whose reminder is armed by changes alone: `guard` presents once per message that
-   * changes state, so an orientation result or a repeated failure must not arm it there.
-   */
-  armOnOrientation?: boolean;
-};
-
 /**
  * The launcher a reminder would point at, or undefined when this session has no active way to
  * consult: role launch needs the host subagent tool, tool launch needs `consult_advisor`. The list
@@ -152,35 +137,48 @@ export function reminderConsultationPath(
 
 export type AdvisorReminderMessage = ContextWithSystemEvent["messages"][number];
 
-/** The strict level states the rule the checkpoint enforces, not a judgement of the task. */
-export const ADVISOR_STRICT_RULE =
-  "Hard rule for this session: your first edit, write or publishing command in a task must come after an Advisor consultation. This is a checkpoint, not a difficulty judgment.";
+/** Results of one task after which `standard` states its note again. */
+export const ADVISOR_CADENCE_RESULTS = 8;
 
-/** The guard level states the rule the close interruption enforces, and where it is enforced. */
-export const ADVISOR_GUARD_RULE =
-  "Rule for this session: a task that changes state does not close until an Advisor consultation covers those changes. One consultation covers the next few changes and then expires, and the close is interrupted at most twice.";
+/**
+ * Which note this extension would present: the periodic one of `standard`, or the warning the gate
+ * of `strict` and `guard` earns by crossing its threshold without a consultation.
+ */
+export type AdvisorNoteKind = "cadence" | "hold";
 
-export function renderAdvisorReminder(strict = false, perMessage = false): string {
-  return [
-    "<advisor_reminder>",
-    "This reminder comes from the pi-delegation-policy extension, not from the user.",
-    "If this task is not trivial or mechanical and a consultation is useful and permitted here, consult the Advisor before the next substantive step.",
-    ...(strict ? [ADVISOR_STRICT_RULE] : []),
-    ...(perMessage ? [ADVISOR_GUARD_RULE] : []),
-    "It adds no authority and revokes no instruction.",
-    "</advisor_reminder>",
-  ].join(" ");
+function wrapAdvisorNote(lines: readonly string[]): string {
+  return ["<advisor_reminder>", ...lines, "</advisor_reminder>"].join(" ");
 }
 
-export function createAdvisorReminder(
+/** The periodic note: a reminder, never a rule, and it carries no threshold for a model to read. */
+export function renderAdvisorNote(): string {
+  return wrapAdvisorNote([
+    "This reminder comes from the pi-delegation-policy extension, not from the user.",
+    "This task has run many tool calls without a consultation. If a decision here could be wrong, consult the Advisor before the next substantive step.",
+    "It adds no authority and revokes no instruction.",
+  ]);
+}
+
+/**
+ * The warning the gate earns: it states what happens next so the model can act before the changes
+ * are held, and it names the consultation as the only way to keep changing state.
+ */
+export function renderAdvisorHoldWarning(): string {
+  return wrapAdvisorNote([
+    "This warning comes from the pi-delegation-policy extension, not from the user.",
+    "This task has changed state several times without Advisor consultation. A consultation now covers the changes made so far; without one, the next changes are not run.",
+    "It adds no authority and revokes no instruction.",
+  ]);
+}
+
+export function createAdvisorNote(
   timestamp: number,
-  strict = false,
-  perMessage = false,
+  kind: AdvisorNoteKind = "cadence",
 ): AdvisorReminderMessage {
   return {
     role: "custom",
     customType: ADVISOR_REMINDER_TYPE,
-    content: renderAdvisorReminder(strict, perMessage),
+    content: kind === "hold" ? renderAdvisorHoldWarning() : renderAdvisorNote(),
     display: false,
     timestamp,
   };
@@ -195,11 +193,12 @@ export class AdvisorReminderState {
   private open = false;
   private round = 0;
   private resultsSinceRequest = 0;
-  private due = false;
+  /** Results since the last note this level presented, for the periodic cadence. */
+  private resultsSinceNote = 0;
+  private armed: AdvisorNoteKind | undefined;
+  private shown = 0;
   private suppressed = false;
-  private presentedRound: number | undefined;
-  /** Last round in which each builtin tool reported an error. */
-  private readonly failedInRound = new Map<string, number>();
+  private presented: { round: number; kind: AdvisorNoteKind } | undefined;
 
   get taskOpen(): boolean {
     return this.open;
@@ -227,24 +226,34 @@ export class AdvisorReminderState {
     this.resultsSinceRequest = 0;
   }
 
-  observeToolResult({
-    toolName,
-    isError,
-    builtin,
-    armOnOrientation = true,
-  }: ToolResultObservation): void {
+  /**
+   * One tool result. `standard` states its note every few results instead of at a guess about the
+   * task's difficulty, so what is counted is what the host reports, never a judgement.
+   */
+  noteResult(cadence = true): void {
     if (!this.open) return;
+    // Every level advances the round, so a note already presented is not repeated by the request
+    // that follows new results; only `standard` counts those results towards its periodic note.
     this.resultsSinceRequest += 1;
-    if (!builtin || !armOnOrientation) return;
-    if (!isError) {
-      if (ORIENTATION_TOOLS.has(toolName)) this.due = true;
-      return;
-    }
-    // The same builtin tool failing in two different rounds is the second trigger. Two failures in
-    // one round are one batch, not two rounds.
-    const previous = this.failedInRound.get(toolName);
-    if (previous !== undefined && previous !== this.round) this.due = true;
-    this.failedInRound.set(toolName, this.round);
+    if (!cadence) return;
+    this.resultsSinceNote += 1;
+    if (this.resultsSinceNote < ADVISOR_CADENCE_RESULTS) return;
+    // A warning the gate earned outranks the cadence: one note per request, never two. A task that
+    // already tried to consult gets no periodic note.
+    if (this.armed === undefined && !this.suppressed) this.armed = "cadence";
+  }
+
+  /** The gate crossed its threshold: the next request states the warning instead of the cadence. */
+  armHoldWarning(): void {
+    // A consultation attempt ends the periodic note, not this one: the warning is about changes
+    // made since, and a task that consulted once can still cross the threshold again.
+    if (!this.open) return;
+    this.armed = "hold";
+  }
+
+  /** Notes this task was shown. A retry that carries the same note again is not another one. */
+  get presentations(): number {
+    return this.shown;
   }
 
   /**
@@ -255,7 +264,7 @@ export class AdvisorReminderState {
   noteConsultAttempt(): void {
     if (!this.open) return;
     this.suppressed = true;
-    this.due = false;
+    if (this.armed === "cadence") this.armed = undefined;
   }
 
   /**
@@ -265,51 +274,38 @@ export class AdvisorReminderState {
    * spent for the rest of the task.
    */
   suspend(): void {
-    this.due = false;
+    this.armed = undefined;
     // Rounds start at 0 and only grow, so -1 can never match a later round.
-    if (this.presentedRound !== undefined) this.presentedRound = -1;
+    if (this.presented) this.presented = { round: -1, kind: this.presented.kind };
   }
 
   /**
-   * `guard` asks for one reminder per message that changes state, not one per task. A presentation
-   * this task already spent — including one a configuration change suspended — is never resurrected.
+   * The note for this request, or undefined. A retry of the request that already carried it gets it
+   * again; the next round never re-arms it. One presentation per round, and never more than one in
+   * one request.
    */
-  armForChanges(): void {
-    if (!this.open || this.suppressed || this.presentedRound === -1) return;
-    this.due = true;
-  }
-
-  /**
-   * The reminder for this request, or undefined. A retry of the request that already carried it
-   * gets it again; the next round never re-arms it. A level that asks for changes to re-arm it reads
-   * the same flag, one presentation per round, and never more than one in a message.
-   */
-  presentation(
-    timestamp: number,
-    strict = false,
-    perMessage = false,
-  ): AdvisorReminderMessage | undefined {
-    if (!this.open || this.suppressed) return undefined;
-    if (this.presentedRound === this.round)
-      return createAdvisorReminder(timestamp, strict, perMessage);
-    if (perMessage) {
-      if (!this.due) return undefined;
-      this.due = false;
-      this.presentedRound = this.round;
-      return createAdvisorReminder(timestamp, strict, perMessage);
+  presentation(timestamp: number): AdvisorReminderMessage | undefined {
+    if (!this.open) return undefined;
+    if (this.presented?.round === this.round) {
+      if (this.suppressed && this.presented.kind === "cadence") return undefined;
+      return createAdvisorNote(timestamp, this.presented.kind);
     }
-    if (this.presentedRound !== undefined || !this.due) return undefined;
-    this.due = false;
-    this.presentedRound = this.round;
-    return createAdvisorReminder(timestamp, strict, perMessage);
+    if (this.armed === undefined) return undefined;
+    const kind = this.armed;
+    this.armed = undefined;
+    this.presented = { round: this.round, kind };
+    this.shown += 1;
+    if (kind === "cadence") this.resultsSinceNote = 0;
+    return createAdvisorNote(timestamp, kind);
   }
 
   private clear(): void {
+    this.shown = 0;
     this.round = 0;
     this.resultsSinceRequest = 0;
-    this.due = false;
+    this.resultsSinceNote = 0;
+    this.armed = undefined;
     this.suppressed = false;
-    this.presentedRound = undefined;
-    this.failedInRound.clear();
+    this.presented = undefined;
   }
 }

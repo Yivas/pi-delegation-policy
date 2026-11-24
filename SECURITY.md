@@ -85,12 +85,12 @@ role subagents. No retry is issued automatically: a failed consultation reports 
 waits for the main agent. Local timeouts do not cap external generation or cost. Partial results keep
 the other advisors' answers, and every reply is untrusted advice.
 
-The `strict` Advisor checkpoint refuses one state-changing call per task, and the `standard` one only
-records what it would have refused. The commands it recognizes are a nudge, not a security boundary:
-it reads the leading words of a shell segment, and it grants, widens and inspects no permission. Known
-limit: the `strict` level stops a long task at most once, at its first substantive change; the `guard`
-level refuses no call and instead interrupts the close of a task at most twice, and both are nudges
-rather than boundaries.
+The `strict` and `guard` Advisor levels hold every state-changing call of a task once several were
+made with no consultation, until an Advisor answers. `standard` only adds a note and `off` does
+nothing, except that a prompt starting with `??` holds the changes of its task at any level. This is a nudge, not a security boundary: the extension decides what changes state by
+reading the tool name and the text of a shell command, which it never runs, and that reading can be
+wrong in both directions. It grants, widens and inspects no permission, and with no Advisor to
+consult it holds nothing.
 
 Thread continuity, the private content-free journal, and their locks are described in the
 [configuration reference][threads]. The concurrent-writer and session-binding limits are in
@@ -132,9 +132,9 @@ provider after a failed check does not undo what it already did.
 Content-free records are written only while a policy block is active. With delegation and Advisor both
 off, no new event is written except in the short window before the next request notices that the policy
 is off. `delegation-policy.events.jsonl` holds policy and consultation metadata plus one `task` counter
-record per main-agent task, one `launch` record per checked subagent call, one `checkpoint` record
-per task in which the checkpoint fired, and a `guard` record per close interruption plus one when a
-task closes having changed state with no consultation covering it. `task` and `consultation` records carry `mainModel` and
+record per main-agent task, one `launch` record per checked subagent call, and one `gate` record per
+task whose gate opened (a `strict` or `guard` task, or any task a `??` prompt opened), with counts
+only. `task` and `consultation` records carry `mainModel` and
 `advisorLevel`, and `consultation` also carries `noArgs` and `contextBytes`, which is `0` in manual
 mode. It never holds questions, briefs, contexts, replies, conversations, project paths, or raw
 errors. It rotates at 256 KiB with one backup,

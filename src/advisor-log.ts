@@ -6,8 +6,7 @@ import { getGlobalConfigPath } from "./config.ts";
 import type { LaunchChildRole, LaunchCorrectionCode, LaunchRefusalCode } from "./launch-guard.ts";
 import type { AdvisorTurnContext } from "./advisor-threads.ts";
 import type { AdvisorLevel } from "./advisor-level.ts";
-import type { CheckpointReport } from "./advisor-checkpoint.ts";
-import type { GuardReport } from "./advisor-guard.ts";
+import type { GateReport } from "./advisor-gate.ts";
 import type { AdvisorLaunch, AdvisorMode, Intensity } from "./types.ts";
 
 export const ADVISOR_LOG_MAX_BYTES = 256 * 1024;
@@ -67,16 +66,10 @@ export type ConsultationContext = {
   contextBytes: number;
 };
 
-/** One checkpoint decision, with the configuration it ran under. */
-export type CheckpointRecord = CheckpointReport & {
-  mainModel: string | null;
-  advisorLevel: AdvisorLevel;
-};
-
-/** One `guard` decision: an interruption of a close, or a task that closed uncovered. */
-export type GuardRecord = GuardReport & {
-  /** The interruption number, or null when this record closes the task. */
-  block: number | null;
+/** One task's gate accounting, with the configuration it ran under. */
+export type GateRecord = GateReport & {
+  /** Ephemeral notes this level presented to the model. */
+  notes: number;
   mainModel: string | null;
   advisorLevel: AdvisorLevel;
 };
@@ -201,41 +194,21 @@ export class AdvisorLog {
   }
 
   /**
-   * One record per task whose checkpoint fired: the closed signals that caused it and how the task
-   * answered, with no tool input, path, prompt or task body.
+   * One record per task a level watched: counted changes, held ones, answered consultations and
+   * notes presented. Counts and closed values only: no tool input, path, prompt or task body.
    */
-  checkpoint(record: CheckpointRecord): void {
+  gate(record: GateRecord): void {
     if (!this.lastHash) return;
     this.enqueue({
-      event: "checkpoint",
+      event: "gate",
       version: VERSION,
       policyHash: this.lastHash,
-      mode: record.mode,
-      signals: record.signals,
-      resolution: record.resolution,
-      priorCalls: Math.max(0, Math.round(record.priorCalls)),
-      filesRead: Math.max(0, Math.round(record.filesRead)),
-      promptChars: Math.max(0, Math.round(record.promptChars)),
-      editLines: Math.max(0, Math.round(record.editLines)),
-      mainModel: record.mainModel ? record.mainModel.slice(0, 256) : null,
-      advisorLevel: record.advisorLevel,
-    });
-  }
-
-  /**
-   * One record per `guard` interruption and one when a task closes having changed state without a
-   * consultation covering it. Counts and closed numbers only: no path, prompt or task body.
-   */
-  guard(record: GuardRecord): void {
-    if (!this.lastHash) return;
-    this.enqueue({
-      event: "guard",
-      version: VERSION,
-      policyHash: this.lastHash,
-      block: record.block === null ? null : Math.max(0, Math.round(record.block)),
       changes: Math.max(0, Math.round(record.changes)),
-      consulted: record.consulted,
-      blocks: Math.max(0, Math.round(record.blocks)),
+      totalChanges: Math.max(0, Math.round(record.totalChanges)),
+      holds: Math.max(0, Math.round(record.holds)),
+      answers: Math.max(0, Math.round(record.answers)),
+      failures: Math.max(0, Math.round(record.failures)),
+      notes: Math.max(0, Math.round(record.notes)),
       mainModel: record.mainModel ? record.mainModel.slice(0, 256) : null,
       advisorLevel: record.advisorLevel,
     });

@@ -334,8 +334,9 @@ checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/n
 working exactly as before, and the schema default is `tool`:
 
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
-  models and a thinking level it chooses per run. The extension observes matching attempts but does
-  not launch them.
+  models and a thinking level it chooses per run, and in the foreground while a task holds its
+  changes, because only then does the answer arrive inside the call. The extension observes matching
+  attempts but does not launch them.
 - `tool`: the always-registered `consult_advisor({ question?, brief?, evidence? })` launches one
   child per valid advisor in parallel through the public `pi-subagents` delegation API. It requires
   stable SemVer `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every
@@ -608,30 +609,20 @@ failure leaves the previous file in place.
 The **Advisor nudge** row, formerly **Advisor reminder**, chooses how hard this extension pushes
 towards a consultation, and `advisorLevel` holds the same setting in configuration:
 
-- `off`: the written rules only. No reminder and no checkpoint, and every Advisor stays available and
-  can still be consulted.
-- `standard`: the default. The rules, the existing one-per-task reminder, and the checkpoint in
-  record-only mode, which never stops anything and only logs when it would have stopped a change.
-- `strict`: everything `standard` gives, plus one extra sentence in the reminder and an active
-  checkpoint:
+| Level      | Note                                               | Changes                                           |
+| ---------- | -------------------------------------------------- | ------------------------------------------------- |
+| `off`      | None                                               | Never held                                        |
+| `standard` | One after every 8 tool results of a task (default) | Never held                                        |
+| `strict`   | One warning after 3 changes with no consultation   | Held from the 6th change until an Advisor answers |
+| `guard`    | Same as `strict`                                   | Same as `strict`                                  |
 
-  ```text
-  Hard rule for this session: your first edit, write or publishing command in a task must come after an Advisor consultation. This is a checkpoint, not a difficulty judgment.
-  ```
-
-- `guard`: refuses no tool call at all. It counts every call that changes state, reminds once per
-  message that changes state, and interrupts the **close** of a task instead, through the host's final
-  settle boundary, which appends one instruction and asks for one more request. A consultation that
-  reached at least one Advisor covers the changes made before it and five more; after that the close is
-  interrupted again. A call that never dispatched — a redirect, a rejected launch, a refused
-  continuation — covers nothing, so it cannot be used to close the task. In `role` mode the launch
-  happens in the host tool this extension only observes, so there an attempt covers; that is the one
-  residual of the level. Each task is
-  interrupted at most twice, and the second interruption is only earned by new changes since the
-  first, so a task that ignores the first one still closes on its second attempt. Availability is
-  checked at that instant, not when the task started: with no Advisor or no launcher, nothing is
-  interrupted. This is the only level that cannot be satisfied by repeating a call, because it does
-  not refuse one.
+A prompt that starts with `??` is the one exception to "never held": it holds the changes of its task
+at any level. At `off` and `standard` the hold ends with the first answered consultation and no
+count starts afterwards. Every Advisor stays available at every level and can be consulted at any
+time. `guard` behaves
+exactly like `strict` in this version. A later version adds a watcher on top of it, and that watcher
+is not part of this one. The count is per task and starts over when a consultation answers. The
+[checkpoint](#advisor-checkpoint) section describes what is held and what opens it.
 
 With Advisor off the level has no effect. It is resolved from a session override first, then from the
 entry for the current main model, then from the global level, then from `standard`, and a task keeps
@@ -639,15 +630,15 @@ the level it started with. The commands are `/delegate advisor level off|standar
 the branch, `/delegate advisor level global …` for every session and `/delegate advisor level model …`
 for the current main model, where `default` clears the value at that scope.
 
-In `standard` and `strict` two observable events arm the reminder. One successful builtin orientation
-result (`read`, `find`, `grep` or `ls`) presents it in the next request, and the same builtin tool
-failing in two different rounds presents it as well. In `guard` only a message that changes state arms
-it, and every such message may present it once: that level states the rule it enforces per change, not
-the one presentation a task gets. A batch of results is one round, and a retry of the same request
-keeps the presentation it already carried. An attempted consultation ends the
-reminder for that task even when it fails, and a control action that only names an Advisor is not a
-consultation. Turning the level off, a branch move, a new task or the task settling discards it,
-and re-enabling it never restores a presentation the same task already used.
+The note follows a count the host reports, not a judgment of the task. In `standard` it is presented
+in the request that follows the 8th tool result, and the count then starts over. In `strict` and
+`guard` the warning is presented once per run of changes, in the request that follows the 3rd change
+made with no consultation since the last answered one. A request carries at most one note, and a retry of the same request keeps the one it
+already carried. An attempted consultation ends the periodic note for that task even when it fails,
+and it does not end the warning, which is about changes made since the last answer. A control action
+that only names an Advisor is not a consultation. Turning the level off, a branch
+move, a new task or the task settling discards it. Neither the note nor the refusal tells the model
+a count.
 
 The reminder is presented only while a valid Advisor is active, the task is live, and the configured
 launch mode has its launcher among the active tools: `subagent` for `role`, `consult_advisor` for
@@ -659,9 +650,9 @@ load this policy and can consult are covered too.
 
 The line is appended to the request copy after the policy block and the configuration notice, and
 never to the conversation. It starts no turn, no child and no consultation, adds no authority and
-revokes no instruction, and it cannot promise to arrive before the first edit or to observe sources
-other than those builtin tools. It is sent to the provider like the rest of the request, so it is not
-a promise about cost or retention, and a reminder is not evidence that a consultation happened.
+revokes no instruction, and it cannot promise to arrive before the first edit. It is sent to the
+provider like the rest of the request, so it is not a promise about cost or retention, and a note is
+not evidence that a consultation happened.
 
 The row is global for every session, not a session setting, and **Apply changes** and **Save effective
 configuration as defaults** both store a changed value before their own step, while **Cancel** leaves
@@ -691,39 +682,76 @@ setting's own answer even when it carries no level.
 
 ## Advisor checkpoint {#advisor-checkpoint}
 
-The checkpoint applies in `strict`, where it stops the call, and in `standard`, where it only records
-what it would have stopped. It looks at the first call of a task that changes state, when no Advisor
-was consulted before it in that task and the task looks substantive. State-changing calls are `edit`,
-`write`, and shell commands that publish or push work, such as `git push`, `npm publish`,
-`gh release create`, `gh pr merge`, `docker push` or a deploy command. A `--dry-run` does not count,
-and neither do `git commit` and other local commands. A task is substantive when at least one of these
-holds: five earlier tool calls, three files read or searched, a prompt of 400 characters or more, or
-an edit of more than 40 lines.
+The checkpoint applies in `strict` and `guard`. It counts the changes a task was allowed to make. The
+1st to the 5th run. From the 6th on, every change is refused until an Advisor consultation answers.
+Reading always passes, including while changes are held. A refused change is not counted, and
+repeating the refused call does not unblock it. An answered consultation covers the changes made so
+far, and the count starts over.
 
-It fires once per task, and at most once every 30 minutes in a session. Any consultation, voluntary or
-not, ends it for that task and restarts those 30 minutes. In `strict` the refused call returns this
-text, verbatim:
+A change is a tool call that changes state, decided closed by default:
+
+- `edit`, `write` and `multi_edit` are changes.
+- Any tool the extension does not know is a change, including a `subagent` launch that is not an
+  Advisor consultation.
+- A shell command is a change unless every one of its segments is a known read. Known reads are
+  commands such as `ls`, `cat`, `rg`, `grep`, `head`, `wc`, `git status`, `git diff`, `git log`,
+  `git show`, and `find` without `-delete` or `-exec`.
+- Redirections, command substitution, `sudo`, `xargs`, `sed`, `awk`, `node`, `python`, test runs and
+  builds are changes, because the extension cannot know what they write. So is any option that names
+  an output file or a program to run, such as `--output` or `--exec`. A redirection character inside
+  quotes is an argument, not a redirection, and `2>&1` or a stream sent to the null device does not
+  count.
+- `read`, `grep`, `find`, `ls`, `glob` and `consult_advisor` are never changes, and neither are the
+  `status`, `list` and `guide` actions of `subagent`. Every other tool counts, including a task list,
+  a question to the user and any MCP tool, whatever it does.
+
+Shell text is read as data and never executed. Counting tests and builds has a known cost: an
+edit-and-test loop reaches the hold quickly.
+
+A consultation answers when the details of its result show that at least one Advisor did. Text alone
+proves nothing, because both launchers return text when they fail. In `tool` launch those are the
+details `consult_advisor` writes. In `role` launch it is a single or `tasks` launch whose every child
+is a configured Advisor, with `async: false`, read from the details of the host's `subagent` tool: a
+child that ended cleanly, was not cut short and left output of its own. A launch that names a
+`workflow` reports a different result shape, so it counts as a change like any other unknown call
+and never opens the checkpoint; a single Advisor launch is enough to answer. Those details were read against `pi-subagents`
+`0.89.1`. A result in a shape this version does not recognize opens nothing and the operator is told
+once. An omitted `async` counts as background, whatever `asyncByDefault` says in `pi-subagents`, and
+so does an `async: false` that `pi-subagents` rewrites to a background launch with
+`forceTopLevelAsync`: no `role` launch can answer while that option is set, and the operator is told
+once about the shape it cannot read. A background launch returns before the Advisor answers and
+covers nothing, so while a level holds changes an Advisor launch with `async` omitted or `true` is
+refused: in `role` launch the message says to relaunch it with `async: false`, and in `tool` launch
+it names `consult_advisor()` instead, because this session does not launch Advisors with that tool. A consultation that returns an error or empty text opens nothing.
+After two failed consultations in a row the operator gets one warning notification and the changes
+stay held. The operator then fixes the Advisor, or changes the level with `/delegate` and sends a new
+prompt, because a task keeps the level it started with.
+
+The refused call returns this text, verbatim, in `tool` launch:
 
 ```text
-Not an error: this call was not run. Advisor checkpoint, once for this task.
-This is the first change in work that looks non-trivial and no Advisor has been consulted.
-1. If there is a decision here you could get wrong (approach, root cause, scope, an irreversible step): call consult_advisor() now. It needs no arguments; the host supplies the context.
-2. If this step is mechanical, or the user already decided it: repeat this call and it will run. Do not consult just to comply.
+Not an error: this call was not run. Advisor checkpoint.
+The checkpoint holds every change in this task until an Advisor consultation answers. Reading is not affected.
+Consult the Advisors now: call consult_advisor(). It needs no arguments; the host supplies the context.
+After the consultation answers, make this change again.
 ```
 
-In `role` launch the sentence about `consult_advisor()` points to the Roles section of the policy
-instead. Every state-changing call of the same assistant message is refused together, so a batch is
-never half applied, and from the next request on any call passes. It never refuses twice in a row.
+In `role` launch the third line asks for a foreground launch of every listed Advisor instead. In
+`tool` launch with `/delegate advisor context manual` it asks for a question, and for a brief on a
+first consultation, instead of saying the call needs no arguments. While changes are held,
+`consult_advisor` in `role` launch also redirects to a foreground launch. A background launch refused
+by the checkpoint writes no `launch` record.
 
 It refuses nothing when a consultation is not possible: no valid Advisor, no launcher for the
-configured launch mode, no open task, a consultation already running, or a subagent child process. After a session resume, fork or compaction the task counts as covered. A `??` at the
-start of a prompt forces the checkpoint for that task whatever the level, the thresholds and the 30
-minutes, as long as an Advisor is available — except in `guard`, which never opens that checkpoint
-because its own definition is that it refuses no call; there `??` has no effect.
+configured launch mode, no open task, a consultation already running, or a subagent child process. A
+`??` at the start of a prompt asks for a consultation before the first change at any level: that task
+starts with changes held, as long as an Advisor can be consulted, and at `off` and `standard` the
+hold ends with the first answer.
 
-The command list is a nudge, not a security boundary: it reads the leading words of a shell segment,
-matches nothing else, and never authorizes, blocks or inspects the call. Known limit: in this version
-a long task is stopped at most once, at its first substantive change.
+The classification is a nudge, not a security boundary. It reads the tool name and the text of a
+shell command, it can be wrong in both directions, and it never authorizes or inspects a permission.
+In particular it knows a short list of options that make a known read write a file or run a program,
+and an option outside that list is not recognized.
 
 ## Advisor child extensions {#advisor-child-extensions}
 

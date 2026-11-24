@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The Advisor nudge levels are rebuilt on counts the host reports, and `standard`, `strict` and
+  `guard` behave differently for existing users. The old `strict` refused one call per task and its
+  refusal offered a second way out, repeating the call, which a small main model took every time it
+  was measured.
+- `standard` adds a short note after every 8 tool results of a task, at most one per request, in
+  place of the one reminder per task. It still refuses nothing.
+- `strict` counts the changes a task was allowed to make. It warns once after 3 changes made since
+  the last answered consultation, and refuses every change from the 6th on, until an Advisor
+  consultation answers. Reading always
+  passes, a refused change is not counted, and repeating the refused call does not unblock it. The
+  refusal names the consultation and nothing else.
+- `guard` behaves exactly like `strict` in this release.
+- A change is decided closed by default: `edit`, `write`, `multi_edit`, any tool the extension does
+  not know, and a shell command unless every one of its segments is a known read. Redirections,
+  command substitution, test runs and builds count as changes, so an edit-and-test loop reaches the
+  hold quickly.
+- A consultation opens the checkpoint only when the tool's own result details show that an Advisor
+  answered. Text alone proves nothing, because both launchers return text when they fail. In `role`
+  launch that needs `async: false`, and a background Advisor launch is refused with that correction
+  while changes are held. Two failed consultations in a row send the operator one warning and leave
+  the changes held, and so does a result whose shape this version does not recognize.
+- Calls of one assistant message are decided one by one, so a message that crosses the hold runs its
+  first changes and has the rest refused.
+- A `??` prompt now holds the changes of its task at every level, `guard` included. At `off` and
+  `standard` the hold ends with the first answered consultation and counting does not resume.
+
+### Removed
+
+- The close interruption of `guard`: the extension no longer registers the host's settle boundary.
+- The conditions that made the old checkpoint skip a task: the tests for a task that looks
+  substantive and the 30 minutes between two refusals in a session. `strict` and `guard` can now
+  hold changes in every task.
+- The `checkpoint` and `guard` records of the local log. One `gate` record per task whose gate opened
+  replaces them, with counts only.
+
 ## 0.34.0 - 2026-11-23
 
 ### Added

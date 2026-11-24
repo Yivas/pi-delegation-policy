@@ -9,16 +9,18 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+  ADVISOR_CADENCE_RESULTS,
   ADVISOR_REMINDER_TYPE,
   AdvisorReminderState,
   DEFAULT_ADVISOR_REMINDER_MODE,
   getAdvisorRemindersPath,
   readAdvisorReminderMode,
-  renderAdvisorReminder,
+  renderAdvisorHoldWarning,
+  renderAdvisorNote,
   writeAdvisorReminderMode,
 } from "../src/advisor-reminders.ts";
+import { GATE_HOLD_CHANGES, GATE_WARN_CHANGES, gateMessage } from "../src/advisor-gate.ts";
 import { getGlobalConfigPath, isAbsentPathError, writeConfig } from "../src/config.ts";
-import { CHECKPOINT_MESSAGE, CHECKPOINT_ROLE_MESSAGE } from "../src/advisor-checkpoint.ts";
 import { getAdvisorLevelPath, readAdvisorLevelFile } from "../src/advisor-level.ts";
 import { getEventLogPath } from "../src/advisor-log.ts";
 import { DelegatePanel, type DelegatePanelOptions } from "../src/delegate-panel.ts";
@@ -117,6 +119,7 @@ function createHarness(
   const branch: Array<Record<string, unknown>> = [];
   let appended = 0;
   let callId = 0;
+  let lastCall: string | undefined;
   const activeTools = options.activeTools ?? ["subagent"];
   const pi = {
     on: (
@@ -203,57 +206,61 @@ function createHarness(
     input: Record<string, unknown> = {},
   ): Promise<{ block?: boolean; reason?: string } | undefined> => {
     callId += 1;
+    lastCall = `call-${callId}`;
     return (await handler("tool_call")(
-      { type: "tool_call", toolCallId: `call-${callId}`, toolName, input },
+      { type: "tool_call", toolCallId: lastCall, toolName, input },
       ctx,
     )) as { block?: boolean; reason?: string } | undefined;
   };
-  const toolResult = async (toolName: string, isError = false): Promise<void> => {
+  /**
+   * One tool result. A result carries its own id by default; a case that needs the host's pairing
+   * between a call and the result that answers it passes the id of that call explicitly.
+   */
+  const toolResult = async (
+    toolName: string,
+    isError = false,
+    options: {
+      toolCallId?: string;
+      content?: Array<{ type: "text"; text: string }>;
+      /** What the tool reported: the only thing the gate reads to decide whether it answered. */
+      details?: unknown;
+    } = {},
+  ): Promise<void> => {
     callId += 1;
     await handler("tool_result")(
       {
         type: "tool_result",
-        toolCallId: `call-${callId}`,
+        toolCallId: options.toolCallId ?? `result-${callId}`,
         toolName,
         input: {},
-        content: [{ type: "text", text: "body" }],
+        content: options.content ?? [{ type: "text", text: "body" }],
         isError,
+        details: options.details,
       },
       ctx,
     );
   };
+  /** `count` results of a builtin tool, as one task's rounds would report them. */
+  const results = async (count: number, toolName = "read"): Promise<void> => {
+    for (let index = 0; index < count; index += 1) await toolResult(toolName);
+  };
+  /**
+   * A consultation result the host paired with the call that launched it. The text is whatever the
+   * launcher printed: the gate reads `details` and never this, so a case states both.
+   */
+  const consultationResult = async (
+    isError: boolean,
+    text: string,
+    options: { toolCallId?: string; details?: unknown } = {},
+  ): Promise<void> =>
+    toolResult("consult_advisor", isError, {
+      toolCallId: options.toolCallId ?? lastCall,
+      content: [{ type: "text", text }],
+      details: options.details,
+    });
   const settled = async (): Promise<void> => {
     await handler("agent_settled")({ type: "agent_settled" }, ctx);
   };
-  /** The host's final actionable boundary: it can append entries and ask for one more request. */
-  const settleBoundary = async (
-    overrides: {
-      outcome?: string;
-      canContinue?: boolean;
-      /** Drafts another handler already appended at this boundary. */
-      entries?: Array<Record<string, unknown>>;
-    } = {},
-  ): Promise<
-    { entries?: Array<{ customType?: string; content?: unknown }>; continue?: boolean } | undefined
-  > =>
-    (await handler("agent_before_settle")(
-      {
-        type: "agent_before_settle",
-        entries: overrides.entries ?? [],
-        continue: false,
-        outcome: overrides.outcome ?? "completed",
-        context: {
-          // The host computes this before the handler runs, and at a completed run it is false: the
-          // appending draft is what makes the continuation valid afterwards.
-          canContinue: overrides.canContinue ?? false,
-          contextEntries: [],
-          contextMessages: [],
-          llmMessages: [],
-          pendingMessages: [],
-        },
-      },
-      ctx,
-    )) as never;
   const start = async (): Promise<void> => {
     await handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
   };
@@ -277,13 +284,17 @@ function createHarness(
   return {
     ctx,
     branch,
+    handlers,
     transcript,
     request,
     prompt,
     toolCall,
     toolResult,
+    results,
+    consultationResult,
+    /** The id of the most recent tool call, so a result can answer it. */
+    lastCall: () => lastCall,
     settled,
-    settleBoundary,
     start,
     tree,
     shutdown,
@@ -310,120 +321,186 @@ async function withHarness(
   });
 }
 
-test("one successful orientation round presents the reminder once, in the next request", async () => {
+/** The level companion decides a task's level: it is read when the task opens. */
+async function writeLevel(values: { level?: string; context?: string }): Promise<void> {
+  await writeFile(
+    getAdvisorLevelPath(getGlobalConfigPath()),
+    `${JSON.stringify({ schemaVersion: 1, ...values })}\n`,
+  );
+}
+
+/** The log writer drains on its own, so a case waits for the record it is about. */
+async function logEventsNamed(event: string): Promise<Array<Record<string, unknown>>> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const text = await readFile(getEventLogPath(getGlobalConfigPath()), "utf8").catch(() => "");
+    const matching = text
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.event === event);
+    if (matching.length || Date.now() > deadline) return matching;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+const SMALL_EDIT = { path: "src/a.ts", edits: [{ oldText: "a", newText: "one" }] };
+
+/** An Advisor consultation the host answers inside the call: every child is the Advisor. */
+const FOREGROUND_CONSULT = {
+  async: false,
+  tasks: [{ agent: ADVISOR_AGENT, model: "example/advisor:high", task: "Review the change." }],
+};
+
+/** An ordinary launch: no child is an Advisor, so it is not a consultation at any level. */
+const ORDINARY_LAUNCH = {
+  tasks: [{ agent: "worker", model: "example/small:high", task: "Read the file." }],
+};
+
+/** The details `consult_advisor` itself writes: one slot per Advisor, each with its own status. */
+const toolDetails = (status: "complete" | "error") => ({
+  advisorConsultation: {
+    summary: status === "complete" ? "complete" : "unavailable",
+    slots: [{ slot: 0, status, model: "example/advisor" }],
+  },
+});
+
+/** The details the host's `subagent` tool reports: one result per child, all of them Advisors. */
+const roleDetails = (child: Record<string, unknown>) => ({ results: [child] });
+
+/** A `consult_advisor` result with one completed slot: the tool answered. */
+const ANSWERED_TOOL_DETAILS = toolDetails("complete");
+/** A `consult_advisor` result whose only slot never completed: it failed, text notwithstanding. */
+const FAILED_TOOL_DETAILS = toolDetails("error");
+/** A role launch whose only child ended cleanly and left output: the Advisor answered. */
+const ANSWERED_ROLE_DETAILS = roleDetails({
+  exitCode: 0,
+  finalOutput: "the Advisor answered",
+});
+/** A role launch whose only child exited non-zero: it failed, text notwithstanding. */
+const FAILED_ROLE_DETAILS = roleDetails({
+  exitCode: 1,
+  finalOutput: "the Advisor failed",
+});
+/** A result whose details this version cannot interpret: it opens nothing and is reported once. */
+const UNRECOGNIZED_DETAILS = undefined;
+/** The failure text `consult_advisor` returns for a call that reached no Advisor. */
+const BLANK_QUESTION_TEXT = "Advisor error: question must not be blank.";
+
+test("the note arrives after eight tool results, last in the request, and is never stored", async () => {
   await withHarness({}, async (harness) => {
     await harness.prompt();
-    assert.equal(harness.reminders(await harness.request()).length, 0, "no orientation yet");
+    assert.equal(harness.reminders(await harness.request()).length, 0, "a fresh task says nothing");
 
-    await harness.toolResult("read");
+    await harness.results(ADVISOR_CADENCE_RESULTS - 1);
+    assert.equal(
+      harness.reminders(await harness.request()).length,
+      0,
+      "one result short of the cadence presents nothing",
+    );
+
+    await harness.results(1);
     const presented = await harness.request();
     assert.equal(harness.reminders(presented).length, 1);
     assert.equal(presented.at(-1)?.role, "custom", "appended last, after the transcript");
-    // The stored transcript, the policy delivery that every request carries, and the reminder.
+    // The stored transcript, the policy delivery that every request carries, and the note.
     assert.equal(presented.length, harness.transcript().length + 2);
-    assert.equal(harness.reminderText(presented), renderAdvisorReminder());
+    assert.equal(harness.reminderText(presented), renderAdvisorNote());
     assert.match(harness.reminderText(presented) ?? "", /not from the user/);
     assert.match(harness.reminderText(presented) ?? "", /adds no authority/);
 
     // The host converts the custom message to user text; the stored request copy keeps its role.
     const converted = convertToLlm(presented);
     assert.equal(converted.at(-1)?.role, "user");
-    assert.deepEqual(converted.at(-1)?.content, [{ type: "text", text: renderAdvisorReminder() }]);
+    assert.deepEqual(converted.at(-1)?.content, [{ type: "text", text: renderAdvisorNote() }]);
     assert.equal(presented.at(-1)?.role, "custom");
 
-    // A later round of the same task never re-arms it, even after another orientation result.
-    await harness.toolResult("edit");
-    assert.equal(harness.reminders(await harness.request()).length, 0);
-    await harness.toolResult("grep");
-    assert.equal(harness.reminders(await harness.request()).length, 0);
-
-    // A new task starts from zero, and the reminder is never stored in the session.
-    await harness.settled();
-    await harness.prompt();
-    await harness.toolResult("read");
-    assert.equal(harness.reminders(await harness.request()).length, 1);
-    assert.equal(harness.appended(), 0, "the reminder writes no session entry");
+    assert.equal(harness.appended(), 0, "the note writes no session entry");
     assert.deepEqual(harness.branch, []);
   });
 });
 
-test("a retry of the same request keeps the reminder and a batch is one round", async () => {
+test("a retry of the same request keeps the note and one request never carries two", async () => {
   await withHarness({}, async (harness) => {
     await harness.prompt();
-    // Two orientation results in one batch are one round, so the reminder waits for the next one.
+    await harness.results(ADVISOR_CADENCE_RESULTS * 2);
+    const presented = await harness.request();
+    assert.equal(harness.reminders(presented).length, 1, "many results in one round are one note");
+    assert.equal(presented.length, harness.transcript().length + 2);
+    // A retry of that request carries no new result and keeps the same presentation.
+    const retried = await harness.request();
+    assert.equal(harness.reminders(retried).length, 1);
+    assert.equal(harness.reminderText(retried), harness.reminderText(presented));
+
+    // Presenting starts the count over: the next note needs the whole cadence again.
+    await harness.results(ADVISOR_CADENCE_RESULTS - 1);
+    assert.equal(harness.reminders(await harness.request()).length, 0);
+    await harness.results(1);
+    assert.equal(harness.reminders(await harness.request()).length, 1);
+  });
+});
+
+test("the triggers the note replaced present nothing, and only the cadence does", async () => {
+  await withHarness({}, async (harness) => {
+    await harness.prompt();
+    // The first orientation result no longer presents anything.
     await harness.toolResult("read");
-    await harness.toolResult("grep");
-    const first = await harness.request();
-    assert.equal(harness.reminders(first).length, 1);
-    // A retry of that same request carries no new tool result and keeps the same presentation.
-    assert.equal(harness.reminders(await harness.request()).length, 1);
-    // Turning it off and on again in the same round does not present a second line: the sent
-    // presentation is spent for the task, while a plain retry above still reused it.
-    const path = getAdvisorRemindersPath(getGlobalConfigPath());
-    await writeFile(path, `${JSON.stringify({ schemaVersion: 1, mode: "off" })}\n`);
     assert.equal(harness.reminders(await harness.request()).length, 0);
-    await writeFile(path, `${JSON.stringify({ schemaVersion: 1, mode: "remind" })}\n`);
-    assert.equal(harness.reminders(await harness.request()).length, 0);
-    // The next round does not re-arm it either.
-    await harness.toolResult("ls");
-    assert.equal(harness.reminders(await harness.request()).length, 0);
-  });
-});
 
-test("two failing rounds of the same builtin tool trigger the reminder, one batch does not", async () => {
-  await withHarness({}, async (harness) => {
-    await harness.prompt();
+    // Two failing rounds of the same tool no longer present anything either.
     await harness.toolResult("grep", true);
+    assert.equal(harness.reminders(await harness.request()).length, 0);
     await harness.toolResult("grep", true);
-    assert.equal(
-      harness.reminders(await harness.request()).length,
-      0,
-      "two failures in one round are one batch",
-    );
+    assert.equal(harness.reminders(await harness.request()).length, 0);
     await harness.toolResult("grep", true);
+    assert.equal(harness.reminders(await harness.request()).length, 0);
+
+    // Four results are already counted, so the cadence needs the rest of its eight.
+    await harness.results(ADVISOR_CADENCE_RESULTS - 4);
     assert.equal(harness.reminders(await harness.request()).length, 1);
   });
 });
 
-test("an attempted consultation suppresses the reminder even when it fails", async () => {
+test("a consultation attempt ends the note for the task, even when it fails", async () => {
   await withHarness(
     { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
     async (harness) => {
       await harness.prompt();
       await harness.toolCall("consult_advisor", { question: "Is this the right approach?" });
-      await harness.toolResult("consult_advisor", true);
-      await harness.toolResult("read");
-      assert.equal(harness.reminders(await harness.request()).length, 0);
+      await harness.consultationResult(true, "the Advisor could not be reached");
+      await harness.results(ADVISOR_CADENCE_RESULTS * 2);
+      assert.equal(
+        harness.reminders(await harness.request()).length,
+        0,
+        "a failed attempt is spent for the task, so no note invites a retry",
+      );
     },
   );
 });
 
-test("a role-mode consultation attempt suppresses the reminder and a control action does not", async () => {
+test("a control action does not end the note and an Advisor launch does", async () => {
   await withHarness({}, async (harness) => {
     await harness.prompt();
+    // A management action names no launch, so it is not a consultation attempt.
     await harness.toolCall("subagent", { action: "status" });
-    await harness.toolResult("read");
-    assert.equal(
-      harness.reminders(await harness.request()).length,
-      1,
-      "a control action that names no launch is not a consultation",
-    );
+    await harness.results(ADVISOR_CADENCE_RESULTS);
+    assert.equal(harness.reminders(await harness.request()).length, 1);
 
     await harness.settled();
     await harness.prompt();
     await harness.toolCall("subagent", {
       tasks: [{ agent: ADVISOR_AGENT, model: "example/advisor:high", task: "Review the plan." }],
     });
-    await harness.toolResult("read");
+    await harness.results(ADVISOR_CADENCE_RESULTS);
     assert.equal(harness.reminders(await harness.request()).length, 0);
   });
 });
 
-test("no reminder without an active launcher, a valid Advisor, or the setting on", async () => {
+test("no note without an active launcher, a valid Advisor, the level on, or outside a task", async () => {
   // Role launch needs the host subagent tool among the active tools.
   await withHarness({ activeTools: [] }, async (harness) => {
     await harness.prompt();
-    await harness.toolResult("read");
+    await harness.results(ADVISOR_CADENCE_RESULTS);
     assert.equal(harness.reminders(await harness.request()).length, 0);
   });
 
@@ -432,50 +509,37 @@ test("no reminder without an active launcher, a valid Advisor, or the setting on
     { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["subagent"] },
     async (harness) => {
       await harness.prompt();
-      await harness.toolResult("read");
+      await harness.results(ADVISOR_CADENCE_RESULTS);
       assert.equal(harness.reminders(await harness.request()).length, 0);
     },
   );
 
-  // Advisor off, and both axes off, add nothing.
-  for (const config of [
-    { ...defaults, advisorMode: "off" as const },
-    { ...defaults, advisorMode: "off" as const, intensity: "off" as const },
+  // The level off says nothing at all, and an Advisor that cannot run is not a consultation path.
+  for (const options of [
+    {},
+    { config: { ...defaults, advisorMode: "off" as const } },
+    { config: { ...defaults, advisors: [{ provider: "example", model: "missing" }] } },
   ]) {
-    await withHarness({ config }, async (harness) => {
+    await withHarness(options, async (harness) => {
+      if (!options.config) await writeLevel({ level: "off" });
       await harness.prompt();
-      await harness.toolResult("read");
+      await harness.results(ADVISOR_CADENCE_RESULTS);
       assert.equal(harness.reminders(await harness.request()).length, 0);
     });
   }
 
-  // The global setting off adds nothing, and an invalid file suspends only the reminder.
+  // Results reported outside an operative task are counted by nothing.
   await withHarness({}, async (harness) => {
-    const path = getAdvisorRemindersPath(getGlobalConfigPath());
-    await writeFile(path, `${JSON.stringify({ schemaVersion: 1, mode: "off" })}\n`);
-    await harness.prompt();
-    await harness.toolResult("read");
+    await harness.results(ADVISOR_CADENCE_RESULTS);
     assert.equal(harness.reminders(await harness.request()).length, 0);
-
-    await writeFile(path, '{ "schemaVersion": 1, "mode": "remind"');
-    await harness.toolResult("read");
-    assert.equal(harness.reminders(await harness.request()).length, 0);
-    assert.equal(harness.status(), "D:NORM A:ON", "the axes are untouched");
-    await harness.command("status");
-    assert.match(
-      harness.notifications.at(-1)?.message ?? "",
-      /advisor-reminders\.json/,
-      "the invalid file is reported without changing either axis",
-    );
-    assert.equal(await readFile(path, "utf8"), '{ "schemaVersion": 1, "mode": "remind"');
   });
 });
 
-test("a forked main session keeps the reminder and only a marked child process loses it", async () => {
+test("a forked main session keeps the note and only a marked child process loses it", async () => {
   // `/fork` and `/clone` write the same session header, so it is not a child marker.
   await withHarness({ parentSession: "/sessions/parent.jsonl" }, async (harness) => {
     await harness.prompt();
-    await harness.toolResult("read");
+    await harness.results(ADVISOR_CADENCE_RESULTS);
     assert.equal(harness.reminders(await harness.request()).length, 1);
   });
 
@@ -489,7 +553,7 @@ test("a forked main session keeps the reminder and only a marked child process l
       Object.assign(process.env, marker);
       try {
         await harness.prompt();
-        await harness.toolResult("read");
+        await harness.results(ADVISOR_CADENCE_RESULTS);
         assert.equal(harness.reminders(await harness.request()).length, 0);
       } finally {
         for (const [key, value] of Object.entries(previous)) {
@@ -501,24 +565,612 @@ test("a forked main session keeps the reminder and only a marked child process l
   }
 });
 
-test("tool results outside an operative task and after a branch move arm nothing", async () => {
+test("a branch move drops the task and a configuration change drops a pending note", async () => {
   await withHarness({}, async (harness) => {
-    await harness.toolResult("read");
-    assert.equal(harness.reminders(await harness.request()).length, 0);
-
     await harness.prompt();
-    await harness.toolResult("read");
+    await harness.results(ADVISOR_CADENCE_RESULTS);
     await harness.tree();
     assert.equal(harness.reminders(await harness.request()).length, 0);
 
-    // A configuration change invalidates the reminder for the task: a presentation already sent
-    // stays consumed and a pending trigger is dropped.
+    // A configuration change invalidates the note for the task: a presentation already sent stays
+    // consumed and a pending trigger is dropped.
     await harness.prompt();
-    await harness.toolResult("read");
+    await harness.results(ADVISOR_CADENCE_RESULTS);
     assert.equal(harness.reminders(await harness.request()).length, 1);
     await harness.config({ ...defaults, advisors: [medium] });
     assert.equal(harness.reminders(await harness.request()).length, 0);
   });
+});
+
+test("neither note nor refusal names a count or a way out that skips the consultation", () => {
+  for (const note of [renderAdvisorNote(), renderAdvisorHoldWarning()]) {
+    assert.doesNotMatch(note, /\d/, note);
+    assert.doesNotMatch(note, /repeat|again and it will run|retry/i, note);
+  }
+  for (const launcher of ["role", "tool"] as const) {
+    const message = gateMessage(launcher);
+    assert.doesNotMatch(message, /\d/, launcher);
+    assert.doesNotMatch(message, /repeat this call/i, launcher);
+    assert.doesNotMatch(message, /repeat|again and it will run|retry/i, launcher);
+    assert.match(message, /Not an error: this call was not run/, launcher);
+  }
+  assert.match(gateMessage("tool"), /consult_advisor\(\)/, "tool launch names its own tool");
+  assert.match(gateMessage("role"), /async: false/, "role launch names the one field that answers");
+});
+
+test("the extension no longer registers the settle boundary", async () => {
+  await withHarness({}, async (harness) => {
+    assert.equal(harness.handlers.has("agent_before_settle"), false);
+    assert.equal(harness.handlers.has("agent_settled"), true, "the task still ends on settle");
+  });
+});
+
+test("level off presents nothing, refuses nothing and writes no gate record", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "off" });
+    await harness.prompt();
+    await harness.results(ADVISOR_CADENCE_RESULTS * 2);
+    assert.equal(harness.reminders(await harness.request()).length, 0);
+    for (let index = 0; index < GATE_HOLD_CHANGES + 2; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index + 1}`);
+    await harness.settled();
+    assert.deepEqual(await logEventsNamed("gate"), []);
+  });
+});
+
+test("standard presents the periodic note and never refuses a call", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "standard" });
+    await harness.prompt();
+    for (let index = 0; index < GATE_HOLD_CHANGES + 2; index += 1) {
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index + 1}`);
+      await harness.toolResult("edit");
+    }
+    assert.equal(harness.reminderText(await harness.request()), renderAdvisorNote());
+    await harness.settled();
+    assert.deepEqual(await logEventsNamed("gate"), [], "a level that holds nothing writes no gate");
+  });
+});
+
+test("strict and guard let five changes run and hold the sixth, seventh and eighth", async () => {
+  for (const level of ["strict", "guard"] as const) {
+    await withHarness({}, async (harness) => {
+      await writeLevel({ level });
+      await harness.prompt();
+      for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+        assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `${level}: ${index}`);
+
+      const refused = await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal(refused?.block, true, `${level}: the sixth change is held`);
+      assert.equal(refused?.reason, gateMessage("role"), `${level}: one refusal, one text`);
+      // A refused change is not counted, and repeating it does not unblock it.
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, `${level}: seventh`);
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, `${level}: eighth`);
+
+      // Reading is never affected, including while the gate holds.
+      assert.equal(await harness.toolCall("read", { path: "src/a.ts" }), undefined);
+
+      // Only a consultation the host answered inside the call opens the gate, and only its own
+      // details prove it: the text the child printed proves nothing.
+      await harness.toolCall("subagent", FOREGROUND_CONSULT);
+      await harness.consultationResult(false, "the Advisor answered", {
+        details: ANSWERED_ROLE_DETAILS,
+      });
+      assert.equal(
+        await harness.toolCall("edit", SMALL_EDIT),
+        undefined,
+        `${level}: the answer covers the changes made so far`,
+      );
+    });
+  }
+});
+
+test("a ?? prompt holds the first change at any level, and only while an Advisor can answer", async () => {
+  for (const level of ["off", "standard", "strict"] as const) {
+    await withHarness({}, async (harness) => {
+      await writeLevel({ level });
+      await harness.prompt("interactive", "?? Change the parser");
+      assert.equal(await harness.toolCall("read", { path: "src/a.ts" }), undefined, level);
+      const refused = await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal(refused?.block, true, `${level}: the first change is held`);
+      assert.equal(refused?.reason, gateMessage("role"));
+      // Nothing changed yet, so the warning about changes already made is never presented.
+      assert.equal(harness.reminders(await harness.request()).length, 0, level);
+
+      await harness.toolCall("subagent", FOREGROUND_CONSULT);
+      await harness.consultationResult(false, "the Advisor answered", {
+        details: ANSWERED_ROLE_DETAILS,
+      });
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `${level}: answered`);
+    });
+  }
+  // With no launcher there is nothing to consult, so the prefix holds nothing.
+  await withHarness({ activeTools: [] }, async (harness) => {
+    await harness.prompt("interactive", "?? Change the parser");
+    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
+  });
+});
+
+test("three allowed changes earn the hold warning, and a new task earns another", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 0; index < 3; index += 1) await harness.toolCall("edit", SMALL_EDIT);
+    const warned = await harness.request();
+    assert.equal(harness.reminderText(warned), renderAdvisorHoldWarning());
+    // The next request is a retry of the same one and carries it again.
+    assert.equal(harness.reminders(await harness.request()).length, 1);
+
+    // A new task starts with nothing counted, so its first three changes earn the warning again.
+    await harness.settled();
+    await harness.prompt();
+    for (let index = 0; index < 3; index += 1) await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal(harness.reminderText(await harness.request()), renderAdvisorHoldWarning());
+  });
+});
+
+test("the hold warning is presented once per run of changes, not once per request", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 0; index < 3; index += 1) await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal(harness.reminderText(await harness.request()), renderAdvisorHoldWarning());
+    // A request that follows a new tool result starts a new round, so it is not a retry of the one
+    // that carried the warning: it carries nothing.
+    await harness.toolResult("edit");
+    assert.equal(
+      harness.reminders(await harness.request()).length,
+      0,
+      "the warning is presented once for this run of changes",
+    );
+  });
+});
+
+test("a failed consultation attempt does not cost the task its hold warning", async () => {
+  await withHarness(
+    { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
+    async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      // The first thing this task does is try to consult, and the attempt fails. An attempt ends
+      // the periodic note for the task; it says nothing about the warning the gate earns later.
+      await harness.toolCall("consult_advisor", { question: "Is this the right approach?" });
+      await harness.consultationResult(false, BLANK_QUESTION_TEXT, {
+        details: FAILED_TOOL_DETAILS,
+      });
+      assert.equal(
+        harness.reminders(await harness.request()).length,
+        0,
+        "a failed attempt is not a note of its own",
+      );
+
+      // Three changes the gate lets through still earn the hold warning.
+      for (let index = 0; index < GATE_WARN_CHANGES; index += 1)
+        await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal(
+        harness.reminderText(await harness.request()),
+        renderAdvisorHoldWarning(),
+        "the attempt did not take the warning away",
+      );
+      const answered = await harness.request();
+      assert.equal(
+        harness.reminders(answered).length,
+        1,
+        "and it is presented once, not per retry",
+      );
+
+      // An answer covers the changes made so far, and the next run of changes earns the warning
+      // again: a task that consulted once can still cross the threshold.
+      await harness.toolResult("edit");
+      assert.equal(harness.reminders(await harness.request()).length, 0);
+      await harness.toolCall("consult_advisor", { question: "Is this the right approach?" });
+      await harness.consultationResult(false, "Consultation complete", {
+        details: ANSWERED_TOOL_DETAILS,
+      });
+      for (let index = 0; index < GATE_WARN_CHANGES; index += 1)
+        await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal(harness.reminderText(await harness.request()), renderAdvisorHoldWarning());
+    },
+  );
+});
+
+test("only an answered consultation opens the gate, and two failures tell the operator once", async () => {
+  await withHarness(
+    { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
+    async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+        await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+      // The reviewed blocker: the host flags no error, the printed text reads like a failure, and
+      // the only slot never completed. A failure, not an answer, so the gate stays where it was,
+      // and one failure is not worth telling the operator about.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(false, BLANK_QUESTION_TEXT, {
+        details: FAILED_TOOL_DETAILS,
+      });
+      assert.equal(
+        (await harness.toolCall("edit", SMALL_EDIT))?.block,
+        true,
+        "failure text is not an answer",
+      );
+      assert.equal(
+        harness.notifications.length,
+        0,
+        "one failure is not worth telling the operator",
+      );
+
+      // The second such failure is reported once, and the gate stays closed.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(false, BLANK_QUESTION_TEXT, {
+        details: FAILED_TOOL_DETAILS,
+      });
+      const warnings = harness.notifications.filter(({ type }) => type === "warning");
+      assert.equal(warnings.length, 1, "the second failure in a row is reported once");
+      assert.match(warnings[0]?.message ?? "", /only opens with an answer from an Advisor/);
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+      // A third failure in the same run is not reported again.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(false, BLANK_QUESTION_TEXT, {
+        details: FAILED_TOOL_DETAILS,
+      });
+      assert.equal(
+        harness.notifications.filter(({ type }) => type === "warning").length,
+        1,
+        "a third failure in the same run is not reported again",
+      );
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+      // An answered result opens the gate and the count starts over.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(false, "Consultation complete", {
+        details: ANSWERED_TOOL_DETAILS,
+      });
+      for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+        assert.equal(
+          await harness.toolCall("edit", SMALL_EDIT),
+          undefined,
+          `change ${index} after the answer`,
+        );
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    },
+  );
+});
+
+test("a consultation the host flagged as an error answers nothing", async () => {
+  await withHarness(
+    { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
+    async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+        await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+      // The error flag wins even over details that would otherwise prove an answer: a result the
+      // host reports as an error is a failure, and the gate stays where it was.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(true, "the provider refused", {
+        details: ANSWERED_TOOL_DETAILS,
+      });
+      assert.equal(
+        (await harness.toolCall("edit", SMALL_EDIT))?.block,
+        true,
+        "an error opens nothing, whatever the details say",
+      );
+    },
+  );
+});
+
+test("a result this version cannot interpret opens nothing and is reported once", async () => {
+  await withHarness(
+    { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
+    async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+        await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+      // A result with no details at all is not a failure to retry: retrying cannot change the
+      // shape, so the operator hears of it at once instead of after a second one.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(false, "Consultation complete", {
+        details: UNRECOGNIZED_DETAILS,
+      });
+      assert.equal(
+        (await harness.toolCall("edit", SMALL_EDIT))?.block,
+        true,
+        "an unreadable result opens nothing",
+      );
+      const warnings = harness.notifications.filter(({ type }) => type === "warning");
+      assert.equal(warnings.length, 1, "the operator is told about the first one");
+      assert.match(warnings[0]?.message ?? "", /shape this version does not recognize/);
+
+      // A second one in the same task says nothing new.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(false, "Consultation complete", {
+        details: UNRECOGNIZED_DETAILS,
+      });
+      assert.equal(
+        harness.notifications.filter(({ type }) => type === "warning").length,
+        1,
+        "a second unreadable result is not reported again",
+      );
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    },
+  );
+});
+
+test("a background Advisor launch runs before the hold and is refused inside it", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    // Before the hold a background launch is what the policy asks for: it runs, it covers nothing,
+    // and it counts no change.
+    for (const launch of [
+      { tasks: FOREGROUND_CONSULT.tasks },
+      { async: true, tasks: FOREGROUND_CONSULT.tasks },
+    ])
+      assert.equal(await harness.toolCall("subagent", launch), undefined, JSON.stringify(launch));
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(
+        await harness.toolCall("edit", SMALL_EDIT),
+        undefined,
+        `change ${index}: the launches counted nothing`,
+      );
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+    // While the gate holds, the same launch is refused with the one field that makes it answer:
+    // in `role` launch, the foreground form the policy permits.
+    for (const launch of [
+      { tasks: FOREGROUND_CONSULT.tasks },
+      { async: true, tasks: FOREGROUND_CONSULT.tasks },
+    ]) {
+      const refused = await harness.toolCall("subagent", launch);
+      assert.equal(refused?.block, true, JSON.stringify(launch));
+      assert.match(refused?.reason ?? "", /async: false/);
+      assert.doesNotMatch(refused?.reason ?? "", /consult_advisor\(\) instead/);
+    }
+    // A refusal counted no change either, so the gate is exactly where it was.
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+  });
+});
+
+test("role mode opens the gate only from a foreground launch whose own result answered", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    // The answer must come from the call that was accepted in the foreground, so it is the call's
+    // own tool-result id that counts.
+    await harness.consultationResult(false, "the Advisor answered", {
+      toolCallId: "never-launched",
+      details: ANSWERED_ROLE_DETAILS,
+    });
+    assert.equal(
+      (await harness.toolCall("edit", SMALL_EDIT))?.block,
+      true,
+      "a result with no foreground launch covers nothing",
+    );
+    // A foreground launch whose one child exited non-zero answered nothing, whatever text it
+    // printed: only the child's own result proves an answer.
+    await harness.toolCall("subagent", FOREGROUND_CONSULT);
+    await harness.consultationResult(false, "the Advisor answered", {
+      details: FAILED_ROLE_DETAILS,
+    });
+    assert.equal(
+      (await harness.toolCall("edit", SMALL_EDIT))?.block,
+      true,
+      "a foreground launch whose child failed answered nothing",
+    );
+    // One whose child ended cleanly and left output does answer.
+    await harness.toolCall("subagent", FOREGROUND_CONSULT);
+    await harness.consultationResult(false, "the Advisor answered", {
+      details: ANSWERED_ROLE_DETAILS,
+    });
+    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
+  });
+});
+
+test("a launch that is not a consultation counts as a change and gets no async rule", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    // An ordinary launch is a change like any unknown tool: the change that reaches the hold is
+    // refused by the gate, and the refusal is the gate's text, not the consultation correction.
+    const refused = await harness.toolCall("subagent", ORDINARY_LAUNCH);
+    assert.equal(refused?.block, true);
+    assert.equal(refused?.reason, gateMessage("role"));
+  });
+});
+
+test("a workflow launch is a change, not a consultation, because its result is not read", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    const workflow = {
+      async: false,
+      workflow: "parallel",
+      args: { tasks: FOREGROUND_CONSULT.tasks },
+    };
+    assert.equal(await harness.toolCall("subagent", workflow), undefined);
+    for (let index = 2; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
+    // The hold treats it like any other unknown call: it is refused rather than read as an answer
+    // this version cannot parse.
+    const refused = await harness.toolCall("subagent", workflow);
+    assert.equal(refused?.block, true);
+    assert.equal(refused?.reason, gateMessage("role"));
+  });
+});
+
+test("a launch that mixes an Advisor with a worker is a change, not a consultation", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    const mixed = {
+      async: false,
+      tasks: [...FOREGROUND_CONSULT.tasks, ...ORDINARY_LAUNCH.tasks],
+    };
+    // Before the hold it runs and is counted like any other change.
+    assert.equal(await harness.toolCall("subagent", mixed), undefined);
+    for (let index = 2; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
+    // At the hold it is refused by the gate, so a worker cannot ride on a consultation.
+    const refused = await harness.toolCall("subagent", mixed);
+    assert.equal(refused?.block, true);
+    assert.equal(refused?.reason, gateMessage("role"));
+  });
+});
+
+test("a role refusal asks for the foreground as its own rule, and so does the redirect", () => {
+  const message = gateMessage("role");
+  assert.match(message, /in the foreground \(async: false\)/);
+  assert.doesNotMatch(message, /Roles section/, "the policy asks for background launches");
+  assert.match(gateMessage("tool", true), /with a question/);
+  assert.doesNotMatch(gateMessage("tool", true), /needs no arguments/);
+});
+
+test("a ?? task that changed nothing reports no change", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "off" });
+    await harness.prompt("interactive", "?? Change the parser");
+    // A request is what logs the policy the record is bound to, so the turn is a real one.
+    await harness.request();
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    await harness.settled();
+    const [record] = await logEventsNamed("gate");
+    assert.equal(record?.changes, 0);
+    assert.equal(record?.totalChanges, 0);
+    assert.equal(record?.holds, 1);
+  });
+});
+
+test("in tool launch the background refusal names the consultation tool, not a subagent launch", async () => {
+  await withHarness(
+    {
+      config: { ...defaults, advisorLaunch: "tool" },
+      activeTools: ["consult_advisor", "subagent"],
+    },
+    async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+        assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
+      const refused = await harness.toolCall("subagent", { tasks: FOREGROUND_CONSULT.tasks });
+      assert.equal(refused?.block, true);
+      // The policy forbids launching Advisors with the subagent tool in this mode, so the way out
+      // is the tool that does launch them here.
+      assert.match(refused?.reason ?? "", /consult_advisor\(\) instead/);
+      assert.doesNotMatch(refused?.reason ?? "", /async: false/);
+    },
+  );
+});
+
+test("no level refuses anything without a valid Advisor, the launcher or in a child process", async () => {
+  for (const options of [
+    { activeTools: [] as string[] },
+    { config: { ...defaults, advisors: [{ provider: "example", model: "missing" }] } },
+  ]) {
+    await withHarness(options, async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      for (let index = 0; index < GATE_HOLD_CHANGES + 2; index += 1)
+        assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index + 1}`);
+    });
+  }
+
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    process.env.PI_SUBAGENT_CHILD = "1";
+    try {
+      await harness.prompt();
+      for (let index = 0; index < GATE_HOLD_CHANGES + 2; index += 1)
+        assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index + 1}`);
+    } finally {
+      delete process.env.PI_SUBAGENT_CHILD;
+    }
+  });
+});
+
+test("the level frozen when a task opens survives a change during it", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    // Turning the level off during the task stops the note, but the task keeps the level it opened
+    // under, so the gate still holds the change it was already counting.
+    await writeLevel({ level: "off" });
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    await harness.settled();
+
+    // The next task opens under the new level and refuses nothing.
+    await harness.prompt();
+    for (let index = 0; index < GATE_HOLD_CHANGES + 2; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index + 1}`);
+  });
+});
+
+test("a gate record closes with the task and carries counts, never content", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    // A request is what logs the policy the record is bound to, so the turn is a real one.
+    await harness.request();
+    for (let index = 0; index < GATE_WARN_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal(harness.reminderText(await harness.request()), renderAdvisorHoldWarning());
+    // The next request is a retry of that one and carries the same warning again. It is one note
+    // presented once, not two, so the record counts it as one.
+    assert.equal(harness.reminderText(await harness.request()), renderAdvisorHoldWarning());
+    // Two more changes reach the hold, and the change after them is the one refused.
+    for (let index = GATE_WARN_CHANGES; index < GATE_HOLD_CHANGES - 1; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    await harness.toolCall("subagent", FOREGROUND_CONSULT);
+    await harness.consultationResult(false, "the Advisor answered", {
+      details: ANSWERED_ROLE_DETAILS,
+    });
+    await harness.settled();
+
+    const [record] = await logEventsNamed("gate");
+    assert.equal(record?.changes, 0, "the answer reset the count");
+    assert.equal(record?.totalChanges, GATE_HOLD_CHANGES - 1);
+    assert.equal(record?.holds, 1);
+    assert.equal(record?.answers, 1);
+    assert.equal(record?.failures, 0);
+    assert.equal(record?.notes, 1, "the warning the model was shown, counted once across a retry");
+    assert.equal(record?.advisorLevel, "strict");
+    const text = await readFile(getEventLogPath(getGlobalConfigPath()), "utf8");
+    assert.doesNotMatch(text, /src\/a\.ts|oldText|newText/);
+  });
+});
+
+test("a presentation this task already spent is not resurrected by a later trigger", () => {
+  const state = new AdvisorReminderState();
+  state.openTask();
+  for (let index = 0; index < ADVISOR_CADENCE_RESULTS; index += 1) state.noteResult();
+  assert.ok(state.presentation(1), "the cadence arms the note");
+  assert.equal(state.presentations, 1);
+  state.suspend();
+  // The spent cadence is not handed back to a retry of the same round, or to any later one.
+  assert.equal(state.presentation(2), undefined);
+  // A hold warning armed afterwards is its own note: an attempt ends the periodic note, never this
+  // one, because the warning is about changes made since and a task can cross the hold again.
+  state.armHoldWarning();
+  const hold = state.presentation(3);
+  assert.ok(hold, "the hold warning is armed while the task is open");
+  assert.equal("content" in hold ? hold.content : undefined, renderAdvisorHoldWarning());
+  assert.equal(state.presentations, 2, "and it is a second presentation, counted as one");
 });
 
 // The writer cases below make a path inaccessible by putting a regular file where a directory is
@@ -682,9 +1334,12 @@ test("the panel shows the nudge level, stores it on Apply and leaves it alone on
               assert.match(picker, /Delegation policy \/ Advisor nudge \(global\)/);
               assert.match(
                 picker,
-                /strict — adds a hard rule and stops the first substantive change of a task once/,
+                /strict: warns after a few changes with no consultation, then holds every change/,
               );
-              assert.match(picker, /off — only the written rules: no reminder and no checkpoint/);
+              assert.match(
+                picker,
+                /off: only the written rules, with no note\. It holds nothing unless a prompt starts with \?\?/,
+              );
               sendKeys(component, KEY_DOWN, KEY_ENTER);
               // The staged level is shown at once; the source is still the absent file.
               assert.match(
@@ -785,315 +1440,4 @@ test("a nudge level saved before a failing defaults step is named, not denied", 
     /Could not save global defaults\. The Advisor nudge level \(strict\) was saved\./,
   );
   assert.doesNotMatch(view, /Nothing was changed on disk/);
-});
-
-/** The level companion decides a task's level: it is read when the task opens. */
-async function writeLevel(values: { level?: string; context?: string }): Promise<void> {
-  await writeFile(
-    getAdvisorLevelPath(getGlobalConfigPath()),
-    `${JSON.stringify({ schemaVersion: 1, ...values })}\n`,
-  );
-}
-
-/** The log writer drains on its own, so a case waits for the record it is about. */
-async function logEventsNamed(event: string): Promise<Array<Record<string, unknown>>> {
-  const deadline = Date.now() + 5_000;
-  for (;;) {
-    const text = await readFile(getEventLogPath(getGlobalConfigPath()), "utf8").catch(() => "");
-    const matching = text
-      .split("\n")
-      .filter((line) => line.trim())
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((entry) => entry.event === event);
-    if (matching.length || Date.now() > deadline) return matching;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-/** More than 40 new lines is the signal that says the first change is not a small one. */
-const SUBSTANTIVE_EDIT = {
-  path: "src/big.ts",
-  edits: [{ oldText: "a", newText: Array.from({ length: 41 }, (_, i) => `line ${i}`).join("\n") }],
-};
-
-const SMALL_EDIT = { path: "src/a.ts", edits: [{ oldText: "a", newText: "one" }] };
-
-test("level off never presents the reminder, refuses nothing and logs no checkpoint", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "off" });
-    await harness.prompt();
-    await harness.toolResult("read");
-    await harness.toolResult("read");
-    await harness.toolResult("read");
-    assert.equal(harness.reminders(await harness.request()).length, 0);
-    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
-    await harness.settled();
-    assert.deepEqual(await logEventsNamed("checkpoint"), []);
-  });
-});
-
-test("standard presents the reminder as before and records the first change in the shadow", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "standard" });
-    await harness.prompt();
-    await harness.toolResult("read");
-    assert.equal(harness.reminderText(await harness.request()), renderAdvisorReminder());
-    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
-    await harness.settled();
-    const [checkpoint] = await logEventsNamed("checkpoint");
-    assert.equal(checkpoint?.mode, "shadow");
-    assert.deepEqual(checkpoint?.signals, ["large-edit"]);
-    // The change was never repeated nor consulted, so the task left the question open.
-    assert.equal(checkpoint?.resolution, "none");
-    assert.equal(checkpoint?.advisorLevel, "standard");
-  });
-});
-
-test("guard interrupts the close instead of refusing a call", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "guard" });
-    await harness.prompt();
-    // The log only records under the policy the request carried, so the turn is a real one.
-    await harness.request();
-    // This level refuses nothing: the change runs and the close is what waits for a consultation. A
-    // change counts once its call ran, so its result is reported as a real one would be.
-    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
-    await harness.toolResult("edit");
-    const otherDraft = { type: "custom", customType: "another-extension", data: {} };
-    const first = await harness.settleBoundary({ entries: [otherDraft] });
-    assert.equal(first?.continue, true);
-    // The host replaces the boundary's entries with what a handler returns, so another extension's
-    // draft has to come back with ours.
-    assert.deepEqual(first?.entries?.[0], otherDraft);
-    const instruction = String(first?.entries?.[1]?.content ?? "");
-    assert.match(instruction, /Advisor guard/);
-    assert.match(instruction, /Roles section/, "role mode names the Roles section, not the tool");
-
-    // Finishing again without new work closes it: the second interruption is not free.
-    assert.equal(await harness.settleBoundary(), undefined);
-    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
-    await harness.toolResult("edit");
-    assert.equal((await harness.settleBoundary())?.continue, true);
-    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
-    await harness.toolResult("edit");
-    assert.equal(
-      await harness.settleBoundary(),
-      undefined,
-      "two interruptions, then the close passes",
-    );
-
-    await harness.settled();
-    const interruptions = (await logEventsNamed("guard")).filter((event) => event.block !== null);
-    assert.deepEqual(
-      interruptions.map((event) => event.block),
-      [1, 2],
-    );
-  });
-});
-
-test("guard arms the reminder once per message that changes state", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "guard" });
-    await harness.prompt();
-    // A message that changes nothing does not arm it; only a change does. A command is not a change
-    // unless it publishes or pushes.
-    await harness.toolResult("bash");
-    assert.equal(harness.reminders(await harness.request()).length, 0);
-    await harness.toolCall("edit", SMALL_EDIT);
-    await harness.toolResult("edit");
-    const armed = await harness.request();
-    assert.equal(harness.reminders(armed).length, 1);
-    assert.match(harness.reminderText(armed) ?? "", /does not close until an Advisor consultation/);
-    // A retry of the same request repeats it, and adds no second copy.
-    assert.equal(harness.reminders(await harness.request()).length, 1);
-    // The next message with a change arms it again; one without changes does not.
-    await harness.toolCall("edit", SMALL_EDIT);
-    await harness.toolResult("edit");
-    assert.equal(harness.reminders(await harness.request()).length, 1);
-    await harness.settled();
-    const record = await logEventsNamed("guard");
-    assert.equal(record.length, 1, "a task that closed uncovered is recorded once");
-  });
-});
-
-/** A presentation this task already spent is never resurrected by a later change. */
-test("a suspended presentation is not resurrected by a change", () => {
-  const state = new AdvisorReminderState();
-  state.openTask();
-  state.observeToolResult({ toolName: "read", isError: false, builtin: true });
-  assert.ok(state.presentation(1, false, true));
-  state.suspend();
-  state.armForChanges();
-  assert.equal(state.presentation(2, false, true), undefined);
-});
-
-test("a failed change is not a change guard must cover", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "guard" });
-    await harness.prompt();
-    await harness.request();
-    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
-    await harness.toolResult("edit", true);
-    assert.equal(await harness.settleBoundary(), undefined, "an edit that failed changed nothing");
-    // The same tool succeeding does count, so the previous assertion is about the failure.
-    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
-    await harness.toolResult("edit");
-    assert.equal((await harness.settleBoundary())?.continue, true);
-  });
-});
-
-test("guard never interrupts when no Advisor can be consulted", async () => {
-  await withHarness({ activeTools: [] }, async (harness) => {
-    // The level is frozen when the task opens, so it is set before the prompt.
-    await writeLevel({ level: "guard" });
-    await harness.prompt();
-    await harness.request();
-    await harness.toolCall("edit", SUBSTANTIVE_EDIT);
-    await harness.toolResult("edit");
-    assert.equal(await harness.settleBoundary(), undefined, "no launcher, no interruption");
-    // An aborted or failed run is not a close either.
-    assert.equal(await harness.settleBoundary({ outcome: "aborted" }), undefined);
-    assert.equal(await harness.settleBoundary({ outcome: "error" }), undefined);
-  });
-});
-
-test("a level other than guard never interrupts a close and writes no guard record", async () => {
-  for (const level of ["off", "standard", "strict"] as const) {
-    await withHarness({}, async (harness) => {
-      await writeLevel({ level });
-      await harness.prompt();
-      await harness.request();
-      await harness.toolCall("edit", SUBSTANTIVE_EDIT);
-      await harness.toolResult("edit");
-      assert.equal(await harness.settleBoundary(), undefined, level);
-      await harness.settled();
-      assert.deepEqual(await logEventsNamed("guard"), [], level);
-    });
-  }
-});
-
-test("strict presents the hard rule and refuses the first change and its whole batch once", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "strict" });
-    await harness.prompt();
-    await harness.toolResult("read");
-    const presented = await harness.request();
-    assert.equal(harness.reminderText(presented), renderAdvisorReminder(true));
-    assert.match(harness.reminderText(presented) ?? "", /Hard rule for this session/);
-    assert.equal((await harness.toolCall("edit", SUBSTANTIVE_EDIT))?.block, true);
-    // The calls of one assistant message are one turn, so the rest of the batch is refused too.
-    assert.equal((await harness.toolCall("edit", SUBSTANTIVE_EDIT))?.block, true);
-    await harness.request();
-    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
-    await harness.settled();
-    const [checkpoint] = await logEventsNamed("checkpoint");
-    assert.equal(checkpoint?.mode, "active");
-    assert.deepEqual(checkpoint?.signals, ["large-edit"]);
-  });
-});
-
-test("the refusal names the Roles section in role mode and the tool in tool mode", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "strict" });
-    await harness.prompt();
-    const refused = await harness.toolCall("edit", SUBSTANTIVE_EDIT);
-    // The whole message, not a fragment of it: the role branch used to rewrite one sentence of the
-    // tool text, so anything else in it was unchecked.
-    assert.equal(refused?.reason, CHECKPOINT_ROLE_MESSAGE);
-    assert.match(
-      refused?.reason ?? "",
-      /exactly as the Roles section of the delegation policy describes/,
-    );
-    assert.doesNotMatch(refused?.reason ?? "", /consult_advisor/);
-    assert.match(refused?.reason ?? "", /repeat this call and it will run/);
-  });
-
-  await withHarness(
-    { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
-    async (harness) => {
-      await writeLevel({ level: "strict" });
-      await harness.prompt();
-      const refused = await harness.toolCall("edit", SUBSTANTIVE_EDIT);
-      assert.equal(refused?.reason, CHECKPOINT_MESSAGE);
-    },
-  );
-});
-
-test("a consultation, a trivial task and an impossible consultation are never refused", async () => {
-  // A consultation before the first change leaves nothing to ask.
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "strict" });
-    await harness.prompt();
-    await harness.toolCall("consult_advisor", {});
-    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
-  });
-
-  // A short request, one read and a small edit are mechanics, not a decision.
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "strict" });
-    await harness.prompt("interactive", "rename the label");
-    await harness.toolResult("read");
-    await harness.request();
-    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
-  });
-
-  // Fail-open: no valid Advisor, no launcher among the active tools, or a child process.
-  for (const options of [
-    { config: { ...defaults, advisors: [{ provider: "example", model: "missing" }] } },
-    { activeTools: [] as string[] },
-  ]) {
-    await withHarness(options, async (harness) => {
-      await writeLevel({ level: "strict" });
-      await harness.prompt();
-      assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
-    });
-  }
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "strict" });
-    process.env.PI_SUBAGENT_CHILD = "1";
-    try {
-      await harness.prompt();
-      assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
-    } finally {
-      delete process.env.PI_SUBAGENT_CHILD;
-    }
-  });
-});
-
-test("a leading `??` forces the first change at any level, and only with an Advisor", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "off" });
-    await harness.prompt("interactive", "?? rewrite the loader");
-    const refused = await harness.toolCall("edit", SMALL_EDIT);
-    assert.equal(refused?.block, true);
-    assert.match(refused?.reason ?? "", /Not an error: this call was not run/);
-  });
-
-  await withHarness(
-    { config: { ...defaults, advisors: [{ provider: "example", model: "missing" }] } },
-    async (harness) => {
-      await writeLevel({ level: "off" });
-      await harness.prompt("interactive", "?? rewrite the loader");
-      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
-    },
-  );
-
-  // `guard` never opens that checkpoint, so the forced prompt changes nothing at that level: the
-  // level's whole definition is that it refuses no call.
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "guard" });
-    await harness.prompt("interactive", "?? rewrite the loader");
-    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
-  });
-});
-
-test("the level frozen when a task opens survives a change during it", async () => {
-  await withHarness({}, async (harness) => {
-    await writeLevel({ level: "off" });
-    await harness.prompt();
-    await writeLevel({ level: "strict" });
-    assert.equal(await harness.toolCall("edit", SUBSTANTIVE_EDIT), undefined);
-    await harness.settled();
-    assert.deepEqual(await logEventsNamed("checkpoint"), []);
-  });
 });

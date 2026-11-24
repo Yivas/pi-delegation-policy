@@ -1015,21 +1015,18 @@ async function runCase(caseName, mode, host, extensions, baseUrl, requestsByCase
         payloads[1]?.includes("SYNTHETIC-READ-MARKER"),
       );
     } else if (caseName === "advisor-reminder") {
-      const requests = requestsByCase.get(caseName) ?? [];
-      const reminderCount = (payload) => (payload.match(/<advisor_reminder>/g) ?? []).length;
       recordAssertion(
         "advisor-reminder: first provider request carries no reminder",
         !payloads[0].includes("<advisor_reminder>"),
       );
+      // The note follows a count of tool results, not the first orientation read, so one read in a
+      // real host must leave the next request without it.
       recordAssertion(
-        "advisor-reminder: second provider request ends with exactly one reminder",
-        reminderCount(payloads[1] ?? "") === 1 &&
-          JSON.stringify(requests[1]?.messages?.at(-1)?.content ?? "").includes(
-            "<advisor_reminder>",
-          ),
+        "advisor-reminder: one orientation read earns no reminder",
+        typeof payloads[1] === "string" && !payloads[1].includes("<advisor_reminder>"),
       );
       recordAssertion(
-        "advisor-reminder: orientation read completed before the reminder",
+        "advisor-reminder: the orientation read completed",
         toolResults.some((event) => event.toolName === "read" && !event.isError),
       );
       recordAssertion(

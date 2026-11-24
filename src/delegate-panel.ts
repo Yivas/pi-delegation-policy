@@ -446,12 +446,11 @@ const CORRECTION_CHOICES: Record<LaunchCorrectionMode, string> = {
 const NUDGE_LEVELS: readonly AdvisorLevel[] = ["standard", "strict", "guard", "off"];
 const NUDGE_CHOICES: Record<AdvisorLevel, string> = {
   standard:
-    "standard — rules, one reminder per task, and the checkpoint only records when it would have stopped a change (default)",
-  guard:
-    "guard — refuses no call; a task that changes state does not close until an Advisor consultation covers those changes, and one consultation expires after five more changes",
+    "standard: the written rules and a short note every few tool results. It holds nothing unless a prompt starts with ?? (default)",
+  guard: "guard: the same as strict in this version. A later version adds a watcher on top of it",
   strict:
-    "strict — adds a hard rule and stops the first substantive change of a task once until an Advisor is consulted or the call is repeated",
-  off: "off — only the written rules: no reminder and no checkpoint; Advisors stay available",
+    "strict: warns after a few changes with no consultation, then holds every change until an Advisor answers. Reading always works",
+  off: "off: only the written rules, with no note. It holds nothing unless a prompt starts with ??",
 };
 
 /**

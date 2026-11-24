@@ -272,14 +272,8 @@ async function assertHost(
   assert.ok(
     result.assertions.includes("advisor-reminder: first provider request carries no reminder"),
   );
-  assert.ok(
-    result.assertions.includes(
-      "advisor-reminder: second provider request ends with exactly one reminder",
-    ),
-  );
-  assert.ok(
-    result.assertions.includes("advisor-reminder: orientation read completed before the reminder"),
-  );
+  assert.ok(result.assertions.includes("advisor-reminder: one orientation read earns no reminder"));
+  assert.ok(result.assertions.includes("advisor-reminder: the orientation read completed"));
   assert.ok(
     result.assertions.includes(
       "advisor-reminder: case environment carries no subagent child marker",

@@ -7,6 +7,7 @@ import type {
   ExtensionContext,
   InputSource,
   ToolCallEvent,
+  ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -62,14 +63,8 @@ import {
   reminderConsultationPath,
   type AdvisorReminderMessage,
 } from "./advisor-reminders.ts";
-import { AdvisorGuard, GUARD_INSTRUCTION_TYPE } from "./advisor-guard.ts";
-import {
-  AdvisorCheckpoint,
-  CHECKPOINT_ROLE_MESSAGE,
-  classifyToolCall,
-  type CheckpointMode,
-  type ToolCallFacts,
-} from "./advisor-checkpoint.ts";
+import { AdvisorGate, consultationOutcome, type ConsultationOutcome } from "./advisor-gate.ts";
+import { classifyToolCall, type ToolCallFacts } from "./state-change.ts";
 import {
   ADVISOR_QUESTION_MAX_BYTES,
   composeAdvisorContext,
@@ -557,24 +552,33 @@ function heldChange(
   return undefined;
 }
 
-/** A call that writes a file or leaves this machine, which is what the checkpoint guards. */
-function changesState(facts: ToolCallFacts): boolean {
-  return facts.kind === "edit" || (facts.kind === "command" && facts.outward === true);
-}
-
 /** What the held change makes a consultation about. */
 function heldTrigger(pending: PendingChange | undefined): ConsultTrigger {
   if (pending?.kind === "edit") return "first-change";
   return pending?.kind === "command" ? "outward-step" : "free";
 }
 
-/** `active` refuses, `shadow` only records, and `off` never looks. */
-function checkpointMode(level: AdvisorLevel | undefined): CheckpointMode {
-  if (level === "strict") return "active";
-  // `guard` refuses no call at all: it interrupts the close instead, so the checkpoint stays off and
-  // the two levels never enforce the same thing twice.
-  return level === "standard" ? "shadow" : "off";
+/** The two levels that hold changes by count. Only a `??` prompt holds anything at the others. */
+function holdsChanges(level: AdvisorLevel): boolean {
+  return level === "strict" || level === "guard";
 }
+
+/**
+ * The refusal of a consultation that the host would answer after the call. The level holds changes
+ * until a consultation answers, and a background launch never answers inside the call, so the text
+ * names the one field that makes it count and offers nothing else.
+ */
+const BACKGROUND_CONSULT_TOOL_MESSAGE = [
+  "Not an error: this call was not run. Advisor checkpoint.",
+  "The checkpoint holds every change in this task until an Advisor consultation answers, and a launch in the background returns before the Advisor does. Reading is not affected.",
+  "Consult with consult_advisor() instead: this session launches Advisors with that tool, not with the subagent tool.",
+].join("\n");
+
+const BACKGROUND_CONSULT_MESSAGE = [
+  "Not an error: this call was not run. Advisor checkpoint.",
+  "The checkpoint holds every change in this task until an Advisor consultation answers, and a launch in the background returns before the Advisor does. Reading is not affected.",
+  "Relaunch this consultation with `async: false` and it runs; the host answers it inside the call.",
+].join("\n");
 
 type ReaderAuthorization = Readonly<{
   fingerprint: string;
@@ -860,10 +864,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     let taskToken: string | undefined;
     // The reminder is ephemeral and belongs to the same task as the token; it never outlives it.
     const advisorReminder = new AdvisorReminderState();
-    // The checkpoint shares the task's life cycle, not its state: it holds the cooldown between tasks.
-    const advisorCheckpoint = new AdvisorCheckpoint();
-    // `guard` counts the same classified calls and interrupts the close, never a call.
-    const advisorGuard = new AdvisorGuard();
+    // The gate counts the classified changes of one task and holds them once a consultation is due.
+    const advisorGate = new AdvisorGate();
+    // Advisor launches of this task that the gate let through in the foreground, awaiting a result.
+    const foregroundConsults = new Set<string>();
+    // Notes this task was shown, recorded when it closes and never with their text.
+    let gateNotes = 0;
     // Bumped whenever Advisor mode, launch or settings change, so a thread created under the
     // previous configuration is never resumed under the new one.
     let advisorEpoch = 0;
@@ -1209,6 +1215,40 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         check.refusal === undefined &&
         latestRuntime !== undefined &&
         advisorChildren(latestRuntime, event.input).length > 0);
+    /**
+     * Whether a launch is a consultation the host answers inside this call, or a background launch
+     * whose result is a run id and never an answer. Only a plain launch whose every child is a
+     * configured Advisor counts, and only `async: false` is foreground: the host defaults to
+     * background, so an omitted field is a launch the gate cannot open on.
+     */
+    const advisorLaunchKind = (
+      event: ToolCallEvent,
+      check: SubagentLaunchCheck | undefined,
+    ): "consult" | "background" | undefined => {
+      if (event.toolName !== "subagent" || latestRuntime === undefined) return undefined;
+      if (check?.launch !== true || check.refusal !== undefined) return undefined;
+      // A workflow script reports its own result shape, which this reader does not know: only a
+      // plain launch (single or `tasks`) can be a consultation whose answer is read here.
+      if (event.input["workflow"] !== undefined) return undefined;
+      if (advisorChildren(latestRuntime, event.input).length === 0) return undefined;
+      if (!launchesOnlyAdvisors(check.children)) return undefined;
+      return event.input["async"] === false ? "consult" : "background";
+    };
+    /**
+     * What a tool result proves about a consultation, or undefined when it is not one. A role launch
+     * is read by the call id the gate let through; `consult_advisor` only counts in tool launch,
+     * because in role launch it returns a redirect and consults nobody.
+     */
+    const answersConsultation = (
+      event: ToolResultEvent,
+      launcher: AdvisorLaunch,
+    ): ConsultationOutcome | undefined => {
+      const details = "details" in event ? event.details : undefined;
+      if (foregroundConsults.delete(event.toolCallId))
+        return consultationOutcome("role", { isError: event.isError, details });
+      if (launcher !== "tool" || event.toolName !== "consult_advisor") return undefined;
+      return consultationOutcome("tool", { isError: event.isError, details });
+    };
     const countTaskToolCall = (
       event: ToolCallEvent,
       check: SubagentLaunchCheck | undefined,
@@ -1328,8 +1368,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
      * follow, and a pending trigger is dropped rather than carried to a later round.
      */
     const advisorReminderMessage = (state: RuntimeState): AdvisorReminderMessage | undefined => {
-      // The task's level decides, not the old on/off companion: an `off` level neither reminds nor
-      // refuses, and `strict` states the rule the checkpoint enforces.
+      // The task's level decides, not the old on/off companion: `off` says nothing, `standard` only
+      // states the periodic note, and `strict` and `guard` also arm the hold warning. A `??` task
+      // holds its changes at any level.
       const level = taskAdvisorLevel(state);
       // A level turned off while the task runs stops the reminder at once; it never starts one.
       if (level === "off" || (state.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL) === "off") {
@@ -1348,7 +1389,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         advisorReminder.suspend();
         return undefined;
       }
-      return advisorReminder.presentation(Date.now(), level === "strict", level === "guard");
+      // The gate earns the warning by crossing its threshold; consuming that flag here means the
+      // note is presented once, in the request that follows the change that earned it.
+      if (advisorGate.warnDue()) advisorReminder.armHoldWarning();
+      const note = advisorReminder.presentation(Date.now());
+      gateNotes = advisorReminder.presentations;
+      return note;
     };
     const rememberRuntime = (state: RuntimeState): RuntimeState => {
       if (
@@ -1500,8 +1546,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             return text(
               'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another mechanism: do not use foreground execution, a CLI, or another agent.',
             );
+          // While changes are held only a launch the host answers inside the call opens the
+          // checkpoint, so the redirect must not send the model to the background it would refuse.
+          const placement =
+            advisorGate.held && consultationAvailable(state)
+              ? "in the foreground (async: false), because the Advisor checkpoint is holding changes until an answer arrives"
+              : "in the background";
           return text(
-            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". Launch every listed Advisor with the host subagent tool "${subagentTool}", using each exact agent profile and model below, in the background, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run.\n${advisorRoleLines(state)}`,
+            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". Launch every listed Advisor with the host subagent tool "${subagentTool}", using each exact agent profile and model below, ${placement}, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run.\n${advisorRoleLines(state)}`,
           );
         }
         if (advisorExecutor.busy) return text(advisorContinuityText("busy"));
@@ -1623,11 +1675,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               detail: advisorContinuityText("cancelled"),
             })),
           };
-        // `guard` coverage needs a consultation that reached an Advisor, not a call that never
-        // dispatched: a redirect, an invalid launch or a refused continuity leaves the task uncovered.
-        // A failed provider is not a coverage question — availability already decides whether the close
-        // may pass, re-checked at that instant.
-        if (group.slots.some((slot) => slot.status === "complete")) advisorGuard.noteConsult();
+        // The gate is opened by the tool result of this call, not here: one place decides what
+        // answered, so a consultation is never counted twice or from two different criteria.
         // Nothing is appended to a refusal: the executor's own `brief-required` text is the whole
         // answer, which is the contract the manual mode had before this release.
         return text(renderAdvisorGroup(group), {
@@ -2172,8 +2221,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("session_start", async (_event, ctx) => {
       taskToken = undefined;
       advisorReminder.closeTask();
-      advisorCheckpoint.closeTask();
-      advisorGuard.closeTask();
+      advisorGate.closeTask();
       // A request of the session that ended cannot stand in for this one's short prompt.
       previousRequest = undefined;
       advisorEpoch += 1;
@@ -2194,9 +2242,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       taskToken = undefined;
       advisorReminder.closeTask();
       // The earlier calls of the task belong to the branch the session left. Closing the task drops
-      // them, so the checkpoint and the guard decide nothing on a state nobody remembers.
-      advisorCheckpoint.closeTask();
-      advisorGuard.closeTask();
+      // them, so the gate decides nothing on a state nobody remembers.
+      advisorGate.closeTask();
       taskMetrics = undefined;
       observation = undefined;
       // A request of the branch the session left cannot stand in for this branch's short prompt.
@@ -2265,16 +2312,16 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         advisorExecutor.cancel();
         taskToken = randomUUID();
         advisorReminder.openTask();
+        gateNotes = 0;
+        foregroundConsults.clear();
         if (child) return;
         if (observation) observation.level = level;
-        // `guard` interrupts the close and never a call, but the checkpoint's forced path (`??`) refuses
-        // one whatever its mode: this level does not open that checkpoint at all.
-        if (level !== "guard")
-          advisorCheckpoint.openTask({
-            promptChars: observation?.userRequest.length ?? 0,
-            forced: observation?.forced ?? false,
-          });
-        else advisorGuard.openTask();
+        // Only the two levels that hold changes count them: `standard` states a periodic note and
+        // `off` says nothing, so neither has a gate to open. A `??` prompt is the user asking for a
+        // consultation before the first change, at any level: that task starts with the gate held.
+        const forced = observation?.forced ?? false;
+        if (forced || (level !== undefined && holdsChanges(level)))
+          advisorGate.openTask(forced, level !== undefined && holdsChanges(level));
       }
     });
     pi.on("context_with_system", async (event, ctx) => {
@@ -2282,11 +2329,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // One request is one round. A retry of the same request carries no new tool result and keeps
       // the round, so its reminder is reused instead of rearmed.
       advisorReminder.beginRequest();
-      if (!isSubagentChildProcess()) {
-        advisorCheckpoint.beginRequest();
-        if (observation)
-          observation.assistantTexts = lastAssistantTexts(event.messages, observation.userRequest);
-      }
+      if (!isSubagentChildProcess() && observation)
+        observation.assistantTexts = lastAssistantTexts(event.messages, observation.userRequest);
       const policy = renderPolicy(state);
       const systemMessage = event.messages[0];
       if (
@@ -2360,54 +2404,17 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         ],
       };
     });
-    pi.on("agent_before_settle", async (event) => {
-      // The final actionable boundary: a run that completed but changed state without a consultation
-      // can be asked for one more request. Only a child and a run that did not complete are excluded:
-      // `event.context.canContinue` is false exactly at a normal close, and the host recomputes it after
-      // committing the drafts we return, so the appending message is what makes the continuation valid.
-      if (isSubagentChildProcess()) return undefined;
-      if (event.outcome !== "completed") return undefined;
-      const state = latestRuntime;
-      if (!state || taskAdvisorLevel(state) !== "guard") return undefined;
-      const decision = advisorGuard.decide({
-        available: consultationAvailable(state),
-        launcher: state.effective.advisorLaunch,
-      });
-      if (decision.action === "pass") return undefined;
-      advisorLog.guard({
-        block: decision.block,
-        changes: advisorGuard.coverage.changes,
-        consulted: advisorGuard.coverage.consulted,
-        blocks: decision.block,
-        mainModel: state.mainModel ?? null,
-        advisorLevel: "guard",
-      });
-      return {
-        // The host replaces the boundary's entries with what a handler returns, so the ones another
-        // extension already appended are carried forward instead of dropped.
-        entries: [
-          ...event.entries,
-          {
-            type: "custom_message" as const,
-            customType: GUARD_INSTRUCTION_TYPE,
-            content: decision.instruction,
-            display: false,
-          },
-        ],
-        continue: true,
-      };
-    });
     pi.on("agent_settled", async (_event, ctx) => {
       // Retire synchronously: a settled token can never be resumed, even if its tombstones fail.
       // The non-closed journal records remain the durable obligation; another token cannot pay it.
       const settledToken = taskToken;
       const parentKey = parentKeyFor(ctx);
       taskToken = undefined;
+      foregroundConsults.clear();
       advisorReminder.closeTask();
-      const checkpoint = advisorCheckpoint.closeTask();
-      // The guard's report is closed with the task: a task that closed without a consultation and
-      // without an interruption is the only way the level can be silently bypassed, and it is logged.
-      const guard = advisorGuard.closeTask();
+      // The gate's report is closed with the task, whatever the answer was: it is the only record of
+      // how many changes a task made without a consultation.
+      const gate = advisorGate.closeTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
       if (settledToken) {
@@ -2424,18 +2431,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       observation = undefined;
       const advisorLevel =
         frozenLevel ?? latestRuntime?.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL;
-      if (checkpoint)
-        advisorLog.checkpoint({
-          ...checkpoint,
-          mainModel: latestRuntime?.mainModel ?? null,
-          advisorLevel,
-        });
-      // A task that closed having changed state with no consultation covering it is the only way this
-      // level can be bypassed, so it is recorded even when it was never interrupted.
-      if (guard && advisorLevel === "guard" && guard.changes > 0 && !guard.consulted)
-        advisorLog.guard({
-          ...guard,
-          block: null,
+      if (gate)
+        advisorLog.gate({
+          ...gate,
+          notes: gateNotes,
           mainModel: latestRuntime?.mainModel ?? null,
           advisorLevel,
         });
@@ -2488,22 +2487,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         event.toolName === "subagent"
           ? inspectSubagentLaunch(event.input, latestRuntime)
           : undefined;
+      const launchKind = advisorLaunchKind(event, check);
       const consulted = isConsultAttempt(event, check);
-      if (consulted) {
-        // An attempt ends the reminder for this task; whether it answers is the tool result's
-        // business. A role-mode launch through the host subagent tool is a consultation too.
-        advisorReminder.noteConsultAttempt();
-        advisorCheckpoint.noteConsult(Date.now());
-        // Coverage needs a consultation that reached an Advisor. In `tool` mode the tool decides it,
-        // once it knows whether an Advisor answered. In `role` mode the host launch is what counts, and
-        // `consult_advisor` there only returns a redirect, so it covers nothing. A role launch cannot be
-        // observed beyond its call, and that residual is documented.
-        if (
-          latestRuntime?.effective.advisorLaunch === "role" &&
-          event.toolName !== "consult_advisor"
-        )
-          advisorGuard.noteConsult();
-      }
       const facts = classifyToolCall(event.toolName, event.input);
       const observed = isSubagentChildProcess() ? undefined : observation;
       if (observed) {
@@ -2511,13 +2496,39 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         if (facts.kind === "command" && facts.command !== undefined)
           observeCommand(observed, event.toolCallId, facts.command);
       }
+      const launcher = latestRuntime?.effective.advisorLaunch ?? "tool";
+      // While changes are held, the way out is a consultation the host answers inside the call. A
+      // background launch only returns a run id, so it is refused with the one correction that
+      // makes it work. Before the hold a background consultation runs as the policy asks, and it
+      // covers nothing. Other launches, mixed ones included, are classified like any other call.
+      if (
+        launchKind === "background" &&
+        observed !== undefined &&
+        advisorGate.held &&
+        consultationAvailable(latestRuntime)
+      ) {
+        countTaskToolCall(event, check, false, true);
+        // Tool launch has its own consultation tool, which the policy does not forbid, so the way
+        // out names that one instead of a launch the policy tells the model not to make.
+        return {
+          block: true,
+          reason:
+            launcher === "tool" ? BACKGROUND_CONSULT_TOOL_MESSAGE : BACKGROUND_CONSULT_MESSAGE,
+        };
+      }
+      // An attempt that runs ends the periodic note for this task; whether it answers is the
+      // result's business. A launch refused above attempted nothing.
+      if (consulted) advisorReminder.noteConsultAttempt();
+      if (launchKind === "consult") foregroundConsults.add(event.toolCallId);
       // The launch check already decided this subagent call, so a refusal there is never revisited.
       const decision =
         check?.refusal === undefined && observed !== undefined
-          ? advisorCheckpoint.onToolCall(facts, {
-              mode: checkpointMode(observed.level),
+          ? advisorGate.decide({
+              changes: facts.changes && launchKind === undefined,
               available: consultationAvailable(latestRuntime),
-              now: Date.now(),
+              launcher,
+              manualContext:
+                (latestRuntime?.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE) === "manual",
             })
           : undefined;
       const refused = decision?.action === "block";
@@ -2526,19 +2537,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // change it would have made is what the consultation carries instead.
       if (observed && facts.kind === "edit" && !refused)
         observePath(observed.editedPaths, facts.path);
-      if (observed && changesState(facts) && check?.refusal === undefined)
+      if (observed && facts.changes && check?.refusal === undefined)
         observed.pending = refused ? heldChange(facts, event.toolName, event.input) : undefined;
 
-      if (decision?.action === "block") {
-        // Role launch names no tool, so the way out is the policy's Roles section, not this tool.
-        return {
-          block: true,
-          reason:
-            latestRuntime?.effective.advisorLaunch === "role"
-              ? CHECKPOINT_ROLE_MESSAGE
-              : decision.message,
-        };
-      }
+      // The refusal names the consultation and nothing else, so it is the same text in both launch
+      // modes apart from the path each one has.
+      if (decision?.action === "block") return { block: true, reason: decision.message };
       if (check) {
         // A control or management action launches nothing, so it records no `launch` event.
         if (check.launch)
@@ -2607,36 +2611,37 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       return shunt.onToolCall(event, settings, isBuiltinTool(pi, event.toolName));
     });
     pi.on("tool_result", async (event, ctx) => {
-      // The reminder reads tool provenance only while it can be relevant. With the reminder off or
-      // no enabled Advisor, a result is left untouched and no tool inventory is read.
-      if (
-        latestRuntime &&
-        taskAdvisorLevel(latestRuntime) !== "off" &&
-        isAdvisorEnabled(latestRuntime.effective)
-      )
-        advisorReminder.observeToolResult({
-          toolName: event.toolName,
-          isError: event.isError,
-          builtin: isBuiltinTool(pi, event.toolName),
-          // `guard` presents once per message that changes state, so only a change arms it there.
-          armOnOrientation: taskAdvisorLevel(latestRuntime) !== "guard",
-        });
+      const level = latestRuntime ? taskAdvisorLevel(latestRuntime) : undefined;
+      // `standard` counts results, not provenance: its note states what the host reported, so it
+      // needs no Advisor and no tool inventory beyond the count.
+      if (level !== undefined && level !== "off" && isAdvisorEnabled(latestRuntime!.effective))
+        advisorReminder.noteResult(level === "standard");
       const settings = latestRuntime?.effective.contextShunt;
       if (!isSubagentChildProcess() && observation) {
         const command = observation.commands.get(event.toolCallId);
         if (command) command.status = event.isError ? "error" : "ok";
       }
-      // Only `guard` counts changes, and only when the call ran: a failed edit changed nothing to cover,
-      // and a call the host blocked produces no result at all. Every other level keeps the timing it
-      // published.
-      if (
-        !isSubagentChildProcess() &&
-        observation?.level === "guard" &&
-        !event.isError &&
-        changesState(classifyToolCall(event.toolName, event.input))
-      ) {
-        advisorGuard.noteStateChange();
-        advisorReminder.armForChanges();
+      // A consultation that answered covers the changes counted so far. One that failed never opens
+      // the gate: repeated failures are reported to the operator, who is the one who can decide.
+      if (!isSubagentChildProcess() && advisorGate.watching) {
+        const answered = answersConsultation(
+          event,
+          latestRuntime?.effective.advisorLaunch ?? "tool",
+        );
+        if (answered === "answered") advisorGate.noteAnswer();
+        else if (answered === "unrecognized") {
+          // Retrying cannot fix a result this reader does not understand, so the operator hears of
+          // it at once and apart from an ordinary failure.
+          if (advisorGate.noteUnrecognized())
+            ctx.ui.notify(
+              `Advisor level ${level}: the consultation result has a shape this version does not recognize, so it cannot count as an answer and changes stay held. Reading still works. Check the installed pi-subagents version against this extension, or send a new prompt after changing the level with /delegate.`,
+              "warning",
+            );
+        } else if (answered === "failed" && advisorGate.noteFailure())
+          ctx.ui.notify(
+            `Advisor level ${level}: consultations keep failing in this task, and the checkpoint only opens with an answer from an Advisor. Reading still works. Fix the Advisor, or send a new prompt after changing the level with /delegate.`,
+            "warning",
+          );
       }
       const note = takeCorrection(event.toolCallId);
       let result: { content?: Array<{ type: "text"; text: string }> } | undefined;
@@ -2657,8 +2662,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       latestRuntime = undefined;
       taskToken = undefined;
       advisorReminder.closeTask();
-      advisorCheckpoint.closeTask();
-      advisorGuard.closeTask();
+      advisorGate.closeTask();
       taskMetrics = undefined;
       observation = undefined;
       correctionNotes.clear();

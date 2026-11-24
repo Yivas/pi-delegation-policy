@@ -18,6 +18,7 @@ import {
 } from "../src/advisor-provider-extension.ts";
 import { packageSource } from "../src/provider-package.ts";
 import { AdvisorLog, ADVISOR_LOG_MAX_BYTES } from "../src/advisor-log.ts";
+import { GATE_HOLD_CHANGES, gateMessage } from "../src/advisor-gate.ts";
 import {
   AdvisorJournalError,
   AdvisorThreadJournal,
@@ -2924,97 +2925,155 @@ test("a receipt that cannot be persisted is settled once the host lists nothing 
   }
 });
 
-test("guard covers the close with a consultation that reached an Advisor, not with a call", async () => {
-  const run = await harness(base, models, 10_000, { activeTools: ["consult_advisor"] });
+/** One edit the gate counts: the call the host runs and, when it ran, the result that reports it. */
+async function gatedEdit(
+  run: Awaited<ReturnType<typeof harness>>,
+  id: string,
+  input: Payload = { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] },
+): Promise<{ block?: boolean; reason?: string } | undefined> {
+  const refusal = (await run.hook("tool_call", {
+    toolCallId: id,
+    toolName: "edit",
+    input,
+  })) as { block?: boolean; reason?: string } | undefined;
+  if (!refusal?.block)
+    await run.hook("tool_result", {
+      toolCallId: id,
+      toolName: "edit",
+      input,
+      isError: false,
+      content: [],
+    });
+  return refusal;
+}
+
+test("guard holds changes until a consultation answers, not until a call is made", async () => {
+  const run = await harness(base, models, 10_000, {
+    activeTools: ["consult_advisor"],
+    mainProcess: true,
+  });
   try {
     run.bus.respond = (request) => run.bus.finish(request);
     await run.command("advisor level guard");
     await run.command("advisor context manual");
     await run.newTask();
-    const boundary = async (): Promise<{ continue?: boolean } | undefined> =>
-      (await run.hook("agent_before_settle", {
-        type: "agent_before_settle",
-        entries: [],
-        continue: false,
-        outcome: "completed",
-        // What the host really reports at a completed run: the draft we return is what makes it
-        // continuable afterwards.
-        context: { canContinue: false },
-      })) as { continue?: boolean } | undefined;
-    const edit = async (): Promise<void> => {
-      await run.hook("tool_call", {
-        toolCallId: `edit-${Math.random()}`,
-        toolName: "edit",
-        input: { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] },
-      });
-      await run.hook("tool_result", {
-        toolCallId: `edit-${Math.random()}`,
-        toolName: "edit",
-        input: { path: "src/a.ts" },
-        isError: false,
-        content: [],
-      });
-    };
+    // This level counts the changes that ran: the first five run and the next one is held.
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await gatedEdit(run, `edit-${index}`), undefined, `change ${index}`);
+    const held = await gatedEdit(run, "edit-held");
+    assert.equal(held?.block, true);
+    // The agent writes the brief in this mode, so the refusal asks for a question instead of
+    // promising that a call with no arguments works.
+    assert.equal(held?.reason, gateMessage("tool", true));
+    assert.match(held?.reason ?? "", /with a question/);
+    assert.doesNotMatch(held?.reason ?? "", /needs no arguments/);
 
-    // A call that dispatches nothing — manual mode with no question never reaches the executor.
-    await edit();
-    assert.match(await run.call({}), /question must not be blank/);
-    assert.equal(
-      (await boundary())?.continue,
-      true,
-      "a consultation call that never dispatched covers nothing",
+    // A call that reached no Advisor answers nothing, so the gate stays where it was. The result
+    // the host would report is the one this tool actually returned: no error flag, failure text,
+    // and details with no completed slot. Only the details can tell it is not an answer.
+    const blank = await run.callBoth({});
+    assert.match(blank.text, /question must not be blank/);
+    await run.hook("tool_result", {
+      toolCallId: "consult-blank",
+      toolName: "consult_advisor",
+      input: {},
+      isError: false,
+      content: [{ type: "text", text: blank.text }],
+      details: blank.details,
+    });
+    assert.equal((await gatedEdit(run, "edit-still-held"))?.block, true);
+    // One ordinary failure is not worth a warning, and it is not an unknown result shape.
+    assert.deepEqual(
+      run.notifications.filter(({ type }) => type === "warning"),
+      [],
     );
 
-    // One that reaches an Advisor covers the changes made before it.
-    await run.newTask();
-    await edit();
-    assert.match(
-      await run.call({ question: "¿qué opción?", brief: "Un encargo sintético y autocontenido." }),
-      /Consultation complete/,
-    );
-    assert.equal(await boundary(), undefined, "an answer covers the close");
+    // One that reached an Advisor answers, and the change it covers runs.
+    const answered = await run.callBoth({
+      question: "¿qué opción?",
+      brief: "Un encargo sintético y autocontenido.",
+    });
+    assert.match(answered.text, /Consultation complete/);
+    await run.hook("tool_result", {
+      toolCallId: "consult-answered",
+      toolName: "consult_advisor",
+      input: {},
+      isError: false,
+      content: [{ type: "text", text: answered.text }],
+      details: answered.details,
+    });
+    assert.equal(await gatedEdit(run, "edit-after-answer"), undefined);
   } finally {
     await run.close();
   }
 });
 
-test("guard does not cover the close with a redirect that launched nothing", async () => {
+test("role mode holds changes until a foreground Advisor launch answers", async () => {
   // In `role` mode `consult_advisor` only returns the redirect, so the launcher is the host tool.
-  const run = await harness(base, models, 10_000, { activeTools: ["subagent"] });
+  const run = await harness(base, models, 10_000, { activeTools: ["subagent"], mainProcess: true });
   try {
     run.bus.respond = (request) => run.bus.finish(request);
     await run.command("advisor level guard");
-    await run.command("advisor context manual");
     await run.command("advisor launch role");
     await run.newTask();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await gatedEdit(run, `role-edit-${index}`), undefined, `change ${index}`);
+    assert.equal((await gatedEdit(run, "role-held"))?.block, true);
+
+    // A consultation the host would answer after the call is refused with the one field that makes
+    // it answer inside the call, and it counted no change.
+    const background = (await run.hook("tool_call", {
+      toolCallId: "role-consult-background",
+      toolName: "subagent",
+      input: { tasks: [{ agent: ADVISOR_AGENT_NAME, task: "q", model: "example/first:high" }] },
+    })) as { block?: boolean; reason?: string } | undefined;
+    assert.equal(background?.block, true);
+    assert.match(background?.reason ?? "", /async: false/);
+    assert.equal((await gatedEdit(run, "role-still-held"))?.block, true);
+
+    // A foreground launch whose one child exited non-zero answered nothing, whatever text it
+    // printed, so the gate is where it was.
     await run.hook("tool_call", {
-      toolCallId: "role-edit",
-      toolName: "edit",
-      input: { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] },
+      toolCallId: "role-consult-failed",
+      toolName: "subagent",
+      input: {
+        async: false,
+        tasks: [{ agent: ADVISOR_AGENT_NAME, task: "q", model: "example/first:high" }],
+      },
     });
     await run.hook("tool_result", {
-      toolCallId: "role-edit",
-      toolName: "edit",
-      input: { path: "src/a.ts" },
+      toolCallId: "role-consult-failed",
+      toolName: "subagent",
+      input: {},
       isError: false,
-      content: [],
+      content: [{ type: "text", text: "the Advisor answered" }],
+      details: { results: [{ exitCode: 1, finalOutput: "the Advisor failed" }] },
     });
-    // The coverage this change fixes is credited from the `tool_call` hook, not from the tool body,
-    // so the regression guard has to go through that hook.
+    assert.equal(
+      (await gatedEdit(run, "role-after-failure"))?.block,
+      true,
+      "a child that exited non-zero is not an answer",
+    );
+
+    // A foreground launch whose own result answered covers the changes made so far. The answer
+    // counts against the id of the call that was accepted in the foreground.
     await run.hook("tool_call", {
       toolCallId: "role-consult",
-      toolName: "consult_advisor",
-      input: { question: "¿qué opción?" },
+      toolName: "subagent",
+      input: {
+        async: false,
+        tasks: [{ agent: ADVISOR_AGENT_NAME, task: "q", model: "example/first:high" }],
+      },
     });
-    assert.match(await run.call({ question: "¿qué opción?" }), /does not launch Advisors/);
-    const boundary = (await run.hook("agent_before_settle", {
-      type: "agent_before_settle",
-      entries: [],
-      continue: false,
-      outcome: "completed",
-      context: { canContinue: false },
-    })) as { continue?: boolean } | undefined;
-    assert.equal(boundary?.continue, true, "a redirect that launched nothing covers nothing");
+    await run.hook("tool_result", {
+      toolCallId: "role-consult",
+      toolName: "subagent",
+      input: {},
+      isError: false,
+      content: [{ type: "text", text: "the Advisor answered" }],
+      details: { results: [{ exitCode: 0, finalOutput: "the Advisor answered" }] },
+    });
+    assert.equal(await gatedEdit(run, "role-after-answer"), undefined);
   } finally {
     await run.close();
   }
@@ -3716,17 +3775,16 @@ async function strictRun(): Promise<Awaited<ReturnType<typeof harness>>> {
   return run;
 }
 
-test("a change held back by the checkpoint travels in the next composed consultation", async () => {
+test("a change the gate holds back travels in the next composed consultation", async () => {
   const run = await strictRun();
   const rpc = new RpcHost(run.bus);
   try {
     run.bus.respond = (request) => run.bus.finish(request);
-    const refused = await run.hook("tool_call", {
-      toolName: "edit",
-      toolCallId: "call-held",
-      input: HELD_EDIT,
-    });
-    assert.equal((refused as { block?: boolean }).block, true);
+    // The hold is reached by changing state, so the changes before it run and count.
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await gatedEdit(run, `call-allowed-${index}`), undefined, `change ${index}`);
+    const refused = await gatedEdit(run, "call-held", HELD_EDIT);
+    assert.equal(refused?.block, true);
     assert.match(await run.call({}), /Consultation complete/);
     const task = JSON.parse(run.bus.requests[0]?.task as string) as Payload;
     assert.match(String(task.brief), /<pending_change-[0-9a-f]{16}>/);
@@ -3740,20 +3798,14 @@ test("a change held back by the checkpoint travels in the next composed consulta
   }
 });
 
-test("the checkpoint refuses nothing without a task and while an Advisor is in flight", async () => {
+test("the gate refuses nothing without a task and while an Advisor is in flight", async () => {
   const run = await strictRun();
   try {
-    // No operative task: there is nothing to hold back.
+    // No operative task: nothing counts the changes, so the whole budget runs.
     await run.hook("agent_settled");
-    assert.equal(
-      await run.hook("tool_call", {
-        toolName: "edit",
-        toolCallId: "call-closed",
-        input: HELD_EDIT,
-      }),
-      undefined,
-    );
-    // A consultation already in flight is not an opportunity to consult, so nothing is refused.
+    for (let index = 0; index <= GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await gatedEdit(run, `call-closed-${index}`, HELD_EDIT), undefined, `${index}`);
+    // A consultation already in flight is not an opportunity to consult, so nothing is held.
     await run.newTask();
     const pending = run.call({});
     const first = await Promise.race([
@@ -3761,10 +3813,8 @@ test("the checkpoint refuses nothing without a task and while an Advisor is in f
       pending.then((answer) => `answered: ${answer}`),
     ]);
     assert.equal(first, "requested");
-    assert.equal(
-      await run.hook("tool_call", { toolName: "edit", toolCallId: "call-busy", input: HELD_EDIT }),
-      undefined,
-    );
+    for (let index = 0; index <= GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await gatedEdit(run, `call-busy-${index}`, HELD_EDIT), undefined, `${index}`);
     for (const request of run.bus.requests) run.bus.finish(request);
     assert.match(await pending, /Consultation complete/);
   } finally {

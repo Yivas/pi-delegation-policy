@@ -6,8 +6,8 @@ import { atomicWrite, getGlobalConfigPath, isAbsentPathError } from "./config.ts
  *
  * The level has its own versioned file because the policy document rejects unknown keys, and
  * because it is a behaviour of the extension, optionally overridden per main model, rather than a
- * property of a delegation profile. `strict` refuses one tool call per task; `guard` never refuses a
- * call and interrupts the close of a task instead, which is the only place the host can hold.
+ * property of a delegation profile. `standard` adds a periodic note; `strict` and `guard` also hold
+ * the changes of a task, once several were made, until an Advisor consultation answers.
  */
 export const ADVISOR_LEVELS = ["off", "standard", "strict", "guard"] as const;
 export type AdvisorLevel = (typeof ADVISOR_LEVELS)[number];

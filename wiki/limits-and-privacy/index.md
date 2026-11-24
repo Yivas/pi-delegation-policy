@@ -80,11 +80,8 @@ another extension and does not itself cancel children or initiate a turn.
 
 Pi converts the custom message to user-role text and drops its custom metadata. Its text identifies
 it as an extension notice, not something the user wrote. The extension does not write notice text to
-session history or its local log, so stored summaries and branches cannot inherit the notice. The
-`guard` close interruption is the one exception: the host commits it once per interruption as an
-extension-owned message with `display: false`, and it carries counts and instructions only, never a
-path, a prompt or a reply. This is not a promise about request retention by providers or other
-authorized host components.
+session history or its local log, so stored summaries and branches cannot inherit the notice. This is
+not a promise about request retention by providers or other authorized host components.
 
 The presented revision is consumed at final settlement when the last recorded assistant response
 completed; a failed attempt followed by a successful retry counts as completed. A final reported
@@ -103,27 +100,25 @@ lists the tracked settings.
 
 The setting is `advisorLevel`: `off`, `standard` (the default), `strict` or `guard`. It replaces the old
 reminder setting, which is now read only as a fallback when the level file does not exist, and with
-Advisor off it has no effect. `off` leaves the written rules alone, `standard` adds the reminder and
-lets the checkpoint record only, `strict` also states the hard rule in the reminder and lets the
-checkpoint stop a call, and `guard` refuses no call: it interrupts the close of a task that changed
-state until a consultation covers those changes. [Configuration](/configuration/#advisor-nudge-level)
-describes the levels, the precedence and the file.
+Advisor off it has no effect. `off` leaves the written rules alone, `standard` adds a note every few
+tool results and refuses nothing, and `strict` holds every change of a task once several were made
+with no consultation, until an Advisor answers. `guard` behaves like `strict` in this version.
+[Configuration](/configuration/#advisor-nudge-level) describes the levels, the precedence and the
+file.
 
-In `standard`, `strict` and `guard` an automatic reminder adds one short extension-owned line to the
-request context: once per operative task of each instance in `standard` and `strict`, and once per
-message that changes state in `guard`, where a change re-arms it. It is armed by one successful builtin
-orientation result (`read`, `find`, `grep`, `ls`) or by the same builtin tool failing in two different
-rounds, and
-it is presented only while a valid Advisor is active, the task is live and the configured launch mode
-has its launcher among the active tools. An attempted consultation ends it for that task even when it
-fails; a control action that only names an Advisor is not a consultation.
+In `standard`, `strict` and `guard` an automatic note adds one short extension-owned line to the
+request context: after a count of tool results in `standard`, and once per run of changes made with no
+consultation since the last answered one in `strict` and `guard`. It is presented only while a valid Advisor is active,
+the task is live and the configured launch mode has its launcher among the active tools. An attempted
+consultation ends it for that task even when it fails. A control action that only names an Advisor is
+not a consultation.
 
 The line lives in the request copy after the policy block and the configuration notice, never in the
 conversation, and it starts no turn, child or consultation. It adds no authority and revokes no
 instruction. It is sent to the provider, so it is not a promise about cost or retention, and it is
 not a guarantee that a consultation happens: a presentation is not evidence of obedience, and it can
-arrive after the first edit. It reacts only to the builtin tools above, never to shell text, stdout,
-the user's words or a model's intent, and it is not a classifier of task complexity. Only the
+arrive after the first edit. It follows counts of tool results and of changes, never stdout, the
+user's words or a model's intent, and it is not a classifier of task complexity. Only the
 documented `pi-subagents` process markers (`PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_RUNNER_PID`) exclude a
 child; a `/fork` or `/clone` of a human session keeps the reminder, and a missing marker proves
 nothing, so the approved scope also covers foreground children that load this policy and can consult.
@@ -137,16 +132,19 @@ the file.
 
 ### Advisor checkpoint
 
-In `strict` the checkpoint refuses one state-changing call per task, and in `standard` it only records
-what it would have refused. It never refuses when a consultation is not possible, so it cannot loop,
-and a `??` at the start of a prompt forces it for that task whatever the level, as long as an Advisor
-is available; `guard` does not open that checkpoint at all, since it refuses no call, so `??` has no
-effect there. The commands it recognizes
-are a nudge, not a security boundary: it reads the leading words of a shell segment, matches nothing
-else, grants no permission and inspects no argument, so it neither authorizes nor blocks anything
-beyond that one refusal. Known limit: in this version a long task is stopped at most once, at its
-first substantive change. [Configuration](/configuration/#advisor-checkpoint) states the conditions
-and the refusal text.
+In `strict` and `guard` the checkpoint refuses every state-changing call of a task once several were
+made with no consultation, and only an Advisor consultation that answers opens it. Reading always
+passes. It never refuses when a consultation is not possible, and a `??` at the start of a prompt
+holds the changes of that task at any level, as long as an Advisor is available. At `off` and
+`standard` that hold ends with the first answer and no count starts afterwards.
+
+It is a nudge, not a security boundary or a sandbox. The extension decides what changes state from the
+tool name and the text of a shell command, which it never runs, and that reading can be wrong in both
+directions: a command it takes for a read may write, and a harmless one may be held. Test runs and
+builds count as changes, so an edit-and-test loop reaches the hold quickly. A consultation that keeps
+failing leaves the changes held and tells the operator, who decides. It grants no permission and
+inspects none. [Configuration](/configuration/#advisor-checkpoint) states the conditions and the
+refusal text.
 
 ## Fail-closed behavior
 
@@ -287,12 +285,10 @@ a workflow script or a parallel call without tasks) can also carry no children. 
 and `launch` records repeat the policy hash they ran under. A `task` record also carries `mainModel`,
 the exact `provider/id` key or `null`, and `advisorLevel`. A `consultation` record also carries
 `mainModel`, `advisorLevel`, `noArgs`, which is true when the model passed no question, brief or
-evidence, and `contextBytes`, which is `0` in manual mode. One `checkpoint` record is written per task
-in which the checkpoint fired: `mode` (`shadow` or `active`), `signals`, `resolution` (`consult`,
-`repeat` or `none`), `priorCalls`, `filesRead`, `promptChars`, `editLines`, `mainModel` and
-`advisorLevel`. A `guard` record is written per interruption: `block` (`1` or `2`), `changes`,
-`consulted`, `blocks`, `mainModel` and `advisorLevel`, plus one with `block` set to `null` when a task
-closes having changed state with no consultation covering it. Every field is an enum, a boolean, a
+evidence, and `contextBytes`, which is `0` in manual mode. One `gate` record is written per task whose
+gate opened, which is a `strict` or `guard` task or any task a `??` prompt opened: `changes` (counted since the last answered consultation), `totalChanges`,
+`holds` (refused changes), `answers`, `failures`, `notes` (notes presented), `mainModel` and
+`advisorLevel`. Every field is an enum, a boolean, a
 number or a bounded identifier such as the policy
 hash and model keys. `advisorConsults` counts attempts: a
 `consult_advisor` call counts whether or not it reached a model, and its real outcome is the

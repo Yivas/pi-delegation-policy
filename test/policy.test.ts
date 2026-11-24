@@ -1917,7 +1917,6 @@ test("the extension uses only the approved lifecycle events and never accumulate
 
     piDelegationPolicy(pi as never);
     assert.deepEqual([...handlers.keys()].sort(), [
-      "agent_before_settle",
       "agent_end",
       "agent_settled",
       "before_agent_start",
@@ -3710,8 +3709,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "schema/delegation-policy.schema.json",
     "src/agent-launch.ts",
     "src/advisor-anthropic-provider.ts",
-    "src/advisor-checkpoint.ts",
-    "src/advisor-guard.ts",
+    "src/advisor-gate.ts",
     "src/advisor-context.ts",
     "src/advisor-executor.ts",
     "src/advisor-extensions.ts",
@@ -3741,6 +3739,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/provider-package.ts",
     "src/provider-policy.ts",
     "src/runtime.ts",
+    "src/state-change.ts",
     "src/types.ts",
     "src/ui.ts",
   ].sort();
