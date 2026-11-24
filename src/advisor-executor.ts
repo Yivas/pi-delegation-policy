@@ -112,6 +112,12 @@ export type AdvisorSlotOutcome = Readonly<{
   /** Closed cause of a non-complete slot, or the continuity note of a complete one. */
   code?: AdvisorContinuityCode;
   detail?: string;
+  /**
+   * Present only when this slot's host run was issued, set at the one point where it is. A slot the
+   * plan gave an Advisor and that stopped before the launch (no brief, preflight, journal, busy,
+   * cancelled) carries no flag, so nothing downstream can read a slot list as a launch.
+   */
+  dispatched?: true;
 }>;
 export type AdvisorGroupSummary = "complete" | "partial" | "unavailable" | "blocked";
 export type AdvisorGroupOutcome = Readonly<{
@@ -655,10 +661,25 @@ export class AdvisorExecutor {
       );
     }
     const thread = matches ? existing : undefined;
-    const outcome =
+    // Written by the turn itself, immediately before the host launch, and read here: an outcome that
+    // stopped earlier never claims a dispatch.
+    const dispatch = { issued: false };
+    const settled =
       thread && thread.state === "answered"
-        ? await this.continueThread(plan, thread, input, host, signal, session, generation)
-        : await this.startThread(plan, thread, input, host, signal, session, generation);
+        ? await this.continueThread(
+            plan,
+            thread,
+            input,
+            host,
+            signal,
+            session,
+            generation,
+            dispatch,
+          )
+        : await this.startThread(plan, thread, input, host, signal, session, generation, dispatch);
+    const outcome: AdvisorSlotOutcome = dispatch.issued
+      ? { ...settled, dispatched: true }
+      : settled;
 
     record({
       slot: plan.slot,
@@ -684,6 +705,7 @@ export class AdvisorExecutor {
     signal: AbortSignal | undefined,
     session: AdvisorJournalSession,
     generation: number,
+    dispatch: { issued: boolean },
   ): Promise<AdvisorSlotOutcome> {
     // A first launch carries its own context and the Advisor never sees this conversation, so it
     // requires a brief. This is checked per slot, never for a continuation, which only sends the
@@ -712,7 +734,6 @@ export class AdvisorExecutor {
     // A revocation during the pending write must stop the launch before it is emitted.
     if (!this.isCurrent(input, generation, signal)) return this.blocked(plan, "cancelled");
 
-    let sent = false;
     const launch = async (request: AdvisorRequest) =>
       this.launchFor(plan).execute(request, host, signal, {
         beforeRequest: async () => {
@@ -726,7 +747,7 @@ export class AdvisorExecutor {
           );
           if (!confirmed) return false;
           if (!this.isCurrent(input, generation, signal)) return false;
-          sent = true;
+          dispatch.issued = true;
           return true;
         },
       });
@@ -780,7 +801,7 @@ export class AdvisorExecutor {
       };
     }
 
-    const closed = !sent || provesNoRun(result);
+    const closed = !dispatch.issued || provesNoRun(result);
     const failed: AdvisorThreadRecord = {
       ...pending,
       state: closed ? "closed" : "blocked",
@@ -808,6 +829,7 @@ export class AdvisorExecutor {
     signal: AbortSignal | undefined,
     session: AdvisorJournalSession,
     generation: number,
+    dispatch: { issued: boolean },
   ): Promise<AdvisorSlotOutcome> {
     const previousRunId = thread.runIds.at(-1);
     if (!previousRunId) return this.blocked(plan, "status-unavailable");
@@ -843,6 +865,9 @@ export class AdvisorExecutor {
     // Immediately before the RPC send, after the probe, the reservation and the pending write.
     if (!this.isCurrent(input, generation, signal)) return this.blocked(plan, "cancelled");
 
+    // Immediately before the RPC that starts this turn's run: from here on an Advisor was asked to
+    // continue, whatever the host answers.
+    dispatch.issued = true;
     const receipt = await client.resume({
       runId: previousRunId,
       message: advisorContinuationMessage(input.consult),

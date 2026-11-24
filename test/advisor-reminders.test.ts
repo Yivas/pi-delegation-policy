@@ -19,7 +19,13 @@ import {
   renderAdvisorNote,
   writeAdvisorReminderMode,
 } from "../src/advisor-reminders.ts";
-import { GATE_HOLD_CHANGES, GATE_WARN_CHANGES, gateMessage } from "../src/advisor-gate.ts";
+import {
+  failureRunClause,
+  GATE_CONSULT_FAILURES,
+  GATE_HOLD_CHANGES,
+  GATE_WARN_CHANGES,
+  gateMessage,
+} from "../src/advisor-gate.ts";
 import { getGlobalConfigPath, isAbsentPathError, writeConfig } from "../src/config.ts";
 import { getAdvisorLevelPath, readAdvisorLevelFile } from "../src/advisor-level.ts";
 import { getEventLogPath } from "../src/advisor-log.ts";
@@ -357,11 +363,14 @@ const ORDINARY_LAUNCH = {
   tasks: [{ agent: "worker", model: "example/small:high", task: "Read the file." }],
 };
 
-/** The details `consult_advisor` itself writes: one slot per Advisor, each with its own status. */
-const toolDetails = (status: "complete" | "error") => ({
+/**
+ * The details `consult_advisor` itself writes: one slot per Advisor, each with its own status, and
+ * `dispatched` on the slots whose host run was issued.
+ */
+const toolDetails = (status: "complete" | "blocked", dispatched = true) => ({
   advisorConsultation: {
     summary: status === "complete" ? "complete" : "unavailable",
-    slots: [{ slot: 0, status, model: "example/advisor" }],
+    slots: [{ slot: 0, status, model: "example/advisor", ...(dispatched ? { dispatched } : {}) }],
   },
 });
 
@@ -370,8 +379,13 @@ const roleDetails = (child: Record<string, unknown>) => ({ results: [child] });
 
 /** A `consult_advisor` result with one completed slot: the tool answered. */
 const ANSWERED_TOOL_DETAILS = toolDetails("complete");
-/** A `consult_advisor` result whose only slot never completed: it failed, text notwithstanding. */
-const FAILED_TOOL_DETAILS = toolDetails("error");
+/**
+ * A `consult_advisor` result whose only slot was dispatched and never completed: it failed, text
+ * notwithstanding. Without the dispatch flag the same slot would prove no launch at all.
+ */
+const FAILED_TOOL_DETAILS = toolDetails("blocked");
+/** The defect: a first turn with no brief is given its slot and stops before the launch. */
+const UNDISPATCHED_TOOL_DETAILS = toolDetails("blocked", false);
 /** A role launch whose only child ended cleanly and left output: the Advisor answered. */
 const ANSWERED_ROLE_DETAILS = roleDetails({
   exitCode: 0,
@@ -382,10 +396,20 @@ const FAILED_ROLE_DETAILS = roleDetails({
   exitCode: 1,
   finalOutput: "the Advisor failed",
 });
-/** A result whose details this version cannot interpret: it opens nothing and is reported once. */
-const UNRECOGNIZED_DETAILS = undefined;
+/**
+ * A result whose shape this version cannot read: a list of slots that is not a list. It proves no
+ * launch, so it counts nothing and the hold it leaves stands.
+ */
+const UNREADABLE_DETAILS = { advisorConsultation: { summary: "complete", slots: "complete" } };
+/**
+ * The details `consult_advisor` writes for a call that consulted nobody: an early exit, a blank
+ * question, a busy executor. It is positive evidence of nothing, so it counts nothing at all.
+ */
+const NOT_RUN_DETAILS = { advisorConsultation: { summary: "not-run", slots: [] } };
 /** The failure text `consult_advisor` returns for a call that reached no Advisor. */
 const BLANK_QUESTION_TEXT = "Advisor error: question must not be blank.";
+/** The text a consultation that started an Advisor and failed prints. */
+const ADVISOR_FAILURE_TEXT = "Advisor unavailable: the provider refused the request.";
 
 test("the note arrives after eight tool results, last in the request, and is never stored", async () => {
   await withHarness({}, async (harness) => {
@@ -593,6 +617,14 @@ test("neither note nor refusal names a count or a way out that skips the consult
     assert.doesNotMatch(message, /repeat this call/i, launcher);
     assert.doesNotMatch(message, /repeat|again and it will run|retry/i, launcher);
     assert.match(message, /Not an error: this call was not run/, launcher);
+    // The failure clause asks for a person too, and names no way out either. Its count comes from
+    // the constant, so this test reads the clause instead of repeating the number of failures.
+    const broken = gateMessage(launcher, false, true);
+    assert.doesNotMatch(broken, /\d/, launcher);
+    assert.doesNotMatch(broken, /repeat|again and it will run|retry/i, launcher);
+    assert.ok(broken.includes(failureRunClause()), launcher);
+    assert.match(broken, /ask the user and stop/, launcher);
+    assert.match(broken, /^Not an error: this call was not run/, launcher);
   }
   assert.match(gateMessage("tool"), /consult_advisor\(\)/, "tool launch names its own tool");
   assert.match(gateMessage("role"), /async: false/, "role launch names the one field that answers");
@@ -732,10 +764,11 @@ test("a failed consultation attempt does not cost the task its hold warning", as
     async (harness) => {
       await writeLevel({ level: "strict" });
       await harness.prompt();
-      // The first thing this task does is try to consult, and the attempt fails. An attempt ends
-      // the periodic note for the task; it says nothing about the warning the gate earns later.
+      // The first thing this task does is try to consult, and the attempt fails after reaching an
+      // Advisor. An attempt ends the periodic note for the task; it says nothing about the warning
+      // the gate earns later.
       await harness.toolCall("consult_advisor", { question: "Is this the right approach?" });
-      await harness.consultationResult(false, BLANK_QUESTION_TEXT, {
+      await harness.consultationResult(false, ADVISOR_FAILURE_TEXT, {
         details: FAILED_TOOL_DETAILS,
       });
       assert.equal(
@@ -774,7 +807,7 @@ test("a failed consultation attempt does not cost the task its hold warning", as
   );
 });
 
-test("only an answered consultation opens the gate, and two failures tell the operator once", async () => {
+test("a run of failures keeps the hold, is reported once, and an answer reopens the gate", async () => {
   await withHarness(
     { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
     async (harness) => {
@@ -785,10 +818,11 @@ test("only an answered consultation opens the gate, and two failures tell the op
       assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
 
       // The reviewed blocker: the host flags no error, the printed text reads like a failure, and
-      // the only slot never completed. A failure, not an answer, so the gate stays where it was,
-      // and one failure is not worth telling the operator about.
+      // the only slot never completed. That slot is positive evidence an Advisor started and did
+      // not answer: a failure, not an answer, so the gate stays where it was, and one failure is
+      // not worth telling the operator about.
       await harness.toolCall("consult_advisor", {});
-      await harness.consultationResult(false, BLANK_QUESTION_TEXT, {
+      await harness.consultationResult(false, ADVISOR_FAILURE_TEXT, {
         details: FAILED_TOOL_DETAILS,
       });
       assert.equal(
@@ -802,27 +836,73 @@ test("only an answered consultation opens the gate, and two failures tell the op
         "one failure is not worth telling the operator",
       );
 
-      // The second such failure is reported once, and the gate stays closed.
+      // The second such failure is reported once, and nothing is released: the task waits for a
+      // person, which is the one release the model cannot forge.
       await harness.toolCall("consult_advisor", {});
-      await harness.consultationResult(false, BLANK_QUESTION_TEXT, {
+      await harness.consultationResult(false, ADVISOR_FAILURE_TEXT, {
         details: FAILED_TOOL_DETAILS,
       });
       const warnings = harness.notifications.filter(({ type }) => type === "warning");
       assert.equal(warnings.length, 1, "the second failure in a row is reported once");
-      assert.match(warnings[0]?.message ?? "", /only opens with an answer from an Advisor/);
-      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+      // The notice names the level, the launcher and the closed statuses it saw, says the task stays
+      // held, and lists the three things a person can do. It carries no error text of its own.
+      const notice = warnings[0]?.message ?? "";
+      assert.match(notice, /^Advisor level strict: the tool launcher started an Advisor/);
+      // The notice states the pair from the constant, so it cannot describe a run of another size.
+      assert.match(
+        notice,
+        new RegExp(`no answer in ${GATE_CONSULT_FAILURES} consultations in a row`),
+      );
+      assert.match(notice, /statuses: blocked/);
+      assert.match(notice, /The task stays held/);
+      assert.match(notice, /fix the Advisor/);
+      assert.match(notice, /change the level with \/delegate/);
+      assert.match(notice, /cancel the task/);
+      assert.doesNotMatch(notice, /provider refused/);
+      assert.doesNotMatch(notice, new RegExp(SMALL_EDIT.edits[0]!.newText));
 
-      // A third failure in the same run is not reported again.
+      // Every change is refused, however many times the model tries: the pair changed the refusal
+      // and the notice, and passed nothing.
+      for (let index = 1; index <= GATE_HOLD_CHANGES; index += 1)
+        assert.equal(
+          (await harness.toolCall("edit", SMALL_EDIT))?.block,
+          true,
+          `change ${index}: the hold never releases`,
+        );
+      const refusal = await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal(refusal?.block, true);
+      assert.equal(
+        refusal?.reason,
+        gateMessage("tool", false, true),
+        "the refusal keeps its shape and adds the one clause that asks for a person",
+      );
+
+      // A third failure is not a pair of its own and is not reported again.
       await harness.toolCall("consult_advisor", {});
-      await harness.consultationResult(false, BLANK_QUESTION_TEXT, {
+      await harness.consultationResult(false, ADVISOR_FAILURE_TEXT, {
         details: FAILED_TOOL_DETAILS,
       });
       assert.equal(
         harness.notifications.filter(({ type }) => type === "warning").length,
         1,
-        "a third failure in the same run is not reported again",
+        "a third failure is not reported again",
       );
-      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+      // A new pair is reported again, and the task is still held.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(false, ADVISOR_FAILURE_TEXT, {
+        details: FAILED_TOOL_DETAILS,
+      });
+      assert.equal(
+        harness.notifications.filter(({ type }) => type === "warning").length,
+        2,
+        "a later pair is reported again",
+      );
+      assert.equal(
+        (await harness.toolCall("edit", SMALL_EDIT))?.block,
+        true,
+        "and the held task keeps waiting for a person",
+      );
 
       // An answered result opens the gate and the count starts over.
       await harness.toolCall("consult_advisor", {});
@@ -835,7 +915,13 @@ test("only an answered consultation opens the gate, and two failures tell the op
           undefined,
           `change ${index} after the answer`,
         );
-      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+      const heldAgain = await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal(heldAgain?.block, true);
+      assert.equal(
+        heldAgain?.reason,
+        gateMessage("tool"),
+        "the answer removed the clause from the refusal as well",
+      );
     },
   );
 });
@@ -865,7 +951,7 @@ test("a consultation the host flagged as an error answers nothing", async () => 
   );
 });
 
-test("a result this version cannot interpret opens nothing and is reported once", async () => {
+test("a call that consulted nobody counts nothing and says nothing", async () => {
   await withHarness(
     { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
     async (harness) => {
@@ -875,32 +961,70 @@ test("a result this version cannot interpret opens nothing and is reported once"
         await harness.toolCall("edit", SMALL_EDIT);
       assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
 
-      // A result with no details at all is not a failure to retry: retrying cannot change the
-      // shape, so the operator hears of it at once instead of after a second one.
+      // The bypass this rule closes: two calls that consult nobody cost no state change, so a model
+      // could free itself from every future hold with two of them. Both carry the details the tool
+      // writes for an early exit, and neither is a failure, a warning or a way out. The third case is
+      // the defect this rule exists for: a non-empty slot list from a first turn with no brief.
+      for (const details of [
+        NOT_RUN_DETAILS,
+        NOT_RUN_DETAILS,
+        UNDISPATCHED_TOOL_DETAILS,
+        UNDISPATCHED_TOOL_DETAILS,
+      ]) {
+        await harness.toolCall("consult_advisor", {});
+        await harness.consultationResult(false, BLANK_QUESTION_TEXT, { details });
+      }
+      assert.equal(
+        (await harness.toolCall("edit", SMALL_EDIT))?.block,
+        true,
+        "a hold no Advisor was reached through is still a hold",
+      );
+      assert.equal(
+        harness.notifications.filter(({ type }) => type === "warning").length,
+        0,
+        "a call that consulted nobody is neither a failure nor a shape to warn about",
+      );
+    },
+  );
+});
+
+test("an unreadable result counts nothing and leaves the hold", async () => {
+  await withHarness(
+    { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
+    async (harness) => {
+      await writeLevel({ level: "strict" });
+      await harness.prompt();
+      for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+        await harness.toolCall("edit", SMALL_EDIT);
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+      // A shape this version cannot read is no evidence either: it proves no launch, so it counts
+      // nothing, the hold stands, and there is nothing new to tell the operator about.
       await harness.toolCall("consult_advisor", {});
       await harness.consultationResult(false, "Consultation complete", {
-        details: UNRECOGNIZED_DETAILS,
+        details: UNREADABLE_DETAILS,
       });
       assert.equal(
         (await harness.toolCall("edit", SMALL_EDIT))?.block,
         true,
-        "an unreadable result opens nothing",
+        "nothing this reader cannot read is a way out of the hold",
       );
-      const warnings = harness.notifications.filter(({ type }) => type === "warning");
-      assert.equal(warnings.length, 1, "the operator is told about the first one");
-      assert.match(warnings[0]?.message ?? "", /shape this version does not recognize/);
-
-      // A second one in the same task says nothing new.
-      await harness.toolCall("consult_advisor", {});
-      await harness.consultationResult(false, "Consultation complete", {
-        details: UNRECOGNIZED_DETAILS,
-      });
       assert.equal(
         harness.notifications.filter(({ type }) => type === "warning").length,
-        1,
-        "a second unreadable result is not reported again",
+        0,
+        "a shape this reader cannot read is not a failure, so it is not reported as one",
       );
-      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+      // A second one says nothing new either, and the hold is still where it was.
+      await harness.toolCall("consult_advisor", {});
+      await harness.consultationResult(false, "Consultation complete", {
+        details: UNREADABLE_DETAILS,
+      });
+      assert.equal(
+        (await harness.toolCall("edit", SMALL_EDIT))?.block,
+        true,
+        "and the task is still held while the way out is unreadable",
+      );
     },
   );
 });

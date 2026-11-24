@@ -609,12 +609,12 @@ failure leaves the previous file in place.
 The **Advisor nudge** row, formerly **Advisor reminder**, chooses how hard this extension pushes
 towards a consultation, and `advisorLevel` holds the same setting in configuration:
 
-| Level      | Note                                               | Changes                                           |
-| ---------- | -------------------------------------------------- | ------------------------------------------------- |
-| `off`      | None                                               | Never held                                        |
-| `standard` | One after every 8 tool results of a task (default) | Never held                                        |
-| `strict`   | One warning after 3 changes with no consultation   | Held from the 6th change until an Advisor answers |
-| `guard`    | Same as `strict`                                   | Same as `strict`                                  |
+| Level      | Note                                               | Changes                                                                                                        |
+| ---------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `off`      | None                                               | Never held                                                                                                     |
+| `standard` | One after every 8 tool results of a task (default) | Never held                                                                                                     |
+| `strict`   | One warning after 3 changes with no consultation   | Held from the 6th change until an Advisor answers, or until the operator changes the level and sends a new prompt or cancels the task |
+| `guard`    | Same as `strict`                                   | Same as `strict`                                                                                               |
 
 A prompt that starts with `??` is the one exception to "never held": it holds the changes of its task
 at any level. At `off` and `standard` the hold ends with the first answered consultation and no
@@ -702,8 +702,11 @@ A change is a tool call that changes state, decided closed by default:
   quotes is an argument, not a redirection, and `2>&1` or a stream sent to the null device does not
   count.
 - `read`, `grep`, `find`, `ls`, `glob` and `consult_advisor` are never changes, and neither are the
-  `status`, `list` and `guide` actions of `subagent`. Every other tool counts, including a task list,
-  a question to the user and any MCP tool, whatever it does.
+  `status`, `list` and `guide` actions of `subagent`. Session control is never a change either:
+  `ask_user_question`, `todo`, `bg_wait` and `subagent_supervisor` steer the session or its children
+  and touch no project state, so a held task can still ask the user. These are name matches:
+  `bg_wait` is the host's default name for its wait tool, so a wait tool the host renamed counts as
+  a change. Every other tool counts, including any MCP tool, whatever it does.
 
 Shell text is read as data and never executed. Counting tests and builds has a known cost: an
 edit-and-test loop reaches the hold quickly.
@@ -715,17 +718,28 @@ is a configured Advisor, with `async: false`, read from the details of the host'
 child that ended cleanly, was not cut short and left output of its own. A launch that names a
 `workflow` reports a different result shape, so it counts as a change like any other unknown call
 and never opens the checkpoint; a single Advisor launch is enough to answer. Those details were read against `pi-subagents`
-`0.89.1`. A result in a shape this version does not recognize opens nothing and the operator is told
-once. An omitted `async` counts as background, whatever `asyncByDefault` says in `pi-subagents`, and
+`0.89.1`. A result in a shape this version does not recognize opens nothing and keeps the hold. An
+omitted `async` counts as background, whatever `asyncByDefault` says in `pi-subagents`, and
 so does an `async: false` that `pi-subagents` rewrites to a background launch with
-`forceTopLevelAsync`: no `role` launch can answer while that option is set, and the operator is told
-once about the shape it cannot read. A background launch returns before the Advisor answers and
+`forceTopLevelAsync`: no `role` launch can answer while that option is set. A background launch returns before the Advisor answers and
 covers nothing, so while a level holds changes an Advisor launch with `async` omitted or `true` is
 refused: in `role` launch the message says to relaunch it with `async: false`, and in `tool` launch
 it names `consult_advisor()` instead, because this session does not launch Advisors with that tool. A consultation that returns an error or empty text opens nothing.
-After two failed consultations in a row the operator gets one warning notification and the changes
-stay held. The operator then fixes the Advisor, or changes the level with `/delegate` and sends a new
-prompt, because a task keeps the level it started with.
+Nothing releases the hold automatically, and a run of failures does not either. Two consultations in
+a row that did reach an Advisor and did not answer give the operator one warning notification per
+such pair and leave every change refused. The notification names the level, the launcher and the
+closed statuses the failed slots stated (in `role` launch it states none, because that result
+reports children and not slots), says the task stays held, and lists the three things a person can
+do. The refusal to the model keeps its text and gains one clause: two consultations have not
+answered, so ask the user and stop. A later pair is reported again, and no pair releases a change,
+because a release the model can compute it can forge. The hold ends with an answered consultation or
+with the operator, who can fix the Advisor, change the level with `/delegate` and send a new prompt,
+because a task keeps the level it started with, or cancel the task. These levels are not meant for unattended runs. Only details that prove an Advisor
+started count as such a failure, which is why every slot the tool plans states whether its host run
+was issued. A call that consulted nobody, a blank question, a busy executor, a launch the host
+refused and a first turn refused for want of a brief before any launch count nothing, so repeating
+one buys nothing at all. A result whose shape this version cannot read keeps the hold too, and a
+result the host reports twice counts once.
 
 The refused call returns this text, verbatim, in `tool` launch:
 
@@ -736,6 +750,13 @@ Consult the Advisors now: call consult_advisor(). It needs no arguments; the hos
 After the consultation answers, make this change again.
 ```
 
+Once two consultations in a row did reach an Advisor and did not answer, the same text ends with one
+more line instead of changing anything it already said:
+
+```text
+Two consultations have not answered, so ask the user and stop rather than calling this again.
+```
+
 In `role` launch the third line asks for a foreground launch of every listed Advisor instead. In
 `tool` launch with `/delegate advisor context manual` it asks for a question, and for a brief on a
 first consultation, instead of saying the call needs no arguments. While changes are held,
@@ -743,7 +764,9 @@ first consultation, instead of saying the call needs no arguments. While changes
 by the checkpoint writes no `launch` record.
 
 It refuses nothing when a consultation is not possible: no valid Advisor, no launcher for the
-configured launch mode, no open task, a consultation already running, or a subagent child process. A
+configured launch mode, no open task, or a subagent child process. A consultation that is merely
+running is not that case: the path exists, so the hold stands and its changes are counted until the
+answer arrives. A
 `??` at the start of a prompt asks for a consultation before the first change at any level: that task
 starts with changes held, as long as an Advisor can be consulted, and at `off` and `standard` the
 hold ends with the first answer.

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyToolCall, isStateChangeCommand, type ToolCallFacts } from "../src/state-change.ts";
+import {
+  classifyToolCall,
+  CONTROL_TOOLS,
+  isStateChangeCommand,
+  type ToolCallFacts,
+} from "../src/state-change.ts";
 
 /**
  * The question these cases answer is closed: a level that holds changes refuses everything it cannot
@@ -324,4 +329,25 @@ test("a tool name decides whether the call changes state", () => {
     assert.equal(facts.kind, kind, `${tool}: ${why}`);
     assert.equal(facts.changes, changes, `${tool}: ${why}`);
   }
+});
+
+/**
+ * The human channel and session control are never changes. A held task that could not ask the user a
+ * question, read its own plan or wait for a child would have no way to reach the person who can
+ * decide, so every tool the module names as control is a read whatever input it carries.
+ */
+test("a control tool that asks, tracks, waits or reaches the supervisor is not a change", () => {
+  for (const tool of CONTROL_TOOLS) {
+    for (const input of [undefined, {}, { question: "Which option?" }, { action: "status" }]) {
+      const facts = classifyToolCall(tool, input);
+      assert.equal(facts.kind, "other", tool);
+      assert.equal(facts.changes, false, `${tool}: ${JSON.stringify(input)}`);
+    }
+  }
+});
+
+test("an unknown tool and an MCP-style tool name are still changes", () => {
+  // The closed default is untouched: only a read this file names is known to change nothing.
+  for (const tool of ["some_custom_tool", "mcp__github__create_issue", "github.create_issue"])
+    assert.equal(classifyToolCall(tool, {}).changes, true, tool);
 });

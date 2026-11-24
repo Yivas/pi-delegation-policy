@@ -1361,6 +1361,69 @@ test("a first consultation requires a brief in fresh context", async () => {
   }
 });
 
+/**
+ * The details are where the Advisor checkpoint reads a launch, so they must say which slots reached
+ * the host: a slot a first turn refused for want of a brief carries the slot and no dispatch, and a
+ * slot whose run was issued carries it.
+ */
+test("the details mark the slots that reached the host, and only those", async () => {
+  const run = await harness(base, models, 60_000, { contextMode: "manual" });
+  try {
+    run.bus.respond = (request) => run.bus.finish(request);
+    const refused = await run.callBoth({ question: sentinel });
+    const refusedSlots = (refused.details.advisorConsultation as Payload).slots as Payload[];
+    assert.equal(run.bus.requests.length, 0, "no brief means no launch");
+    assert.equal(refusedSlots.length, 2, "a slot per Advisor was planned");
+    assert.deepEqual(
+      refusedSlots.map((slot) => [slot.status, slot.code, slot.dispatched]),
+      [
+        ["unavailable", "brief-required", undefined],
+        ["unavailable", "brief-required", undefined],
+      ],
+      "a slot list is not evidence of a launch, so no failure can be read from it",
+    );
+
+    const answered = await run.callBoth({ question: sentinel, brief: sentinel });
+    const slots = (answered.details.advisorConsultation as Payload).slots as Payload[];
+    assert.equal(run.bus.requests.length, 2);
+    assert.deepEqual(
+      slots.map((slot) => [slot.status, slot.dispatched]),
+      [
+        ["complete", true],
+        ["complete", true],
+      ],
+      "a slot whose run was issued carries the dispatch flag",
+    );
+  } finally {
+    await run.close();
+  }
+});
+
+test("a launch that was issued and then failed still marks its slots as dispatched", async () => {
+  const run = await harness(base, models, 10_000, { contextMode: "manual" });
+  try {
+    // The host accepted both launches and then reported the runs as failed. Nothing answered, so the
+    // gate reads a failure, and the details must still say an Advisor started: the flag is written
+    // at the launch, not at the answer.
+    run.bus.respond = (request) => run.bus.finish(request, "failed", sentinel, hostErrorSentinel);
+    const { text, details } = await run.callBoth({ question: sentinel, brief: sentinel });
+    const slots = (details.advisorConsultation as Payload).slots as Payload[];
+    assert.equal(run.bus.requests.length, 2, "both launches reached the host");
+    assert.deepEqual(
+      slots.map((slot) => [slot.status, slot.dispatched]),
+      [
+        ["blocked", true],
+        ["blocked", true],
+      ],
+      "a launch that failed after it was issued is still a launch",
+    );
+    assert.doesNotMatch(text, new RegExp(sentinel));
+    assert.doesNotMatch(text, /RAW-HOST-ERROR|provider\.invalid|private\/session/);
+  } finally {
+    await run.close();
+  }
+});
+
 test("abort and branch rotation cancel the whole group and remove listeners idempotently", async () => {
   for (const rotate of [false, true]) {
     const run = await harness();
@@ -3798,27 +3861,69 @@ test("a change the gate holds back travels in the next composed consultation", a
   }
 });
 
-test("the gate refuses nothing without a task and while an Advisor is in flight", async () => {
+test("a change is held and counted while a consultation group is in flight", async () => {
   const run = await strictRun();
   try {
-    // No operative task: nothing counts the changes, so the whole budget runs.
-    await run.hook("agent_settled");
-    for (let index = 0; index <= GATE_HOLD_CHANGES; index += 1)
-      assert.equal(await gatedEdit(run, `call-closed-${index}`, HELD_EDIT), undefined, `${index}`);
-    // A consultation already in flight is not an opportunity to consult, so nothing is held.
-    await run.newTask();
+    // The host runs the calls of one message in parallel, so a group in flight is exactly the
+    // window in which a model could consult and change state in the same message. The path exists
+    // there; only the executor is busy, and that is not an absent way out.
     const pending = run.call({});
     const first = await Promise.race([
       until(() => run.bus.requests.length === 2).then(() => "requested"),
       pending.then((answer) => `answered: ${answer}`),
     ]);
     assert.equal(first, "requested");
-    for (let index = 0; index <= GATE_HOLD_CHANGES; index += 1)
-      assert.equal(await gatedEdit(run, `call-busy-${index}`, HELD_EDIT), undefined, `${index}`);
+    assert.equal(run.executor.busy, true, "the group is in flight while the changes are attempted");
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(
+        await gatedEdit(run, `call-busy-${index}`, HELD_EDIT),
+        undefined,
+        `change ${index} is counted, not skipped`,
+      );
+    const refused = await gatedEdit(run, "call-busy-held", HELD_EDIT);
+    assert.equal(refused?.block, true, "the change that reaches the hold is refused while it runs");
+    assert.equal(refused?.reason, gateMessage("tool"));
     for (const request of run.bus.requests) run.bus.finish(request);
     assert.match(await pending, /Consultation complete/);
+    assert.equal(run.executor.busy, false);
   } finally {
     await run.close();
+  }
+});
+
+test("a change passes untouched when no consultation path exists at all", async () => {
+  // No operative task: nothing counts the changes, so the whole budget runs.
+  const run = await strictRun();
+  try {
+    await run.hook("agent_settled");
+    for (let index = 0; index <= GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await gatedEdit(run, `call-closed-${index}`, HELD_EDIT), undefined, `${index}`);
+  } finally {
+    await run.close();
+  }
+
+  // No Advisor this configuration can use: there is no way to consult, so a hold would leave no
+  // way out and nothing is refused.
+  const withoutAdvisors = await harness(
+    { ...base, advisors: [{ provider: "example", model: "missing" }] },
+    models,
+    10_000,
+    { mainProcess: true, activeTools: ["subagent", "consult_advisor"] },
+  );
+  try {
+    await writeFile(
+      getAdvisorLevelPath(withoutAdvisors.path),
+      `${JSON.stringify({ schemaVersion: 1, level: "strict" })}\n`,
+    );
+    await withoutAdvisors.newTask();
+    for (let index = 0; index <= GATE_HOLD_CHANGES; index += 1)
+      assert.equal(
+        await gatedEdit(withoutAdvisors, `call-nopath-${index}`, HELD_EDIT),
+        undefined,
+        `${index}`,
+      );
+  } finally {
+    await withoutAdvisors.close();
   }
 });
 

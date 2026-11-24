@@ -23,8 +23,30 @@
 - A consultation opens the checkpoint only when the tool's own result details show that an Advisor
   answered. Text alone proves nothing, because both launchers return text when they fail. In `role`
   launch that needs `async: false`, and a background Advisor launch is refused with that correction
-  while changes are held. Two failed consultations in a row send the operator one warning and leave
-  the changes held, and so does a result whose shape this version does not recognize.
+  while changes are held.
+- Asking the user, the task list and the supervisor channel are never changes, and neither is the
+  wait tool under its default name `bg_wait`, so a held task never loses its way to a person. These
+  are name matches, so a wait tool the host renamed counts as a change. Every other class of call is
+  counted as before.
+- The hold has no automatic release. Two consultations in a row that did reach an Advisor and did
+  not answer send the operator one warning per such pair, naming the level, the launcher and, in
+  `tool` launch, the closed statuses the failed slots stated, and send the model a refusal that keeps
+  its shape and adds one clause: two consultations have not answered, so ask the user and stop. Every
+  change stays refused, and a later pair is reported again. The hold ends with an answered
+  consultation or with the operator, who can fix the Advisor, change the level with `/delegate` and
+  send a new prompt, because a task keeps the level it started with, or cancel the task. No pair of
+  failures releases a change, because a release the model can compute it can forge, most cheaply
+  with a host subagent launch given an exact Advisor profile and a one-millisecond timeout. These
+  levels are not meant for unattended runs, and the control tools stay open so a held task can still
+  reach a person. Only details that prove an Advisor started
+  count, so a call that consulted nobody, a busy executor, a blank question or a refused launch
+  buys nothing, and neither does a first turn refused for want of a brief, which is given a slot and
+  stops before the launch. Each slot states whether its host run was issued, and that statement is
+  what a failure needs. A result whose shape this version cannot read counts nothing and keeps the
+  hold. A result reported twice counts once.
+- The `role` and `tool` launch paths read a consultation result the same way, so a result the host
+  reports twice cannot count twice, and the executor's own dispatch flag is the only statement of a
+  launch.
 - Calls of one assistant message are decided one by one, so a message that crosses the hold runs its
   first changes and has the rest refused.
 - A `??` prompt now holds the changes of its task at every level, `guard` included. At `off` and

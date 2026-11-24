@@ -102,7 +102,8 @@ The setting is `advisorLevel`: `off`, `standard` (the default), `strict` or `gua
 reminder setting, which is now read only as a fallback when the level file does not exist, and with
 Advisor off it has no effect. `off` leaves the written rules alone, `standard` adds a note every few
 tool results and refuses nothing, and `strict` holds every change of a task once several were made
-with no consultation, until an Advisor answers. `guard` behaves like `strict` in this version.
+with no consultation, until an Advisor answers or the operator changes the level and sends a new
+prompt, or cancels the task. `guard` behaves like `strict` in this version.
 [Configuration](/configuration/#advisor-nudge-level) describes the levels, the precedence and the
 file.
 
@@ -134,15 +135,22 @@ the file.
 
 In `strict` and `guard` the checkpoint refuses every state-changing call of a task once several were
 made with no consultation, and only an Advisor consultation that answers opens it. Reading always
-passes. It never refuses when a consultation is not possible, and a `??` at the start of a prompt
-holds the changes of that task at any level, as long as an Advisor is available. At `off` and
-`standard` that hold ends with the first answer and no count starts afterwards.
+passes, and so does session control: asking the user, the task list and the supervisor channel are
+never changes, and neither is the wait tool under its default name `bg_wait`, so a held task keeps
+its way to a person; a wait tool the host renamed counts as a change like any other unknown tool. It
+never refuses when a consultation is not possible, and a `??` at the start of a prompt holds the
+changes of that task at any level, as long as an Advisor is available. At `off` and `standard` that hold ends with the first
+answer and no count starts afterwards.
 
 It is a nudge, not a security boundary or a sandbox. The extension decides what changes state from the
 tool name and the text of a shell command, which it never runs, and that reading can be wrong in both
 directions: a command it takes for a read may write, and a harmless one may be held. Test runs and
-builds count as changes, so an edit-and-test loop reaches the hold quickly. A consultation that keeps
-failing leaves the changes held and tells the operator, who decides. It grants no permission and
+builds count as changes, so an edit-and-test loop reaches the hold quickly. Nothing releases the hold
+automatically: a pair of consultations that reached an Advisor and failed tells the operator once
+per such pair, says the task stays held, and tells the model to ask the user and stop, and every
+change stays refused. Only an answered consultation, a level change with `/delegate` and a new
+prompt, or a cancelled task ends it, so these levels are not meant for unattended runs. A call that consulted nobody is not a failure and
+counts nothing. It grants no permission and
 inspects none. [Configuration](/configuration/#advisor-checkpoint) states the conditions and the
 refusal text.
 

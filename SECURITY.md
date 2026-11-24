@@ -87,9 +87,22 @@ the other advisors' answers, and every reply is untrusted advice.
 
 The `strict` and `guard` Advisor levels hold every state-changing call of a task once several were
 made with no consultation, until an Advisor answers. `standard` only adds a note and `off` does
-nothing, except that a prompt starting with `??` holds the changes of its task at any level. This is a nudge, not a security boundary: the extension decides what changes state by
-reading the tool name and the text of a shell command, which it never runs, and that reading can be
-wrong in both directions. It grants, widens and inspects no permission, and with no Advisor to
+nothing, except that a prompt starting with `??` holds the changes of its task at any level. The
+hold never covers asking the user, the task list or the supervisor channel, nor the wait tool
+recognised by its default name `bg_wait`, so a held task keeps its way to a person; a wait tool the
+host renamed is an unknown tool and counts as a change. Nothing releases it automatically. An earlier
+release was removed because the model it was meant for forged it: any release the model can compute,
+it can compute cheaply, so a release it cannot forge is a person. Two consultations in a row that
+did reach an Advisor and failed now only tell the operator once per such pair, in closed terms, and
+tell the model to ask the user and stop; every change stays refused, and the hold ends with an
+answered consultation or with the operator, who can fix the Advisor, change the level with
+`/delegate` and send a new prompt, because a task keeps the level it started with, or cancel the
+task. These levels are a nudge for a person at the keyboard, not a boundary for an unattended run.
+Only a result whose details prove an Advisor started counts as such a failure, so repeating a call
+that consulted nobody, or one refused for want of a brief before any launch, buys nothing. This is a
+nudge, not a security boundary: the extension decides what changes state by reading the tool name
+and the text of a shell command, which it never runs, and that reading can be wrong in both
+directions. It grants, widens and inspects no permission, and with no Advisor to
 consult it holds nothing.
 
 Thread continuity, the private content-free journal, and their locks are described in the

@@ -30,6 +30,13 @@ const SEARCH_TOOLS: ReadonlySet<string> = new Set(["grep", "find", "ls", "glob"]
 const EDIT_TOOLS: ReadonlySet<string> = new Set(["edit", "write", "multi_edit"]);
 const COMMAND_TOOLS: ReadonlySet<string> = new Set(["bash", "powershell", "shell", "exec"]);
 const SUBAGENT_READ_ACTIONS: ReadonlySet<string> = new Set(["status", "list", "guide"]);
+/** Session control: these steer the session or its children and touch no project state. */
+export const CONTROL_TOOLS: ReadonlySet<string> = new Set([
+  "ask_user_question",
+  "todo",
+  "bg_wait",
+  "subagent_supervisor",
+]);
 /** The extension's own consultation tool. It is never a change: a gate that refuses it deadlocks. */
 const CONSULT_TOOL = "consult_advisor";
 
@@ -211,6 +218,9 @@ export function classifyToolCall(toolName: string, input: unknown): ToolCallFact
   // can set a child to work, so it stays a change like a launch.
   if (name === "subagent" && SUBAGENT_READ_ACTIONS.has(String(record.action)))
     return { kind: "other", changes: false };
+  // Session control only: asking the user, tracking the plan, waiting on a child, reaching the
+  // supervisor. Holding these would close the human channel a held task needs to get out.
+  if (CONTROL_TOOLS.has(name)) return { kind: "other", changes: false };
   // An unknown tool is a change: only a read named here is known not to change anything.
   return { kind: "other", changes: true };
 }

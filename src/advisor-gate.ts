@@ -10,6 +10,22 @@
  * call changed nothing, so counting it would let a model burn the budget by asking. A consultation
  * that answers resets the count; the model is not asked again for work it already covered.
  *
+ * There is no automatic release. An earlier version released a window of changes when a run of
+ * consultations failed, on the theory that a hold with no working way out is worse than no hold.
+ * Every version of that release was defeated by the model it was meant for: each one was a release
+ * the model could compute, so the model computed it, most cheaply by launching the host subagent
+ * tool with an exact Advisor profile and a one-millisecond timeout. A release the model can forge
+ * is not a way out. So the hold ends only with an answered consultation, or with the operator, who
+ * can change the level or cancel the task. A run of failures now changes only what the model and
+ * the operator are told, and the control tools stay open so a held task can still reach a person.
+ *
+ * That report is fail-closed: it needs positive evidence that an Advisor started and did not
+ * answer, and a non-empty list of slots is not that evidence, because a call can be given one slot
+ * and no brief. The writer states it per slot, in `dispatched`, at the one point where the host run
+ * is issued. A call that consulted nobody counts nothing at all, no failure and no report, so the
+ * hold it leaves stands and the human channel can still resolve it. A result this reader cannot
+ * interpret is one more call that proved nothing: `not-run`, which keeps the hold.
+ *
  * It is a pure state machine with no imports. Nothing here reads a tool result, the user's words or
  * the model's intent: only the classified calls the caller passes in.
  */
@@ -17,7 +33,11 @@
 export const GATE_WARN_CHANGES = 3;
 /** The change that closes the gate: the task may not reach this many without a consultation. */
 export const GATE_HOLD_CHANGES = 6;
-/** Failed consultations in a row after which the operator is told the task cannot move. */
+/**
+ * Consultations that proved a launch and failed, in a row, after which the gate says the way out
+ * looks broken: the operator is told once and the refusal tells the model to reach a person instead
+ * of retrying. Neither of them passes a change.
+ */
 export const GATE_CONSULT_FAILURES = 2;
 
 export type GateLauncher = "role" | "tool";
@@ -37,13 +57,16 @@ export type GateDecision =
 export type GateReport = Readonly<{
   /** Changes counted since the last answered consultation. */
   changes: number;
-  /** Every change the gate counted in this task. Changes that ran while no consultation was possible are not in it. */
+  /**
+   * Every change the gate counted in this task. Changes that ran while no consultation was possible
+   * at all are not in it.
+   */
   totalChanges: number;
   /** Refused changes. */
   holds: number;
   /** Consultations that answered. */
   answers: number;
-  /** Consultations that returned an error or no text; they never open the gate. */
+  /** Consultations that proved an Advisor started and did not answer; they never open the gate. */
   failures: number;
 }>;
 
@@ -68,44 +91,71 @@ const CONSULT_PATH = {
 } as const;
 
 /**
- * What a consultation result proves. `unrecognized` is a result whose shape this reader does not
- * know: it opens nothing, and it is reported apart from a failure because retrying cannot fix it.
+ * What a consultation result proves.
+ *
+ * `answered` is the one thing that opens the gate. `failed` needs positive evidence that an Advisor
+ * started and did not answer, and it is the only outcome that counts toward the report the operator
+ * gets; it never opens the gate. `not-run` is everything else: a call that consulted nobody, a launch
+ * with no child, a slot that never dispatched, a shape this reader does not know. It counts nothing
+ * and leaves the hold where it was.
  */
-export type ConsultationOutcome = "answered" | "failed" | "unrecognized";
+export type ConsultationOutcome = "answered" | "failed" | "not-run";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
- * Read a consultation result for a positive sign that an Advisor answered. The host marks a result
+ * Read a consultation result for positive evidence that an Advisor started. The host marks a result
  * as an error only when the tool throws, and both launchers return text when they fail, so neither
- * the error flag nor the presence of text proves an answer: the tool's own details do.
+ * the error flag nor the presence of text proves anything: only the details do. A result whose
+ * details prove no Advisor started is `not-run`, which counts nothing, so an early exit that forgets
+ * to say so costs a hold instead of buying a way out of it.
  *
  * `tool`: the details this extension writes, with one slot per Advisor. `role`: the details of the
  * host's subagent tool, one result per child, all of them Advisors because only an Advisor-only
- * launch is read here. One Advisor that answered is enough in both.
+ * launch is read here. One Advisor that answered is enough in both, and the error flag wins over an
+ * answer: a result the host reports as an error proves nothing about the Advisor itself.
  */
 export function consultationOutcome(
   launcher: GateLauncher,
   result: { isError: boolean; details: unknown },
 ): ConsultationOutcome {
+  return launcher === "tool" ? toolOutcome(result) : roleOutcome(result);
+}
+
+/**
+ * This extension is the only writer of these details: one slot per Advisor, and one `dispatched` flag
+ * on every slot whose host run was issued. A non-empty list of slots is not proof of a launch, because
+ * a first turn with no brief is given its slot and stops before the launch. A record whose `slots` is
+ * present but is not a list is a shape this version does not know; anything else without a non-empty
+ * list of slots consulted nobody.
+ */
+function toolOutcome(result: { isError: boolean; details: unknown }): ConsultationOutcome {
+  const consultation = isRecord(result.details) ? result.details.advisorConsultation : undefined;
+  if (!isRecord(consultation)) return "not-run";
+  const slots = consultation.slots;
+  if (!Array.isArray(slots) || slots.length === 0) return "not-run";
+  // A completed slot is an answer, and the error flag still wins over it: a result the host reports as
+  // an error proves nothing about the Advisor itself.
+  if (slots.some((slot) => isRecord(slot) && slot.status === "complete"))
+    return result.isError ? "failed" : "answered";
+  const dispatched = slots.some((slot) => isRecord(slot) && slot.dispatched === true);
+  return dispatched ? "failed" : "not-run";
+}
+
+/**
+ * The host reports one result per child it started, so a non-empty list of them is proof that children
+ * ran, whatever happened to them: a numeric exit code, a signal, a timeout, a partial output. Without
+ * such a list the launch never happened here, so the result is `not-run` rather than a failure.
+ */
+function roleOutcome(result: { isError: boolean; details: unknown }): ConsultationOutcome {
+  const results = isRecord(result.details) ? result.details.results : undefined;
+  if (!Array.isArray(results)) return "not-run";
+  const children = results.filter(isRecord);
+  if (children.length === 0) return "not-run";
   if (result.isError) return "failed";
-  if (!isRecord(result.details)) return "unrecognized";
-  if (launcher === "tool") {
-    const consultation = result.details.advisorConsultation;
-    // This extension is the only writer of these details, and it writes none when the call
-    // consulted nobody: a blank question, a busy executor, an Advisor that is off.
-    if (consultation === undefined) return "failed";
-    if (!isRecord(consultation) || !Array.isArray(consultation.slots)) return "unrecognized";
-    return consultation.slots.some((slot) => isRecord(slot) && slot.status === "complete")
-      ? "answered"
-      : "failed";
-  }
-  const results = result.details.results;
-  if (!Array.isArray(results) || !results.every(isRecord)) return "unrecognized";
-  if (results.some((child) => typeof child.exitCode !== "number")) return "unrecognized";
-  return results.some(childAnswered) ? "answered" : "failed";
+  return children.some(childAnswered) ? "answered" : "failed";
 }
 
 /** A child answered when it ended cleanly, was not cut short, and left output of its own. */
@@ -116,11 +166,64 @@ function childAnswered(child: Record<string, unknown>): boolean {
   return typeof child.finalOutput === "string" && child.finalOutput.trim() !== "";
 }
 
-/** `manualContext` is true when the agent, not the host, writes the consultation brief. */
-export function gateMessage(launcher: GateLauncher, manualContext = false): string {
+/** The slot statuses this version writes, and the only ones a notice may repeat. */
+const SLOT_STATUSES: ReadonlySet<string> = new Set(["complete", "unavailable", "blocked"]);
+
+/**
+ * What a run of failures said about itself, for the operator's notice: the closed statuses its slots
+ * stated, de-duplicated and in the order they were written.
+ *
+ * Only values this version knows are repeated, so no host, provider or model text can reach a
+ * notification through this function, and a status it does not know is left out rather than echoed.
+ * A `role` launch reports children, not statuses, so it says nothing here.
+ */
+export function failureEvidence(launcher: GateLauncher, details: unknown): readonly string[] {
+  if (launcher !== "tool") return [];
+  const consultation = isRecord(details) ? details.advisorConsultation : undefined;
+  const slots = isRecord(consultation) ? consultation.slots : undefined;
+  if (!Array.isArray(slots)) return [];
+  const seen = new Set<string>();
+  for (const slot of slots)
+    if (isRecord(slot) && typeof slot.status === "string" && SLOT_STATUSES.has(slot.status))
+      seen.add(slot.status);
+  return [...seen];
+}
+
+/** The words a run of failures takes when it is written out, so no text states the count by hand. */
+const RUN_WORDS = ["Several", "One", "Two", "Three", "Four", "Five", "Six"] as const;
+
+/**
+ * The clause that names the run of failures, in words. The refusal derives it from
+ * `GATE_CONSULT_FAILURES`, so changing that constant moves the text with it instead of leaving a
+ * number behind, and the clause stays free of digits, which is what the refusal must offer: no
+ * count a model could compute. A count this table does not name reads as `Several`.
+ */
+export function failureRunClause(count: number = GATE_CONSULT_FAILURES): string {
+  const word = RUN_WORDS[count] ?? "Several";
+  return `${word} consultation${count === 1 ? " has" : "s have"} not answered`;
+}
+
+/**
+ * What the refusal adds once a run of failures proved the way out is not working. The hold is
+ * unchanged, so the only thing left for the model to do is reach the person who can end it.
+ */
+const WAY_OUT_BROKEN = `${failureRunClause()}, so ask the user and stop rather than calling this again.`;
+
+/**
+ * `manualContext` is true when the agent, not the host, writes the consultation brief.
+ * `wayOutBroken` appends the one clause that tells the model the hold now needs a person; without it
+ * the text is byte-identical to the refusal this gate has always sent.
+ */
+export function gateMessage(
+  launcher: GateLauncher,
+  manualContext = false,
+  wayOutBroken = false,
+): string {
   const toolPath = manualContext ? CONSULT_PATH.toolManual : CONSULT_PATH.tool;
   const path = launcher === "role" ? CONSULT_PATH.role : toolPath;
-  return [...PREFIX, `${CONSULT_NOW}${path}`, AFTER].join("\n");
+  const message = [...PREFIX, `${CONSULT_NOW}${path}`, AFTER];
+  if (wayOutBroken) message.push(WAY_OUT_BROKEN);
+  return message.join("\n");
 }
 
 /**
@@ -135,7 +238,11 @@ export class AdvisorGate {
   private answers = 0;
   private failures = 0;
   private failuresInRow = 0;
-  private unrecognized = false;
+  /**
+   * True once a run of consultations failed: it records only that the way out looks broken, which
+   * changes the message the model gets and the notice the operator gets. It never passes a change.
+   */
+  private wayOutBroken = false;
   private forced = false;
   private countsAfterAnswer = true;
   private warned = false;
@@ -176,7 +283,7 @@ export class AdvisorGate {
     this.answers = 0;
     this.failures = 0;
     this.failuresInRow = 0;
-    this.unrecognized = false;
+    this.wayOutBroken = false;
     this.forced = false;
     this.countsAfterAnswer = true;
     this.warned = false;
@@ -184,9 +291,11 @@ export class AdvisorGate {
   }
 
   /**
-   * Decide one call. `available` is the host's and the configuration's answer at this instant, never
-   * a value remembered from the start of the task: losing the consultation path must release the
-   * task instead of freezing it.
+   * Decide one call. `available` says whether this configuration has a consultation path at all, and
+   * the caller reads it per call rather than once at the start of the task: losing the path must
+   * release the task instead of freezing it. A transient busy executor is not an absent path, so it
+   * is never reported here as one: the host runs the calls of one message in parallel, and a model
+   * that consults and edits in the same message would otherwise change state through the hold.
    */
   decide(input: {
     changes: boolean;
@@ -202,7 +311,10 @@ export class AdvisorGate {
     if (!input.available) return { action: "pass", reason: "unavailable" };
     if (this.held) {
       this.holds += 1;
-      return { action: "block", message: gateMessage(input.launcher, input.manualContext) };
+      return {
+        action: "block",
+        message: gateMessage(input.launcher, input.manualContext, this.wayOutBroken),
+      };
     }
     this.changes += 1;
     this.totalChanges += 1;
@@ -217,34 +329,27 @@ export class AdvisorGate {
     if (!this.open) return;
     this.answers += 1;
     this.forced = false;
+    this.wayOutBroken = false;
     this.changes = 0;
     this.failuresInRow = 0;
     this.warned = false;
   }
 
   /**
-   * A consultation that did not answer never opens the gate: only an answer does. Repeated failures
-   * mean the way out may not exist, and that is the operator's call, not the model's, so this
-   * returns true exactly once per run of failures for the caller to tell the operator.
+   * A consultation that an Advisor started and never answered opens nothing: only an answer does.
+   * The caller must come here only with that positive evidence, never with the absence of an answer,
+   * and never with a slot list alone. Repeated failures mean the way out may not exist, and that is
+   * the operator's call, not the model's: this returns true for the caller to tell them, once per
+   * pair, and leaves the hold exactly where it was. The run starts over so a later pair is reported
+   * again, and nothing else about the task moves: the count of changes and the warning stay put.
    */
   noteFailure(): boolean {
     if (!this.open) return false;
     this.failures += 1;
     this.failuresInRow += 1;
-    return this.failuresInRow === GATE_CONSULT_FAILURES;
-  }
-
-  /**
-   * A result this reader cannot interpret opens nothing and counts as a failure for the report.
-   * True the first time in a task, so the operator is told once.
-   */
-  noteUnrecognized(): boolean {
-    if (!this.open) return false;
-    this.failures += 1;
-    // It ends a run of ordinary failures, so one task is not warned twice for the same stretch.
+    if (this.failuresInRow < GATE_CONSULT_FAILURES) return false;
     this.failuresInRow = 0;
-    if (this.unrecognized) return false;
-    this.unrecognized = true;
+    this.wayOutBroken = true;
     return true;
   }
 
