@@ -5305,6 +5305,47 @@ test("the reading step is offered after an Advisor model and writes its flag", a
   assert.deepEqual(saved.at(-1), [true]);
 });
 
+test("a model that cannot read clears its own flag and keeps the ones after it", async () => {
+  const saved: boolean[][] = [];
+  const harness = createPanelHarness({
+    rows: 30,
+    global: {
+      ...defaults,
+      advisors: [advisor, { ...advisor, model: "second" }, { ...advisor, model: "third" }],
+      advisorMode: "on",
+      advisorLaunch: "role",
+    },
+    candidates: [
+      model(small, "Tiny Worker"),
+      model(medium, "Planning Sonnet"),
+      model(large, "Large Reasoner"),
+      model(uiDesign, "Visual Designer"),
+      model({ provider: "anthropic", model: "claude-sonnet" }),
+    ],
+    advisorRead: [true, false, true],
+    onSaveAdvisorRead: async (flags) => {
+      saved.push(flags);
+      return "saved";
+    },
+  });
+  focusField(harness.panel, "advisor");
+  // Open the selector, skip the three pinned rows and pick the Anthropic model, which sorts first: it
+  // keeps its own tool-free profile, so reading is not offered for it and only its own flag is cleared.
+  sendKeys(harness.panel, KEY_ENTER, KEY_DOWN, KEY_DOWN, KEY_DOWN, KEY_ENTER);
+  sendKeys(harness.panel, KEY_ESCAPE);
+  const rows = harness.panel.render(100).join("\n");
+  assert.match(rows, /Advisor 1\s+anthropic\/claude-sonnet/, "the model changed");
+  assert.match(
+    rows,
+    /Advisor 3\s+example\/third · reads files/,
+    "clearing a flag never truncates the list of flags: the third Advisor still reads",
+  );
+  // The one flag that turns off reaches the file, and the ones after it are still there.
+  sendKeys(harness.panel, "a");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(saved, [[false, false, true]]);
+});
+
 test("the block names the reading profile in both places and never claims a read it cannot do", () => {
   const advisorGlobal = (overrides: Partial<GlobalDefaults> = {}): GlobalDefaults => ({
     ...defaults,
