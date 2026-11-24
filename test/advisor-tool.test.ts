@@ -2948,6 +2948,22 @@ test("an incomplete session list closes nothing for a turn with no receipt", asy
   }
 });
 
+test("a journal failure reads as one cause, with no second continuity prefix", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "advisor-cause-"));
+  const journal = new AdvisorThreadJournal(join(directory, "threads.json"));
+  const run = await harness(base, models, 10_000, { journal });
+  try {
+    // A journal this process cannot parse: the command reports the closed cause and changes nothing.
+    await writeFile(journal.filePath, "{ not a journal\n");
+    await run.command("advisor threads recover");
+    const message = run.notifications.at(-1)?.message ?? "";
+    assert.match(message, /^Advisor continuity is blocked: the Advisor journal cannot be read/);
+  } finally {
+    await run.close();
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
 test("a receipt that cannot be persisted is settled once the host lists nothing running", async () => {
   const directory = await mkdtemp(join(tmpdir(), "advisor-accepted-"));
   const journal = new GatedJournal(join(directory, "threads.json"));

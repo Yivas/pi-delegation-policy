@@ -52,6 +52,11 @@
 - A `??` prompt now holds the changes of its task at every level, `guard` included. At `off` and
   `standard` the hold ends with the first answered consultation and counting does not resume.
 
+### Fixed
+
+- A blocked Advisor continuity cause printed its prefix twice in `advisor threads recover` and
+  `advisor threads reset`: the cause text already names its subject, so it now reads once.
+
 ### Removed
 
 - The close interruption of `guard`: the extension no longer registers the host's settle boundary.

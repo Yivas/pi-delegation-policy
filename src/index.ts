@@ -1071,10 +1071,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       });
       if (!result.ok)
         return {
-          message: `Advisor continuity: ${advisorContinuityText(result.code)}`,
+          message: advisorContinuityText(result.code),
           type: "error",
         };
-      if (unavailable) return { message: `Advisor continuity: ${unavailable}`, type: "error" };
+      if (unavailable) return { message: unavailable, type: "error" };
       if (result.value === "clear")
         return { message: "Advisor continuity: nothing to reconcile.", type: "info" };
       return {
@@ -1148,7 +1148,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               : "the journal gained an unresolved turn while reset was starting, so nothing was abandoned; retry.";
           return "blocked" as const;
         }
-        // The evidence is already cached, so planning here answers from memory instead of the host.
+        // Only the per-run answers were cached by the pass outside; the session list is asked again,
+        // because it is one call and a record written since then cannot be decided on older evidence.
         const plan = await planAdvisorContinuity({
           partition,
           activeTaskToken: taskToken,
@@ -1176,7 +1177,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       });
       if (!result.ok)
         return {
-          message: `Advisor continuity: ${advisorContinuityText(result.code)}`,
+          message: advisorContinuityText(result.code),
           type: "error",
         };
       return result.value === "blocked"
