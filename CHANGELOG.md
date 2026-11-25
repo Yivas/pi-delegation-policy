@@ -2,69 +2,54 @@
 
 ## Unreleased
 
+## 0.35.0 - 2026-11-25
+
 ### Changed
 
-- The Advisor nudge levels are rebuilt on counts the host reports, and `standard`, `strict` and
-  `guard` behave differently for existing users. The old `strict` refused one call per task and its
-  refusal offered a second way out, repeating the call, which a small main model took every time it
-  was measured.
-- `standard` adds a short note after every 8 tool results of a task, at most one per request, in
-  place of the one reminder per task. It still refuses nothing.
-- `strict` counts the changes a task was allowed to make. It warns once after 3 changes made since
-  the last answered consultation, and refuses every change from the 6th on, until an Advisor
-  consultation answers. Reading always
-  passes, a refused change is not counted, and repeating the refused call does not unblock it. The
-  refusal names the consultation and nothing else.
-- `guard` behaves exactly like `strict` in this release.
-- A change is decided closed by default: `edit`, `write`, `multi_edit`, any tool the extension does
-  not know, and a shell command unless every one of its segments is a known read. Redirections,
-  command substitution, test runs and builds count as changes, so an edit-and-test loop reaches the
-  hold quickly.
-- A consultation opens the checkpoint only when the tool's own result details show that an Advisor
-  answered. Text alone proves nothing, because both launchers return text when they fail. In `role`
-  launch that needs `async: false`, and a background Advisor launch is refused with that correction
-  while changes are held.
-- Asking the user, the task list and the supervisor channel are never changes, and neither is the
-  wait tool under its default name `bg_wait`, so a held task never loses its way to a person. These
-  are name matches, so a wait tool the host renamed counts as a change. Every other class of call is
-  counted as before.
-- The hold has no automatic release. Two consultations in a row that did reach an Advisor and did
-  not answer send the operator one warning per such pair, naming the level, the launcher and, in
-  `tool` launch, the closed statuses the failed slots stated, and send the model a refusal that keeps
-  its shape and adds one clause: two consultations have not answered, so ask the user and stop. Every
-  change stays refused, and a later pair is reported again. The hold ends with an answered
-  consultation or with the operator, who can fix the Advisor, change the level with `/delegate` and
-  send a new prompt, because a task keeps the level it started with, or cancel the task. No pair of
-  failures releases a change, because a release the model can compute it can forge, most cheaply
-  with a host subagent launch given an exact Advisor profile and a one-millisecond timeout. These
-  levels are not meant for unattended runs, and the control tools stay open so a held task can still
-  reach a person. Only details that prove an Advisor started
-  count, so a call that consulted nobody, a busy executor, a blank question or a refused launch
-  buys nothing, and neither does a first turn refused for want of a brief, which is given a slot and
-  stops before the launch. Each slot states whether its host run was issued, and that statement is
-  what a failure needs. A result whose shape this version cannot read counts nothing and keeps the
-  hold. A result reported twice counts once.
-- The `role` and `tool` launch paths read a consultation result the same way, so a result the host
-  reports twice cannot count twice, and the executor's own dispatch flag is the only statement of a
-  launch.
-- Calls of one assistant message are decided one by one, so a message that crosses the hold runs its
-  first changes and has the rest refused.
-- A `??` prompt now holds the changes of its task at every level, `guard` included. At `off` and
-  `standard` the hold ends with the first answered consultation and counting does not resume.
+- **Breaking:** `strict` no longer refuses one call per task, a refusal that named repeating the call
+  as a way through and was easy to satisfy. It counts the changes it lets a task make, warns once
+  after 3 changes made since the last answer, and refuses every change from the 6th until an Advisor
+  consultation answers. Reading always passes, a refused change is not counted, and repeating it does
+  not unblock it. The way out is to consult an Advisor, or to change the level with `/delegate` and
+  send a new prompt.
+- `guard` behaves exactly like `strict` in this version.
+- `standard` states one note after every 8 tool results, at most one per request, instead of one
+  reminder per task, and refuses nothing.
+- Apart from `consult_advisor` and the session control tools listed below, anything not provably a
+  read is a change: `edit`, `write`, `multi_edit`, an unknown tool, a shell command that is not
+  wholly a known read.
+- Test runs and builds count as changes, so an edit-and-test loop reaches the hold quickly.
+- Only a consultation whose result details prove that an Advisor answered opens the hold, since
+  failure text proves nothing.
+- Nothing releases the hold on its own: an answered consultation, a level change with `/delegate`
+  and a new prompt, or a cancelled task ends it.
+- Asking the user, the task list, the supervisor channel and the wait tool `bg_wait` are never
+  changes, by these exact names only, so a renamed tool counts as a change and a held task can still
+  reach a person.
+- Two consultations in a row that reached an Advisor and got no answer warn the operator once per
+  pair and tell the model to ask the user and stop, with every change still refused.
+- While changes are held, an Advisor launch with `async` omitted or `true` is refused: `role` launch
+  is told to relaunch with `async: false`, and `tool` launch is pointed at `consult_advisor()`.
+- A `??` prompt holds the changes of its task at every level, which is stricter than the single
+  refusal 0.34.0 gave it, and at `off` and `standard` the first answered consultation ends the hold
+  and counting does not resume.
+- The calls of one assistant message are decided one by one, so a message can run its first changes
+  and have the rest refused.
+
+### Removed
+
+- The close interruption of `guard`: the extension no longer registers the host's settle boundary.
+- The substantive-task tests and the 30 minutes between two refusals, which let the old checkpoint
+  skip a task.
+- The reminder no longer arms on a successful `read`, `find`, `grep` or `ls` result or on the same
+  builtin tool failing in two rounds.
+- The `checkpoint` and `guard` log records, replaced by one `gate` record per watched task, with
+  counts only.
 
 ### Fixed
 
 - A blocked Advisor continuity cause printed its prefix twice in `advisor threads recover` and
   `advisor threads reset`: the cause text already names its subject, so it now reads once.
-
-### Removed
-
-- The close interruption of `guard`: the extension no longer registers the host's settle boundary.
-- The conditions that made the old checkpoint skip a task: the tests for a task that looks
-  substantive and the 30 minutes between two refusals in a session. `strict` and `guard` can now
-  hold changes in every task.
-- The `checkpoint` and `guard` records of the local log. One `gate` record per task whose gate opened
-  replaces them, with counts only.
 
 ## 0.34.0 - 2026-11-23
 
