@@ -491,7 +491,7 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
  */
 function guardReviewerDisclosure(model: string): string {
   // The caveat opens the text: on a short terminal the tail is the first thing the notice loses.
-  return `The guard reviewer is a second opinion, not a sandbox. It checks each change before it runs. For every change it sends your messages in this task, the pending call's path and the start of the new content or the command, and the headings of recent calls to ${model}, using that provider's own credentials. It never sends tool output or the agent's own text. Expect one small extra model call per change and a short wait before it.`;
+  return `The guard reviewer is a second opinion, not a sandbox. It checks each change before it runs. For every change it sends your messages in this branch, the pending call's path and the start of the new content or the command, and the heads of the last 12 calls to ${model}, using that provider's own credentials. It never sends tool output, the agent's own text or this project's instruction files. One review is one small model call, and a block pays for one more. Observing records what it would refuse and never delays or refuses the call.`;
 }
 
 /**

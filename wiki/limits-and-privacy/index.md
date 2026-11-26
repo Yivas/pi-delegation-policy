@@ -306,8 +306,7 @@ that ended by a branch move or by shutdown: `endReason` (`settled`, `branch-chan
 `holds` (refused changes), `answers`, `failures`, `ruleHits` (refusals by `guard` rule, by closed
 code, a code that never fired is absent; `engine-failure` is the code for a guard that could not judge
 the call at all), `passes` (calls a consultation pass let through), `notes`
-(notes presented), `mainModel` and
-`advisorLevel`. Every field is an enum, a boolean, a
+(notes presented), `mainModel`, `advisorLevel`, and the four reviewer counters of the next paragraph. Every field is an enum, a boolean, a
 number or a bounded identifier such as the policy
 hash and model keys. `advisorConsults` counts attempts: a
 `consult_advisor` call counts whether or not it reached a model, and its real outcome is the
@@ -325,6 +324,16 @@ record; a missing or unreadable log reports `launches=none recorded`. Reading it
 touches no launch. The guard report script in the repository is the other reader: it summarises the `gate` records of
 a log file and its rotated predecessor — tasks by end reason and the counters, `ruleHits` included —
 and prints nothing else from the log.
+
+A `reviewer` record is written per review the `guard` reviewer runs or skips: `turn` (the assistant
+message it ran in), `tool` (the tool name, reduced to an identifier token), `stage1` (`block`,
+`allow` or `null`), `stage2` (one of the five closed categories or `null`), `status` (`ok`,
+`cached`, `skipped-cap`, `unparseable`, `timeout`, `error` or `internal`), `stage1Ms`, `stage2Ms`,
+`inputBytes` of the JSON data block, `model`, `mode` and `target`, which is a 16-hex digest of the
+tool and its normalised target salted once per session, so no path or command line is stored and two
+sessions cannot be joined on it. The same task's `gate` record adds `reviewed` (reviews that reached
+a model), `wouldBlock` (block verdicts, including the ones answered from the task's memory),
+`noVerdict` (reviews that concluded nothing) and `cacheHits` (pairs answered without a call).
 
 No network telemetry is sent; model identifiers can still be sensitive.
 

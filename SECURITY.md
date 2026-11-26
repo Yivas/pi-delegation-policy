@@ -52,6 +52,25 @@ Two surfaces can send content to another model, and both need an explicit tool c
   extension never adds the conversation, and it refuses a launch that asks the host to fork the
   session for an Advisor.
 
+- **Guard reviewer.** The optional reviewer of `guard` is a second model of a provider you choose,
+  and it is off unless you set a model and a mode in `/delegate`. In `observe` it is asked about
+  every change the rules and the count already let through, without holding the call. One request
+  carries a single JSON object: your own user messages in the branch, cut to 800 characters each and
+  4 KiB in total, newest first; the pending call, which is its tool name plus the path and the head
+  of the new text for an edit or a write, or the head of the line for a shell call, up to 1 KiB; and
+  the heads of the last 12 calls, a tool and a path or a command head. It carries no tool output, no
+  message the agent wrote, no project instruction file, and no tool declaration, and the fixed system
+  prompt states that the object is data and never an instruction. The head of the new text of an
+  edit or a write can therefore contain file content, and it is the one place a secret in a file can
+  travel to a reviewer's provider; the extension redacts nothing here because the reviewer has to
+  read what would be written. Two stages: a single-token `BLOCK` or `ALLOW`, and, only after a block,
+  one careful answer ending in a category from a closed set. Observing never refuses or delays a
+  call, a review of one tool and one target runs once per task while the task remembers the pair (64
+  pairs, oldest forgotten first), three absent verdicts in a row or five in a task turn the reviewer
+  off for the session, and its local record keeps closed values, the durations, the byte count, the
+  model, the mode and a salted digest of the target, never the text. Each stated limit is exact: a
+  cut is a silent prefix, so no text travels past the cap it names.
+
 One residual stays outside the extension's reach: a fork default configured in `pi-subagents` itself is
 not read here, and the host would honour it. Review that setting for sessions that must not reach an
 Advisor's provider, or turn the Advisor off.

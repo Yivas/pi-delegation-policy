@@ -659,10 +659,11 @@ no credential or is the main model. `off` is not a value you pick: it is what ha
 Choosing a model states once what travels, in the same words the panel uses:
 
 > The guard reviewer is a second opinion, not a sandbox. It checks each change before it runs. For
-> every change it sends your messages in this task, the pending call's path and the start of the new
-> content or the command, and the headings of recent calls to `<provider/id>`, using that provider's
-> own credentials. It never sends tool output or the agent's own text. Expect one small extra model
-> call per change and a short wait before it.
+> every change it sends your messages in this branch, the pending call's path and the start of the new
+> content or the command, and the heads of the last 12 calls to `<provider/id>`, using that provider's
+> own credentials. It never sends tool output, the agent's own text or this project's instruction
+> files. One review is one small model call, and a block pays for one more. Observing records what it
+> would refuse and never delays or refuses the call.
 
 Switching to `enforce` states the same once, in its own words, and names the model that stays there:
 
@@ -671,8 +672,46 @@ Switching to `enforce` states the same once, in its own words, and names the mod
 > time. Enter keeps `<provider/id>` in enforce, and Esc or Ctrl+C keeps the previous mode.
 
 The reviewer never lifts a rule only you can allow, never changes a permission of the host and never
-runs in a subagent child. This version stores the choice and reports it, and calls no model: `guard`
-still decides with its own rules and its count alone.
+runs in a subagent child.
+
+### What a review sends and what it costs {#guard-reviewer-request}
+
+A review is the last step of `guard`, behind the rules and the count, and only a call that changes
+state reaches it. It reads three things, all of them as one JSON object that the fixed prompt declares
+to be data and never an instruction: your own messages in the branch, up to 800 characters each and
+4 KiB in total, newest first; the pending call, meaning the tool name and, for an edit or a write, the
+path and the head of the new text up to 1 KiB, or, for a shell call, the head of the line up to 1 KiB;
+and the heads of the last 12 calls, a tool and a path or a command head, with no result. It never
+receives tool output, the agent's own text, or the project's instruction files, which is what a
+reviewer can be talked through, and the request offers no tool and no tool choice.
+
+Two stages. The first answers one token, `BLOCK` or `ALLOW`, and is asked to err on the side of
+blocking. Only a block asks a second stage for careful reasoning that ends in one line,
+`CATEGORY: <name>`, with a name from a closed set: `destroy-or-exfiltrate`, `degrade-security`,
+`cross-trust-boundary`, `bypass-review`, `outside-the-request`. An answer that does not parse, a
+timeout, and a provider error are **no verdict**: they are never read as an allow and never as a
+block.
+
+Every cap counts exactly what it names: your messages lose nothing beyond the stated character and
+byte limits, because a cut is a silent prefix and adds no marker.
+
+**Observe** runs that review without holding the call: the record says what it would have refused and
+the call runs at once, so observing adds no delay. A pair of tool and target is reviewed once per
+task, up to the 64 pairs a task remembers: past that the oldest is forgotten and reviewed again, and
+an identical retry reuses the verdict without another call. Three reviews in a row that
+return no verdict, or five in one task, turn the reviewer off for the session and tell you once; the
+level keeps its rules and its count. The caps, the two timeouts (3 s and 8 s) and that threshold are
+**provisional**: the shadow data of `0.36.0` fixes them. A review records one local line with the
+verdicts, the status, the durations, the bytes sent, the model, the mode and a salted digest of the
+target, and the task's `gate` record adds `reviewed` (reviews that reached a model), `wouldBlock`
+(block verdicts, including the ones answered from memory), `noVerdict` (reviews that concluded
+nothing) and `cacheHits` (pairs answered without a call).
+
+**Enforce** stores the intent to refuse, and this build still only records: the refusal of a blocked
+call, the pass an answered consultation opens for it, and the three blocks that ask you are the next
+step of the same unreleased version, not something this build does. Nothing here is a sandbox: the
+host's permissions, the rules and the count decide what runs, and a block is a judgement about intent
+that will sometimes be wrong.
 
 With Advisor off the level has no effect. It is resolved from a session override first, then from the
 entry for the current main model, then from the global level, then from `standard`, and a task keeps

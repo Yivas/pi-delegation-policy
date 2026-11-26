@@ -465,8 +465,11 @@ test("choosing a reviewer model starts in observe and states what travels", () =
   );
   assert.match(notice, /the pending call's path and the start of the new content or the command/);
   assert.match(notice, /to example\/large/);
-  assert.match(notice, /It never sends tool output or the agent's own text/);
-  assert.match(notice, /one small extra model call per change and a short wait/);
+  assert.match(
+    notice,
+    /It never sends tool output, the agent's own text or this project's instruction files/,
+  );
+  assert.match(notice, /One review is one small model call, and a block pays for one more/);
   assert.match(notice, /Enter or Esc returns to the settings/);
   sendKeys(panel, KEY_ENTER);
   assert.match(

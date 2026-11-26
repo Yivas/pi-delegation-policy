@@ -72,6 +72,8 @@ import {
   type GateReport,
 } from "./advisor-gate.ts";
 import { GuardRules, type GuardDecision, type GuardRuleReport } from "./guard-rules.ts";
+import { GuardReviewer, type ReviewerReport } from "./guard-reviewer.ts";
+import type { GuardReviewerMode } from "./guard-mode.ts";
 import { classifyToolCall, type ToolCallFacts } from "./state-change.ts";
 import {
   ADVISOR_QUESTION_MAX_BYTES,
@@ -140,6 +142,7 @@ import {
   loadRuntime,
   type RuntimeState,
   statusLabel,
+  validateModelReference,
 } from "./runtime.ts";
 import {
   ADVISOR_LAUNCH_MODES,
@@ -935,15 +938,24 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     // The deterministic rules of the `guard` level: free, decided before the count, and inert in a
     // child session because there is no user to ask there and no Advisor to answer.
     const guardRules = new GuardRules();
+    // The optional second opinion of `guard`. It only books what it would refuse, its records carry
+    // no content, and it is inert in a child session.
+    const guardReviewer = new GuardReviewer({
+      record: (review) => advisorLog.reviewer(review),
+    });
     /**
-     * Close the gate of the task that just ended, with the rule counters of the `guard` level. A
-     * level that never opened a task has nothing to close and writes nothing.
+     * Close the gate of the task that just ended, with the counters of the `guard` level: the rules
+     * that refused and the reviews the reviewer ran. A level that never opened a task has nothing to
+     * close and writes nothing.
      */
-    const closeGateTask = (): { report: GateReport; rules: GuardRuleReport } | undefined => {
+    const closeGateTask = ():
+      { report: GateReport; rules: GuardRuleReport; reviewer: ReviewerReport } | undefined => {
       const report = advisorGate.closeTask();
       const rules = guardRules.report();
       guardRules.closeTask();
-      return report === undefined ? undefined : { report, rules };
+      const reviewer = guardReviewer.report();
+      guardReviewer.closeTask();
+      return report === undefined ? undefined : { report, rules, reviewer };
     };
     /**
      * One record per task a level watched, with the level and the model the task ran under. The task
@@ -951,7 +963,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
      * watched, and leaving those out made the log read as if they never happened.
      */
     const writeGateRecord = (
-      closed: { report: GateReport; rules: GuardRuleReport },
+      closed: { report: GateReport; rules: GuardRuleReport; reviewer: ReviewerReport },
       endReason: GateEndReason,
       level: AdvisorLevel | undefined,
       mainModel: string | null,
@@ -959,6 +971,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorLog.gate({
         ...closed.report,
         ...closed.rules,
+        ...closed.reviewer,
         endReason,
         notes: gateNotes,
         mainModel,
@@ -1385,6 +1398,67 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       }
       if (check?.refusal) task.launchRefusals += 1;
       else if (check?.launch && !launchesOnlyAdvisors(check.children)) task.subagentLaunches += 1;
+    };
+    /**
+     * Ask the optional reviewer of `guard` about one change. It is the last step of that level's
+     * pipeline, it never runs in a child session, and it is never awaited: observing records what
+     * the reviewer would refuse, so a call that cannot be stopped must not wait for the opinion.
+     * Anything that goes wrong here is absorbed, because a throw in `tool_call` blocks the tool.
+     */
+    /**
+     * The reviewer the user stored: a model and a mode that is not `off`. The hook and the trajectory
+     * both gate on it, so a session without one records nothing and pays nothing.
+     */
+    const reviewerSetting = (): { model: string; mode: GuardReviewerMode } | undefined => {
+      const stored = latestRuntime?.guardMode?.mode.reviewer;
+      if (stored === undefined || stored.model === null || stored.mode === "off") return undefined;
+      return { model: stored.model, mode: stored.mode };
+    };
+    const reviewChange = (
+      ctx: ExtensionContext,
+      event: ToolCallEvent,
+      facts: ToolCallFacts,
+    ): void => {
+      const reviewer = reviewerSetting();
+      if (reviewer === undefined) return;
+      const request = {
+        toolName: event.toolName,
+        input: event.input,
+        newText: "",
+        facts,
+        branchEntries: [] as readonly unknown[],
+        mode: reviewer.mode,
+        modelKey: reviewer.model,
+        model: undefined as never,
+        registry: ctx.modelRegistry,
+        signal: ctx.signal,
+        notify: (message: string) => ctx.ui.notify(message, "warning"),
+      };
+      try {
+        const state = latestRuntime;
+        const separator = reviewer.model.indexOf("/");
+        if (separator <= 0) return;
+        // Missing, outside this session's scope or without a credential: no call, and no record to
+        // mistake for a review that found nothing.
+        const status = validateModelReference(ctx, {
+          provider: reviewer.model.slice(0, separator),
+          model: reviewer.model.slice(separator + 1),
+        });
+        if (state === undefined || status.kind !== "available") return;
+        // The main model would judge its own calls with the prompt that produced them.
+        if (reviewer.model === state.mainModel) return;
+        guardReviewer.observe({
+          ...request,
+          newText: newEditText(event.toolName, event.input),
+          branchEntries: ctx.sessionManager.getBranch(),
+          model: status.model,
+        });
+      } catch {
+        // A reviewer this extension could not even ask is a closed status, not silence: the shadow
+        // has to tell a broken reviewer from one that was never configured. The failure message is
+        // never recorded, and the call goes on regardless.
+        guardReviewer.failed(request);
+      }
     };
     // The notice follows the user's turns, not host turns. `input` reports where the next prompt
     // comes from, `before_agent_start` opens one run per fresh prompt, and the comparison runs on
@@ -2362,6 +2436,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // record. A start that still found a task open would have no reason to state, so it closes the
       // task without inventing one; the docs promise the three reasons and not exhaustiveness.
       closeGateTask();
+      // The cap the reviewer has for one session, and its breaker, belong to the session that just
+      // started: nothing of the one that ended carries over.
+      guardReviewer.startSession();
       // A request of the session that ended cannot stand in for this one's short prompt.
       previousRequest = undefined;
       advisorEpoch += 1;
@@ -2465,6 +2542,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         consultationCalls.clear();
         readConsults.clear();
         guardRules.openTask();
+        guardReviewer.openTask();
         if (child) return;
         if (observation) observation.level = level;
         // Only the two levels that hold changes count them: `standard` states a periodic note and
@@ -2634,7 +2712,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       correctionNotes.clear();
       shunt.clearConsumed();
     });
-    pi.on("tool_call", async (event) => {
+    pi.on("message_end", async (event) => {
+      // A turn of the reviewer starts with an assistant message: the host preflights every call of
+      // that message before the next message exists, and `tool_call` carries no turn of its own.
+      if (event.message.role === "assistant") guardReviewer.noteTurn();
+    });
+    pi.on("tool_call", async (event, ctx) => {
       const check =
         event.toolName === "subagent"
           ? inspectSubagentLaunch(event.input, latestRuntime)
@@ -2645,7 +2728,13 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // A workflow child of a consultation this task launched is part of that consultation: it is not
       // a change of its own, so neither a rule nor the count may refuse it, and no rule sees it.
       const consultationChild = isConsultationChild(event);
-      const observed = isSubagentChildProcess() ? undefined : observation;
+      const child = isSubagentChildProcess();
+      const observed = child ? undefined : observation;
+      // Every call of a `guard` task with a reviewer is remembered as a head for its trajectory: the
+      // tool and the head of its target, never a result. No other level and no session without a
+      // reviewer pays for that, and a child session has no reviewer at all.
+      if (!child && observed?.level === "guard" && reviewerSetting() !== undefined)
+        guardReviewer.noteCall(event.toolName, event.input, facts);
       if (observed) {
         if (facts.kind === "read") observePath(observed.readPaths, facts.path);
         if (facts.kind === "command" && facts.command !== undefined)
@@ -2790,6 +2879,16 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           );
         }
       }
+      // The reviewer is the last step of `guard`, after the rules, the count gate and the launch
+      // check: only a change that is going to run reaches it. A workflow child of a consultation is
+      // part of that consultation and is not a change of its own, so it is never reviewed either.
+      if (
+        observed !== undefined &&
+        observed.level === "guard" &&
+        facts.changes &&
+        !consultationChild
+      )
+        reviewChange(ctx, event, facts);
       const settings = latestRuntime?.effective.contextShunt;
       if (!settings || settings.mode === "off") {
         shunt.clearPending();

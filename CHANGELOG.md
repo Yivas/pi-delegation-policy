@@ -4,6 +4,28 @@
 
 ### Added
 
+- **The guard reviewer now runs in `observe`.** In `guard`, after the deterministic rules and the
+  count gate and only for a call that changes state, the configured reviewer is asked about the
+  pending change and its answer is recorded; the call runs either way, at once, because observing
+  never waits for the opinion. What it receives is one JSON object the fixed prompt declares to be
+  data: your own messages in the branch (800 characters each, 4 KiB in total), the pending call (its
+  path and the head of the new text, or the head of the command, up to 1 KiB) and the heads of the
+  last 12 calls. It never receives tool output, the agent's own text or the project's instruction
+  files, and the request offers it no tool. Two stages: one token that errs towards blocking, then,
+  only after a block, careful reasoning that ends in a category of a closed set
+  (`destroy-or-exfiltrate`, `degrade-security`, `cross-trust-boundary`, `bypass-review`,
+  `outside-the-request`). A timeout, a provider error or an answer that does not parse is no verdict,
+  never an allow; the case and the punctuation a model wraps a single token in are tolerated, and the
+  notice that turns the reviewer off says how many absences were unreadable answers and how many were
+  provider failures. One review per tool and target per task, up to the 64 pairs a task remembers, and
+  an identical retry reuses the verdict. The caps (3 per turn, 24 per session, 3 s and 8 s per stage)
+  are provisional until the shadow data fixes them, and each stated character or byte limit is exact:
+  a cut is a silent prefix. Three absent verdicts in a row or five in a task turn the reviewer off for
+  the session and tell you once. Each review writes a content-free local line and the task's `gate`
+  record gains `reviewed` (reviews that reached a model), `wouldBlock` (block verdicts, memory
+  included), `noVerdict` (reviews that concluded nothing) and `cacheHits` (pairs answered without a
+  call). `enforce` still refuses nothing in this build:
+  the block, its pass and its question are the next step of the same unreleased version.
 - **Guard reviewer model** and **Guard reviewer mode**, two user-scope rows in `/delegate`, off by
   default. The first reuses the role model picker with a `None` entry, hides the main model and
   shows why a configured model cannot act (`no credential`, `not available`, `same as the main

@@ -8,6 +8,7 @@ import type { LaunchChildRole, LaunchCorrectionCode, LaunchRefusalCode } from ".
 import type { AdvisorTurnContext } from "./advisor-threads.ts";
 import type { AdvisorLevel } from "./advisor-level.ts";
 import type { GateReport } from "./advisor-gate.ts";
+import type { ReviewerRecord, ReviewerReport } from "./guard-reviewer.ts";
 import type { AdvisorLaunch, AdvisorMode, Intensity } from "./types.ts";
 
 export const ADVISOR_LOG_MAX_BYTES = 256 * 1024;
@@ -74,17 +75,18 @@ export type ConsultationContext = {
 export type GateEndReason = "settled" | "branch-change" | "shutdown";
 
 /** One task's gate accounting, with the configuration it ran under. */
-export type GateRecord = GateReport & {
-  endReason: GateEndReason;
-  /** `guard` rule refusals by closed code; a code that never fired is absent. */
-  ruleHits: Readonly<Partial<Record<GuardRuleCode, number>>>;
-  /** Calls a consultation pass let through. */
-  passes: number;
-  /** Ephemeral notes this level presented to the model. */
-  notes: number;
-  mainModel: string | null;
-  advisorLevel: AdvisorLevel;
-};
+export type GateRecord = GateReport &
+  ReviewerReport & {
+    endReason: GateEndReason;
+    /** `guard` rule refusals by closed code; a code that never fired is absent. */
+    ruleHits: Readonly<Partial<Record<GuardRuleCode, number>>>;
+    /** Calls a consultation pass let through. */
+    passes: number;
+    /** Ephemeral notes this level presented to the model. */
+    notes: number;
+    mainModel: string | null;
+    advisorLevel: AdvisorLevel;
+  };
 
 /**
  * The rule hits of one task, bounded by the closed set and reduced to integers. A code this version
@@ -240,8 +242,36 @@ export class AdvisorLog {
       ruleHits: ruleHitsRecord(record.ruleHits),
       passes: Math.max(0, Math.round(record.passes)),
       notes: Math.max(0, Math.round(record.notes)),
+      reviewed: Math.max(0, Math.round(record.reviewed)),
+      wouldBlock: Math.max(0, Math.round(record.wouldBlock)),
+      noVerdict: Math.max(0, Math.round(record.noVerdict)),
+      cacheHits: Math.max(0, Math.round(record.cacheHits)),
       mainModel: record.mainModel ? record.mainModel.slice(0, 256) : null,
       advisorLevel: record.advisorLevel,
+    });
+  }
+
+  /**
+   * One record per review of the `guard` reviewer: closed verdicts, a closed status, integers and a
+   * salted digest of the target. No path, line, prompt or message of the agent reaches this line.
+   */
+  reviewer(record: ReviewerRecord): void {
+    if (!this.lastHash) return;
+    this.enqueue({
+      event: "reviewer",
+      version: VERSION,
+      policyHash: this.lastHash,
+      turn: Math.max(0, Math.round(record.turn)),
+      tool: record.toolName,
+      stage1: record.stage1,
+      stage2: record.stage2,
+      status: record.status,
+      stage1Ms: record.stage1Ms === null ? null : Math.max(0, Math.round(record.stage1Ms)),
+      stage2Ms: record.stage2Ms === null ? null : Math.max(0, Math.round(record.stage2Ms)),
+      inputBytes: Math.max(0, Math.round(record.inputBytes)),
+      model: record.model.slice(0, 256),
+      mode: record.mode,
+      target: record.target,
     });
   }
 
