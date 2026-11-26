@@ -194,7 +194,7 @@ example:
 D:AGG intensity=aggressive (session) | preference=standard (default) | small=provider/example-small (global)
 medium=provider/example-medium (global) | large=provider/example-large (global) | ui-design=provider/example-visual (global)
 advisor-mode=with-delegation (global); A:ON | advisor=provider/example-advisor (global) | advisor-launch=tool (default)
-advisor-level=standard (default) | advisor-context=composed | main-model=provider/example-main
+advisor-level=standard (default) | advisor-context=composed | guard-consult=off (default) | main-model=provider/example-main
 advisor-1=provider/example-advisor; profile=pi-delegation-policy.advisor; reading=off; filter=off (global)
 thinking-small=fixed:high (global) | thinking-medium=range:low..high (session) | thinking-large=unset (default) | thinking-ui-design=unset (default)
 context=off (default) | context-reader-enabled=false (default) | context-reader-role=small (default)
@@ -206,7 +206,8 @@ The source is `default`, `global`, or `session`. The optional role tokens `ui-de
 keep their order. `advisor=` repeats the first configured entry while `advisor-N=` reports each entry
 once with its profile and its reading flag, and `thinking-ui-design=` closes the thinking group.
 `advisor-level=` carries its own source, and it can be `session`, `model`, `global`, `reminder` or
-`default`. `advisor-context=` reports `composed` or `manual`. `main-model=` names the exact
+`default`. `advisor-context=` reports `composed` or `manual`. `guard-consult=` reports the user's own
+guard switch as `on (global)`, `off (default)` or `off (invalid)`. `main-model=` names the exact
 `provider/id` key the per-model level is looked up by, or `unknown` when the host cannot name it. Each thinking policy is reported
 as `unset`, `fixed:<level>`, or `range:<min>..<max>`: the token says what the policy allows, not which
 level a launch used, and that per-run choice is never stored. `unset (session)` means the branch keeps

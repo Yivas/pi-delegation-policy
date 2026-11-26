@@ -59,6 +59,7 @@ import {
   readLaunchCorrectionMode,
   writeLaunchCorrectionMode,
 } from "../src/launch-correction-mode.ts";
+import { getGuardModePath, readGuardMode } from "../src/guard-mode.ts";
 import { readProviderAdmissions, writeProviderAdmissions } from "../src/provider-admissions.ts";
 import { getRoleEntriesPath, readRoleEntries } from "../src/role-entries.ts";
 import { getAdvisorReadPath } from "../src/advisor-read-mode.ts";
@@ -2806,7 +2807,7 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
 test("the settings list keeps one row per field and one hint block that follows the focus", () => {
   const harness = createPanelHarness({ rows: 24 });
   const item =
-    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design|Vision|Writing|Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
+    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design|Vision|Writing|Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Guard consult first|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
   const view = (steps: number) => {
     for (let step = 0; step < steps; step += 1) sendKeys(harness.panel, KEY_DOWN);
     const lines = harness.panel.render(80);
@@ -3228,6 +3229,62 @@ test("the delegate editor stores the global launch correction mode on Apply and 
     });
     await openDelegateEditor(reopenContext, { appendEntry: () => undefined } as never);
     assert.match(reopened, /^> Launch correction\s+block · global · measurement\s*$/m);
+  });
+});
+
+test("the editor stores the guard switch in its own file and reopens with it on", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeConfig(getGlobalConfigPath(directory), defaults);
+    const configPath = getGlobalConfigPath(directory);
+    const path = getGuardModePath(configPath);
+    const applied: Array<Record<string, unknown>> = [];
+    const applyContext = context({
+      branch: applied,
+      runCustom: (component) => {
+        // Launch correction sits below this row and the four actions below that.
+        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
+        assert.match(
+          component.render(100).join("\n"),
+          /^> Guard consult first\s+off · default\s*$/m,
+        );
+        // The first choice is the default, so the hold is one step below it.
+        sendKeys(component, KEY_ENTER, KEY_UP, KEY_ENTER);
+        assert.match(component.render(100).join("\n"), /^> Guard consult first\s+on · global\s*$/m);
+        sendKeys(component, "a");
+      },
+    });
+    await openDelegateEditor(applyContext, {
+      appendEntry: (customType: string, data?: unknown) =>
+        applied.push({ type: "custom", customType, data }),
+    } as never);
+
+    // The gate reads `delegation-policy.guard.json`, so the save has to reach that exact path: a
+    // caller that handed the writer a sidecar path would write `…guard.guard.json` and persist
+    // nothing the reader ever looks at.
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
+      schemaVersion: 1,
+      consultBeforeFirstChange: true,
+    });
+    await assert.rejects(
+      readFile(`${path.slice(0, -5)}.guard.json`, "utf8"),
+      "the writer must not apply the suffix twice",
+    );
+    assert.deepEqual(await readGuardMode(configPath), {
+      mode: { consultBeforeFirstChange: true },
+      invalid: false,
+    });
+
+    // Reopening the editor reads that same file back, so the row states what the gate will do.
+    let reopened = "";
+    const reopenContext = context({
+      runCustom: (component) => {
+        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
+        reopened = component.render(100).join("\n");
+        sendKeys(component, KEY_ESCAPE);
+      },
+    });
+    await openDelegateEditor(reopenContext, { appendEntry: () => undefined } as never);
+    assert.match(reopened, /^> Guard consult first\s+on · global\s*$/m);
   });
 });
 
@@ -3729,6 +3786,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/context-shunt-reader.ts",
     "src/context-shunt.ts",
     "src/delegate-panel.ts",
+    "src/guard-mode.ts",
     "src/guard-rules.ts",
     "src/index.ts",
     "src/launch-correction-mode.ts",

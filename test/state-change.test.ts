@@ -184,6 +184,27 @@ const ASSIGNMENT_CASES: ReadonlyArray<{ line: string; changes: boolean; why: str
   { line: 'f="C:/dir/" | ls', changes: false, why: "the read after it is still the command" },
   { line: "f=C:/x.md; wc -l $f", changes: false, why: "an unquoted value reads the same" },
   { line: 'name="a b" wc -l f', changes: false, why: "a value with a space is still plain" },
+  // A quote before the first `=` quotes the name part, so the shell reads one program name and
+  // assigns nothing, and a line this reader cannot account for is a change.
+  {
+    line: '"f=1; rm -rf src"',
+    changes: true,
+    why: "a wholly quoted word is a program name, not an assignment",
+  },
+  { line: '"f=1"', changes: true, why: "the name is quoted, so nothing is assigned" },
+  {
+    line: 'f"=1"',
+    changes: true,
+    why: "the quote opens before the `=`, so the name is not a name",
+  },
+  { line: '"f"=1', changes: true, why: "a quoted name part is still no assignment" },
+  { line: "'f'=1", changes: true, why: "single quotes quote the name part the same way" },
+  // The value side is where a quote belongs: `f="x"` assigns, `f"=1"` does not.
+  {
+    line: 'f=""1; ls',
+    changes: false,
+    why: "the quote opens after the `=` and the value is plain",
+  },
   // A value that expands or redirects inside its quotes builds a line this reader cannot account
   // for, so the three forms the fix must not whitelist stay changes.
   { line: 'f="$(touch x)"', changes: true, why: "a substitution inside the value runs" },

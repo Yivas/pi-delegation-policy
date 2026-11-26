@@ -614,7 +614,7 @@ towards a consultation, and `advisorLevel` holds the same setting in configurati
 | `off`      | None                                               | Never held                                                                                                                            |
 | `standard` | One after every 8 tool results of a task (default) | Never held                                                                                                                            |
 | `strict`   | One warning after 3 changes with no consultation   | Held from the 6th change until an Advisor answers, or until the operator changes the level and sends a new prompt or cancels the task |
-| `guard`    | Same as `strict`                                   | Its own [rules](#guard-rules) first, then the same count as `strict`                                                                  |
+| `guard`    | Same as `strict`, plus the consult-first switch    | Its own [rules](#guard-rules) first, then the same count as `strict`                                                                  |
 
 A prompt that starts with `??` is the one exception to "never held": it holds the changes of its task
 at any level. At `off` and `standard` the hold ends with the first answered consultation and no
@@ -623,6 +623,17 @@ time. `guard` adds a closed set of its own decisions in front of the count, desc
 [guard rules](#guard-rules); it calls no model in this version. The count is per task and starts over
 when a consultation answers. The [checkpoint](#advisor-checkpoint) section describes what is held and
 what opens it.
+
+**Guard consult first** is the user's own switch for `guard`, in user scope only and in
+`~/.pi/agent/delegation-policy.guard.json`. When it is on, every `guard` task starts held: its first
+change waits until an Advisor consultation answers, and the guard count applies after that answer. It
+changes nothing in `strict`, `standard` or `off`, it acts in no subagent child, and it holds nothing
+when the session has no valid Advisor and no launcher, because a hold with no way out is worse than
+none. It opens no consultation by itself and passes no rule, so a hard rule stays refused whatever
+the switch says. The row reads `on · global`, `off · default`, or `Invalid · off` when the file
+cannot be read, and `/delegate status` reports it as `guard-consult=on (global)`. It has no session
+copy: **Apply changes** and **Save effective configuration as defaults** both write it, and a file
+this version cannot read is reported instead of replaced.
 
 With Advisor off the level has no effect. It is resolved from a session override first, then from the
 entry for the current main model, then from the global level, then from `standard`, and a task keeps
@@ -715,9 +726,12 @@ A consultation answers when the details of its result show that at least one Adv
 proves nothing, because both launchers return text when they fail. In `tool` launch those are the
 details `consult_advisor` writes. In `role` launch it is a single or `tasks` launch whose every child
 is a configured Advisor, with `async: false`, read from the details of the host's `subagent` tool: a
-child that ended cleanly, was not cut short and left output of its own. A launch that names a
-`workflow` reports a different result shape, so it counts as a change like any other unknown call
-and never opens the checkpoint; a single Advisor launch is enough to answer. Those details were read against `pi-subagents`
+child that ended cleanly, was not cut short and left output of its own. A launch that names
+`workflow: "parallel"` is a consultation too, and the children the host starts for it belong to the
+same call when it runs in the foreground; a workflow script that chooses its own children is not
+read, so it counts as a change like any other unknown call. In the background the host reports a
+different parent id for each child, so those children count as changes like any other launch and can
+reach the hold in the middle of the call. A single foreground Advisor launch is enough to answer. Those details were read against `pi-subagents`
 `0.89.1`. A result in a shape this version does not recognize opens nothing and keeps the hold. An
 omitted `async` counts as background, whatever `asyncByDefault` says in `pi-subagents`, and
 so does an `async: false` that `pi-subagents` rewrites to a background launch with
@@ -944,6 +958,8 @@ What it costs and what it does not:
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7: intensity, preference, the
   tri-state ordinary roles, `uiDesign`, the thinking policies, and the ContextShunt configuration.
+- Guard settings: `delegation-policy.guard.json`, schema 1 with `consultBeforeFirstChange`. Missing
+  means off, an unreadable or invalid file is reported and means off, and writing off removes it.
 - Launch correction mode: `delegation-policy.launch-correction.json`, schema 1 with `mode`. Missing
   or invalid state means `correct`. Older versions ignore it.
 - Advisor nudge level: `delegation-policy.advisor-level.json`, schema 1 with `level`, optional

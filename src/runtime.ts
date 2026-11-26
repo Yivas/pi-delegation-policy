@@ -51,6 +51,7 @@ import {
   readAdvisorFilters,
   type AdvisorFilters,
 } from "./advisor-filter-mode.ts";
+import { guardModeDiagnostic, readGuardMode, type LoadedGuardMode } from "./guard-mode.ts";
 import {
   type AdvisorSetting,
   MODEL_ROLES,
@@ -100,6 +101,8 @@ export type RuntimeState = {
   advisorLevelInvalid?: boolean;
   /** Who writes a consultation brief: the extension from what it observed, or the agent. */
   advisorContextMode?: AdvisorContextMode;
+  /** The user's own `guard` settings, in user scope only, as the companion holds them. */
+  guardMode?: LoadedGuardMode;
   /** "provider/id" of the host's current main model; absent when it cannot be named. */
   mainModel?: string;
   /** The reminder companion was unreadable or invalid, so the mode above is suspended. */
@@ -331,6 +334,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
   const roleFiles = await readRoleEntries(path);
   const advisorReading = await readAdvisorRead(path);
   const advisorFilterFile = await readAdvisorFilters(path);
+  const guard = await readGuardMode(path);
   const restored = restoreSessionStateWithDiagnostics(ctx.sessionManager.getBranch());
   const state: RuntimeState = {
     effective: resolveDelegateState(loaded.defaults, restored.session, roleFiles.entries),
@@ -348,6 +352,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
       ...(advisorFilterDiagnostic(advisorFilterFile.invalid)
         ? [advisorFilterDiagnostic(advisorFilterFile.invalid)!]
         : []),
+      ...(guardModeDiagnostic(guard.invalid) ? [guardModeDiagnostic(guard.invalid)!] : []),
       ...restored.diagnostics,
       ...(admissions.diagnostic ? [admissions.diagnostic] : []),
       ...(correction.diagnostic ? [correction.diagnostic] : []),
@@ -370,6 +375,7 @@ export async function loadRuntime(ctx: ExtensionContext): Promise<RuntimeState> 
     advisorLevelFile: level.file,
     advisorLevelInvalid: level.invalid,
     advisorContextMode: level.file.context ?? DEFAULT_ADVISOR_CONTEXT_MODE,
+    guardMode: guard,
     ...(mainModel === undefined ? {} : { mainModel }),
     modelStatuses: new Map(),
     runtimeErrors: [],
@@ -387,6 +393,7 @@ const SIDE_SETTING_SCOPES: ReadonlySet<string> = new Set([
   "advisor-reminder",
   "advisor-level",
   "role-entries",
+  "guard",
 ]);
 
 export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): void {

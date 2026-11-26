@@ -28,6 +28,7 @@ import {
 } from "../src/advisor-gate.ts";
 import { getGlobalConfigPath, isAbsentPathError, writeConfig } from "../src/config.ts";
 import { getAdvisorLevelPath, readAdvisorLevelFile } from "../src/advisor-level.ts";
+import { getGuardModePath } from "../src/guard-mode.ts";
 import { getEventLogPath } from "../src/advisor-log.ts";
 import { DelegatePanel, type DelegatePanelOptions } from "../src/delegate-panel.ts";
 import piDelegationPolicy from "../src/index.ts";
@@ -1185,6 +1186,12 @@ test("a child of a consultation is exempt only with the profile the host resolve
     // riding on the same call: both are changes like any other call, so the hold refuses them.
     for (const [why, child] of [
       ["another model", advisorChild(parent, "task-1", { model: "example/small:high" })],
+      // The host appends a thinking level, and only a level this product knows is that suffix:
+      // anything else is part of the model id, so it names no slot and is no part of the call.
+      [
+        "a suffix that is not a thinking level",
+        advisorChild(parent, "task-1", { model: "example/advisor:loquesea" }),
+      ],
       ["an ordinary profile", advisorChild(parent, "task-1", { agent: "worker" })],
       ["no model at all", advisorChild(parent, "task-1", { model: undefined })],
     ] as const) {
@@ -1205,12 +1212,16 @@ test("a failed workflow result proves nothing, so it lifts no hold", async () =>
     for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
       await harness.toolCall("edit", SMALL_EDIT);
     assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
-    await harness.toolCall("subagent", PARALLEL_ADVISORS);
-    const parent = harness.lastCall()!;
     // The host turns a logical failure into a thrown tool error, and an errored result carries no
     // details: nothing there proves an Advisor started, so the hold stays and nothing is reported.
-    await harness.toolResult("subagent", true, { toolCallId: parent, details: {} });
-    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    // Two of them in a row are what the operator notice is made of, so a reader that took one for a
+    // launch that had failed would warn here and tell the model the way out looks broken.
+    for (const attempt of [1, 2]) {
+      await harness.toolCall("subagent", PARALLEL_ADVISORS);
+      const parent = harness.lastCall()!;
+      await harness.toolResult("subagent", true, { toolCallId: parent, details: {} });
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, `attempt ${attempt}`);
+    }
     assert.equal(
       harness.notifications.filter(({ type }) => type === "warning").length,
       0,
@@ -1478,9 +1489,12 @@ function createPanelHarness(
   return { panel, done };
 }
 
-/** The nudge row sits five rows above the last one: launch correction, then the four actions. */
+/**
+ * The nudge row sits six rows above the last one: the guard consult switch, launch correction, then
+ * the four actions.
+ */
 function focusNudgeRow(panel: InteractiveComponent): void {
-  sendKeys(panel, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
+  sendKeys(panel, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
 }
 
 test("the panel shows the nudge level, stores it on Apply and leaves it alone on Cancel", async () => {
@@ -1647,4 +1661,112 @@ test("a nudge level saved before a failing defaults step is named, not denied", 
     /Could not save global defaults\. The Advisor nudge level \(strict\) was saved\./,
   );
   assert.doesNotMatch(view, /Nothing was changed on disk/);
+});
+
+/** The guard companion: the user's own switch, read when the task opens. */
+async function writeGuard(consultBeforeFirstChange: boolean): Promise<void> {
+  await writeFile(
+    getGuardModePath(getGlobalConfigPath()),
+    JSON.stringify({ schemaVersion: 1, consultBeforeFirstChange }),
+  );
+}
+
+test("guard holds nothing before the first change unless the user asks for it", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "guard" });
+    await harness.prompt();
+    // Off is the default, and the switch is what holds: the level alone lets the first change run.
+    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
+  });
+});
+
+test("the guard switch holds the first change until a consultation answers", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "guard" });
+    await writeGuard(true);
+    await harness.prompt();
+    const held = await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal(held?.block, true);
+    assert.equal(held?.reason, gateMessage("role"));
+    // Reading is never affected by any hold.
+    assert.equal(await harness.toolCall("read", { path: "src/a.ts" }), undefined);
+    await harness.toolCall("subagent", FOREGROUND_CONSULT);
+    const parent = harness.lastCall()!;
+    await harness.toolResult("subagent", false, {
+      toolCallId: parent,
+      details: ANSWERED_ROLE_DETAILS,
+    });
+    assert.equal(
+      await harness.toolCall("edit", SMALL_EDIT),
+      undefined,
+      "the answer opens the hold",
+    );
+    // The count of the level applies after that answer: the 6th change since it is held again.
+    for (let index = 2; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+  });
+});
+
+test("the guard switch leaves strict alone", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await writeGuard(true);
+    await harness.prompt();
+    // It is a `guard` switch: `strict` keeps its own count and holds no first change.
+    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
+    for (let index = 2; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+  });
+});
+
+/**
+ * A corrupt companion is information, not a broken axis: the switch resolves to its default, which is
+ * off, and nothing else about the level, delegation or the Advisor changes.
+ */
+test("an invalid guard file turns the switch off without breaking either axis", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "guard" });
+    await writeFile(getGuardModePath(getGlobalConfigPath()), "{ not json");
+    await harness.prompt();
+    assert.equal(
+      await harness.toolCall("edit", SMALL_EDIT),
+      undefined,
+      "an unreadable file leaves the switch off, so the task is not held",
+    );
+    // `/delegate status` is the line that reports every token, and it is answered by the same
+    // runtime the hooks use.
+    await harness.command("status");
+    const status = harness.notifications.at(-1)?.message ?? "";
+    assert.doesNotMatch(status, /D:ERR|A:ERR/, "neither axis is reported broken");
+    assert.match(status, /Guard settings are invalid and were ignored/);
+    assert.match(status, /guard-consult=off \(invalid\)/);
+    // The footer keeps both axes alive too.
+    assert.equal(harness.status(), "D:NORM A:ON");
+    // The level itself is untouched: it still holds at its own count.
+    for (let index = 2; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+  });
+});
+
+test("the guard switch acts in no subagent child", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "guard" });
+    await writeGuard(true);
+    const previous = process.env.PI_SUBAGENT_CHILD;
+    process.env.PI_SUBAGENT_CHILD = "1";
+    try {
+      await harness.prompt();
+      assert.equal(
+        await harness.toolCall("edit", SMALL_EDIT),
+        undefined,
+        "a child has no user to ask and no task of its own to hold",
+      );
+    } finally {
+      if (previous === undefined) delete process.env.PI_SUBAGENT_CHILD;
+      else process.env.PI_SUBAGENT_CHILD = previous;
+    }
+  });
 });

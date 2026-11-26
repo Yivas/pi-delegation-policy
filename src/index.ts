@@ -159,6 +159,7 @@ import {
   OPTIONAL_ROLE_FAMILIES,
   ROLE_LABELS,
   type OptionalRoleEntryKey,
+  THINKING_LEVEL_NAMES,
   THINKING_ROLE_KEYS,
   type ThinkingPolicy,
 } from "./types.ts";
@@ -416,8 +417,12 @@ function advisorProfileFor(
   return validAdvisors(state).find(({ setting, index }) => {
     if (advisorAgentNameFor(state, setting, index) !== agent) return false;
     const reference = `${setting.provider}/${setting.model}`;
-    // The host appends the thinking level to the model it runs.
-    return model === reference || model.startsWith(`${reference}:`);
+    if (model === reference) return true;
+    // The host appends the thinking level to the model it runs, and only a level this product knows
+    // is that suffix: anything else is part of the id, so it names no slot.
+    if (!model.startsWith(`${reference}:`)) return false;
+    const level = model.slice(reference.length + 1);
+    return (THINKING_LEVEL_NAMES as readonly string[]).includes(level);
   })?.setting;
 }
 
@@ -704,6 +709,15 @@ function entryStatusToken(key: OptionalRoleEntryKey): string {
   return `${family === "uiDesign" ? "ui-design" : family}${slot ? `-${slot}` : ""}`;
 }
 
+/**
+ * The user's own switch, in user scope only: hold the first change of every `guard` task until an
+ * Advisor consultation answers. It moves nothing by itself and it is inert with no consultation path,
+ * because the hold it asks for is the one the level already knows how to open.
+ */
+function guardConsultEnabled(state: RuntimeState): boolean {
+  return state.guardMode?.mode.consultBeforeFirstChange === true;
+}
+
 export function statusText(state: RuntimeState): string {
   const { effective } = state;
   const context = effective.contextShunt;
@@ -725,6 +739,7 @@ export function statusText(state: RuntimeState): string {
     `advisor-launch=${effective.advisorLaunch} (${effective.source.advisorLaunch})`,
     `advisor-level=${state.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL} (${state.advisorLevel?.source ?? "default"})`,
     `advisor-context=${state.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE}`,
+    `guard-consult=${guardConsultEnabled(state) ? "on" : "off"} (${state.guardMode?.invalid ? "invalid" : guardConsultEnabled(state) ? "global" : "default"})`,
     `main-model=${state.mainModel ?? "unknown"}`,
     ...effective.advisors.map(
       (entry, index) =>
@@ -2428,7 +2443,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       if (source === "interactive" || source === "rpc") {
         // The level belongs to the task: a change made while it runs reaches the next one only.
         const child = isSubagentChildProcess();
-        const level = child ? undefined : (await refreshRuntime(ctx)).advisorLevel?.level;
+        const state = child ? undefined : await refreshRuntime(ctx);
+        const level = state?.advisorLevel?.level;
         advisorEpoch += 1;
         advisorExecutor.cancel();
         taskToken = randomUUID();
@@ -2442,9 +2458,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         // Only the two levels that hold changes count them: `standard` states a periodic note and
         // `off` says nothing, so neither has a gate to open. A `??` prompt is the user asking for a
         // consultation before the first change, at any level: that task starts with the gate held.
+        // The user's switch asks for the same hold, but only in `guard`, and it still counts after the
+        // answer, because the level counts.
         const forced = observation?.forced ?? false;
-        if (forced || (level !== undefined && holdsChanges(level)))
-          advisorGate.openTask(forced, level !== undefined && holdsChanges(level));
+        const consultingFirst =
+          level === "guard" && state !== undefined && guardConsultEnabled(state);
+        const held = forced || consultingFirst;
+        if (held || (level !== undefined && holdsChanges(level)))
+          advisorGate.openTask(held, level !== undefined && holdsChanges(level));
       }
     });
     pi.on("context_with_system", async (event, ctx) => {
@@ -2641,7 +2662,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // An attempt that runs ends the periodic note for this task; whether it answers is the
       // result's business. A launch refused above attempted nothing.
       if (consulted) advisorReminder.noteConsultAttempt();
-      if (launchKind !== undefined) consultationCalls.set(event.toolCallId, launchKind);
       const manualContext =
         (latestRuntime?.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE) === "manual";
       // The `guard` level decides on its own rules first, before anything is counted and before any
@@ -2693,6 +2713,11 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // matched. The checkpoint's refusal names the consultation and nothing else.
       if (rule?.action === "block") return { block: true, reason: rule.message };
       if (decision?.action === "block") return { block: true, reason: decision.message };
+      // The id is recorded after the background cut, the rules and the count gate, so none of those
+      // refusals can leave an entry behind. The launch check's own refusal still comes below, and the
+      // entry it leaves is inert: a refused launch starts no child, so nothing can claim the id, and
+      // the map is cleared when the task ends.
+      if (launchKind !== undefined) consultationCalls.set(event.toolCallId, launchKind);
       if (check) {
         // A control or management action launches nothing, so it records no `launch` event.
         if (check.launch)

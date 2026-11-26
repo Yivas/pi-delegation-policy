@@ -73,6 +73,7 @@ import {
   trimAdvisorFilter,
   type AdvisorFilterSaveResult,
 } from "./advisor-filter-mode.ts";
+import { type GuardModeSaveResult } from "./guard-mode.ts";
 
 const USE_GLOBAL_DEFAULT = "Use global default";
 const DISABLE_FOR_SESSION = "Disable for this session";
@@ -108,6 +109,7 @@ const FIELD_IDS = [
   "advisor2",
   "advisor3",
   "advisorLevel",
+  "guardConsult",
   "launchCorrection",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
@@ -245,6 +247,7 @@ type PanelMode =
       minimum?: ThinkingLevelName;
     }
   | { kind: "continuity"; selected: number }
+  | { kind: "guard-consult"; selected: number }
   | { kind: "discard-confirm"; selected: number };
 
 type ThinkingAction = "inherit" | "unset" | "fixed" | "range";
@@ -310,6 +313,12 @@ export interface DelegatePanelOptions {
   advisorLevelInvalid?: boolean;
   /** Stores the global nudge level; Apply and Save both write a changed value first. */
   onSaveAdvisorLevel?: (level: AdvisorLevel) => Promise<AdvisorLevelSaveResult>;
+  /** User scope only: hold the first change of every `guard` task until a consultation answers. */
+  guardConsult?: boolean;
+  /** The guard companion is unreadable or invalid, so the switch shown is off and not a choice. */
+  guardConsultInvalid?: boolean;
+  /** Stores the guard settings; Apply and Save both write a changed value before their own step. */
+  onSaveGuardConsult?: (consult: boolean) => Promise<GuardModeSaveResult>;
   /** Installed user packages that pass the identity check, offered as provider extensions. */
   extensionCandidates?: readonly ProviderPackage[];
   /** Providers that an extension registered in this session; only these offer the step. */
@@ -372,6 +381,7 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   advisorLaunch: "Advisor launch",
   advisorMode: "Advisor mode",
   advisorLevel: "Advisor nudge",
+  guardConsult: "Guard consult first",
   launchCorrection: "Launch correction",
 };
 
@@ -432,9 +442,19 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
   advisorLaunch:
     "Role asks the main agent to launch; tool uses explicit consult_advisor. Neither launches from hooks.",
   advisorLevel: NUDGE_DESCRIPTION,
+  guardConsult:
+    "Holds the first change of every guard task until an Advisor consultation answers. Strict and the other levels are not affected.",
   launchCorrection:
     "Global for every session; Apply or Save stores it. Block refuses the launches the check would correct, to measure the original behavior.",
 };
+
+const GUARD_CONSULT_DESCRIPTION =
+  "Global for every session, not a session setting: Apply or Save stores it in delegation-policy.guard.json. When it is on, a guard task starts held, so its first change waits for an Advisor consultation that answers, and the guard count applies after it. Strict is unchanged, and with no valid Advisor and launcher nothing is held.";
+/** Offered in this order: Enter keeps the default, and the hold is the deliberate choice. */
+const GUARD_CONSULT_CHOICES = [
+  "off — hold nothing before the first change (default)",
+  "on — hold the first change of every guard task until a consultation answers",
+] as const;
 
 const CORRECTION_DESCRIPTION =
   "Global for every session, not a session setting: Apply or Save stores it in delegation-policy.launch-correction.json. Correct is the default; block is a measurement mode that refuses the launches the check would correct, keeping the pre-correction behavior.";
@@ -447,7 +467,8 @@ const NUDGE_LEVELS: readonly AdvisorLevel[] = ["standard", "strict", "guard", "o
 const NUDGE_CHOICES: Record<AdvisorLevel, string> = {
   standard:
     "standard: the written rules and a short note every few tool results. It holds nothing unless a prompt starts with ?? (default)",
-  guard: "guard: the same as strict in this version. A later version adds a watcher on top of it",
+  guard:
+    "guard: its own rules first, then the same count as strict. With consult-before-first-change on, every guard task starts held",
   strict:
     "strict: warns after a few changes with no consultation, then holds every change until an Advisor answers. Reading always works",
   off: "off: only the written rules, with no note. It holds nothing unless a prompt starts with ??",
@@ -491,6 +512,12 @@ function roleEntriesFailureText(result: RoleEntriesSaveResult): string {
   return result === "unknown-state"
     ? "Optional role entries file is unreadable or invalid; fix or remove delegation-policy.roles.json, then retry."
     : "Could not save the optional role entries.";
+}
+
+function guardConsultFailureText(result: GuardModeSaveResult): string {
+  return result === "unknown-state"
+    ? "Guard settings file is unreadable or invalid; fix or remove delegation-policy.guard.json, then retry."
+    : "Could not save the consult-before-first-change switch.";
 }
 
 function advisorLevelFailureText(result: AdvisorLevelSaveResult): string {
@@ -661,11 +688,17 @@ export class DelegatePanel implements Component, Focusable {
   private advisorLevel: AdvisorLevel | undefined;
   private draftAdvisorLevel: AdvisorLevel;
   private readonly advisorLevelInvalid: boolean;
+  private readonly onSaveGuardConsult: DelegatePanelOptions["onSaveGuardConsult"];
+  /** As the companion holds it: the switch is user scope only, so there is no session copy. */
+  private guardConsult: boolean;
+  private draftGuardConsult: boolean;
+  private readonly guardConsultInvalid: boolean;
   /** Global steps already on disk from this editor, so a later failure never denies them. */
   private readonly savedGlobals = new Map<
     | "admissions"
     | "launchCorrection"
     | "advisorLevel"
+    | "guardConsult"
     | "roleEntries"
     | "advisorRead"
     | "advisorFilter",
@@ -728,6 +761,10 @@ export class DelegatePanel implements Component, Focusable {
     this.advisorLevel = options.advisorLevel;
     this.draftAdvisorLevel = options.advisorLevel ?? DEFAULT_ADVISOR_LEVEL;
     this.advisorLevelInvalid = options.advisorLevelInvalid ?? false;
+    this.onSaveGuardConsult = options.onSaveGuardConsult;
+    this.guardConsult = options.guardConsult ?? false;
+    this.draftGuardConsult = this.guardConsult;
+    this.guardConsultInvalid = options.guardConsultInvalid ?? false;
   }
 
   get focused(): boolean {
@@ -770,6 +807,11 @@ export class DelegatePanel implements Component, Focusable {
 
   private advisorLevelDirty(): boolean {
     return this.draftAdvisorLevel !== (this.advisorLevel ?? DEFAULT_ADVISOR_LEVEL);
+  }
+
+  private guardConsultDirty(): boolean {
+    if (!this.onSaveGuardConsult) return false;
+    return this.draftGuardConsult !== this.guardConsult;
   }
 
   private roleEntriesDirty(): boolean {
@@ -836,6 +878,7 @@ export class DelegatePanel implements Component, Focusable {
       this.admissionsDirty() ||
       this.launchCorrectionDirty() ||
       this.advisorLevelDirty() ||
+      this.guardConsultDirty() ||
       this.roleEntriesDirty() ||
       this.advisorReadDirty() ||
       this.advisorFilterDirty()
@@ -925,6 +968,7 @@ export class DelegatePanel implements Component, Focusable {
     else if (this.mode.kind === "enum") this.handleEnumInput(data);
     else if (this.mode.kind === "correction") this.handleCorrectionInput(data);
     else if (this.mode.kind === "nudge") this.handleNudgeInput(data);
+    else if (this.mode.kind === "guard-consult") this.handleGuardConsultInput(data);
     else if (this.mode.kind === "provider") this.handleProviderInput(data);
     else if (this.mode.kind === "advisor-read") this.handleAdvisorReadInput(data);
     else if (this.mode.kind === "extension") this.handleExtensionInput(data);
@@ -962,6 +1006,7 @@ export class DelegatePanel implements Component, Focusable {
     if (mode.kind === "enum") return this.renderEnum(width, budget, mode);
     if (mode.kind === "correction") return this.renderCorrection(width, budget, mode);
     if (mode.kind === "nudge") return this.renderNudge(width, budget, mode);
+    if (mode.kind === "guard-consult") return this.renderGuardConsult(width, budget, mode);
     if (mode.kind === "provider") return this.renderProvider(width, budget, mode);
     if (mode.kind === "advisor-read") return this.renderAdvisorRead(width, budget, mode);
     if (mode.kind === "extension") return this.renderExtension(width, budget, mode);
@@ -1051,18 +1096,20 @@ export class DelegatePanel implements Component, Focusable {
             ? "Delegation policy / Launch correction (global)"
             : this.mode.kind === "nudge"
               ? "Delegation policy / Advisor nudge (global)"
-              : this.mode.kind === "advanced" ||
-                  this.mode.kind === "advanced-reader-enabled" ||
-                  this.mode.kind === "advanced-reader-role" ||
-                  this.mode.kind === "advanced-input"
-                ? "Delegation policy / Context advanced"
-                : this.mode.kind === "advisor-read"
-                  ? `Delegation policy / Advisor ${this.mode.index + 1} reading`
-                  : this.mode.kind === "provider"
-                    ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
-                    : this.mode.kind === "extension"
-                      ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
-                      : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
+              : this.mode.kind === "guard-consult"
+                ? "Delegation policy / Guard consult first (global)"
+                : this.mode.kind === "advanced" ||
+                    this.mode.kind === "advanced-reader-enabled" ||
+                    this.mode.kind === "advanced-reader-role" ||
+                    this.mode.kind === "advanced-input"
+                  ? "Delegation policy / Context advanced"
+                  : this.mode.kind === "advisor-read"
+                    ? `Delegation policy / Advisor ${this.mode.index + 1} reading`
+                    : this.mode.kind === "provider"
+                      ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
+                      : this.mode.kind === "extension"
+                        ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
+                        : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
     const status = this.working ?? (this.isDirty() ? "Modified" : "");
     const gap = Math.max(1, width - visibleWidth(modeLabel) - visibleWidth(status));
     const statusText = this.theme.fg("warning", status);
@@ -1187,6 +1234,14 @@ export class DelegatePanel implements Component, Focusable {
       return this.advisorLevelInvalid && !this.advisorLevelDirty()
         ? "Invalid · standard"
         : `${this.draftAdvisorLevel} · ${this.advisorLevel === undefined ? "default" : "global"}`;
+    // An unreadable companion changes nothing by itself: the level behaves as it does with the switch
+    // off, and the row says that is not a choice the user made until a different value is staged.
+    if (field === "guardConsult")
+      return this.guardConsultInvalid && !this.guardConsultDirty()
+        ? "Invalid · off"
+        : this.draftGuardConsult
+          ? "on · global"
+          : "off · default";
     if (field === "launchCorrection")
       return this.draftLaunchCorrection === "block"
         ? "block · global · measurement"
@@ -1518,6 +1573,14 @@ export class DelegatePanel implements Component, Focusable {
         }`,
         "session or model override: /delegate advisor level",
       ];
+    if (field === "guardConsult")
+      return [
+        "built-in off",
+        `global ${
+          this.guardConsultInvalid ? "unreadable or invalid" : this.guardConsult ? "on" : "off"
+        }`,
+        "not a session setting",
+      ];
     if (field === "launchCorrection")
       return [
         `built-in ${DEFAULT_LAUNCH_CORRECTION_MODE}`,
@@ -1682,6 +1745,25 @@ export class DelegatePanel implements Component, Focusable {
    * Reading is a capability change on a profile whose input is untrusted, so it is offered as an
    * explicit step after the model and never implied by configuring an Advisor.
    */
+  private handleGuardConsultInput(data: string): void {
+    if (this.mode.kind !== "guard-consult") return;
+    const count = GUARD_CONSULT_CHOICES.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      // Without a writer the switch would show in the row and never reach the file, so it is refused.
+      if (!this.onSaveGuardConsult) {
+        this.message = { kind: "error", text: noWriterText("delegation-policy.guard.json") };
+        this.mode = { kind: "settings" };
+        return;
+      }
+      this.draftGuardConsult = this.mode.selected === 1;
+      this.mode = { kind: "settings" };
+    }
+  }
+
   private handleAdvisorReadInput(data: string): void {
     if (this.mode.kind !== "advisor-read") return;
     if (matchesKey(data, "up") || matchesKey(data, "down"))
@@ -1757,6 +1839,25 @@ export class DelegatePanel implements Component, Focusable {
     ]);
     // Reserve the choices first, so a wrapped explanation never hides the selection.
     const description = wrapTextWithAnsi(CORRECTION_DESCRIPTION, width).slice(
+      0,
+      Math.max(0, budget - Math.min(blocks.length, budget)),
+    );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
+  }
+
+  private renderGuardConsult(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "guard-consult" }>,
+  ): string[] {
+    const blocks = GUARD_CONSULT_CHOICES.map((choice, index) => [
+      selectedLine(this.theme, choice, width, index === mode.selected),
+    ]);
+    // Reserve the choices first, so a wrapped explanation never hides the selection.
+    const description = wrapTextWithAnsi(GUARD_CONSULT_DESCRIPTION, width).slice(
       0,
       Math.max(0, budget - Math.min(blocks.length, budget)),
     );
@@ -2284,6 +2385,10 @@ export class DelegatePanel implements Component, Focusable {
         kind: "nudge",
         selected: NUDGE_LEVELS.indexOf(this.draftAdvisorLevel),
       };
+      return;
+    }
+    if (item === "guardConsult") {
+      this.mode = { kind: "guard-consult", selected: this.draftGuardConsult ? 1 : 0 };
       return;
     }
     if (item === "launchCorrection") {
@@ -3109,6 +3214,27 @@ export class DelegatePanel implements Component, Focusable {
   }
 
   /**
+   * The guard switch is user scope only, so Apply and Save both write a changed value before their
+   * own step. A failure stops that step: an unreadable file is reported instead of overwritten.
+   */
+  private async saveGuardConsult(): Promise<GuardModeSaveResult> {
+    let result: GuardModeSaveResult;
+    try {
+      result = (await this.onSaveGuardConsult?.(this.draftGuardConsult)) ?? "failed";
+    } catch {
+      result = "failed";
+    }
+    if (result === "saved" || result === "unchanged") {
+      this.guardConsult = this.draftGuardConsult;
+      this.savedGlobals.set(
+        "guardConsult",
+        `the consult-before-first-change switch (${this.draftGuardConsult ? "on" : "off"})`,
+      );
+    }
+    return result;
+  }
+
+  /**
    * The nudge level is global, so Apply and Save both write a changed value before their own
    * step. A failure stops that step: an unreadable file is reported instead of overwritten.
    */
@@ -3174,6 +3300,18 @@ export class DelegatePanel implements Component, Focusable {
         this.message = {
           kind: "error",
           text: `${advisorLevelFailureText(result)}${
+            savedClause(this.savedGlobalsList()) || " Nothing else was changed."
+          }`,
+        };
+        return false;
+      }
+    }
+    if (this.guardConsultDirty()) {
+      const result = await this.saveGuardConsult();
+      if (result !== "saved" && result !== "unchanged") {
+        this.message = {
+          kind: "error",
+          text: `${guardConsultFailureText(result)}${
             savedClause(this.savedGlobalsList()) || " Nothing else was changed."
           }`,
         };

@@ -194,8 +194,13 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /** Windows shim suffixes: the shell runs the same program through `.exe`, `.cmd` or `.bat`. */
 const PROGRAM_SHIM = /\.(?:exe|cmd|bat)$/i;
 
-/** One word of a shell segment, and whether it came from inside quotes. */
-type CommandWord = { text: string; quoted: boolean };
+/**
+ * One word of a shell segment, whether it came from inside quotes, and whether a quote appeared
+ * before its first `=`. The last distinction is what tells an assignment from a program name:
+ * `f="x"` is an assignment whose value is quoted, while `"f=1"`, `f"=1"` and `"f"=1` are single
+ * words the shell reads as a program name, whatever they look like once the quotes are removed.
+ */
+type CommandWord = { text: string; quoted: boolean; quoteBeforeAssignment: boolean };
 
 export function classifyToolCall(toolName: string, input: unknown): ToolCallFacts {
   const name = toolName.toLowerCase();
@@ -344,6 +349,9 @@ function isOption(word: string, option: string): boolean {
  * a backtick build a line this reader cannot account for, so those stay commands.
  */
 function isLeadingNoise(word: CommandWord): boolean {
+  // A quote before the first `=` means the name part is not a plain name, so the shell reads the
+  // word as a program name and assigns nothing.
+  if (word.quoteBeforeAssignment) return false;
   const assignment = ASSIGNMENT.exec(word.text);
   if (!assignment) return false;
   const value = word.text.slice(assignment[0].length);
@@ -385,13 +393,15 @@ function splitSegments(commandLine: string): CommandWord[][] {
   let words: CommandWord[] = [];
   let text = "";
   let quoted = false;
+  let quoteBeforeAssignment = false;
   let quote: string | undefined;
 
   const pushWord = (): void => {
     if (text === "") return;
-    words.push({ text, quoted });
+    words.push({ text, quoted, quoteBeforeAssignment });
     text = "";
     quoted = false;
+    quoteBeforeAssignment = false;
   };
   const pushSegment = (): void => {
     pushWord();
@@ -409,6 +419,8 @@ function splitSegments(commandLine: string): CommandWord[][] {
       continue;
     }
     if (character === '"' || character === "'") {
+      // A quote that opens before any `=` quotes the name part, so the word is no assignment.
+      if (!text.includes("=")) quoteBeforeAssignment = true;
       quote = character;
       continue;
     }

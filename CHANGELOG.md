@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Guard consult first**, a user switch, off by default: when it is on, every `guard` task starts
+  held, so its first change waits until an Advisor consultation answers, and the guard count applies
+  after that answer. It is user scope only (`delegation-policy.guard.json`, schema 1), changes
+  nothing in `strict`, `standard` or `off`, acts in no subagent child, and holds nothing when this
+  session has no valid Advisor and no launcher, because a hold with no way out is worse than none.
+  It opens no consultation of its own and passes no rule. The row says what it does, and
+  `/delegate status` reports it as `guard-consult=`.
+
 ### Changed
 
 - `guard` no longer behaves exactly like `strict`. Before the count it decides on a closed set of
@@ -52,13 +62,17 @@
 
 - A consultation that names the Advisors in `workflow: "parallel"` is a consultation, not a change.
   Its children are part of the same call, so no rule and no count refuses them and a held task gets
-  all of them. The hold lifts on the host's result as before: one Advisor that answered, read from
-  the per-child results, is enough. A parallel workflow that fails is unobservable by design — the
+  all of them. That exemption covers a foreground workflow: in the background the host reports a
+  different parent id for each child, so those children count as changes like any other launch and
+  can reach the hold in the middle of the call. The hold lifts on the host's result as before: one
+  Advisor that answered, read from the per-child results, is enough. A parallel workflow that fails is unobservable by design — the
   host reports a failed call with no details — so it lifts nothing; the way out is a consultation
   that succeeds, such as a single-Advisor foreground launch.
 - A `bash` line that starts with an assignment whose value is quoted reads as the read it is:
   `f="C:/x.md"; wc -l "$f"` no longer counts as a change. A value that expands or redirects inside
-  its quotes still does: `f="$(touch x)"`, `f="${X}"` and a backtick there remain changes.
+  its quotes still does: `f="$(touch x)"`, `f="${X}"` and a backtick there remain changes. A word
+  that begins inside quotes is not that assignment: `"f=1; rm -rf src"` is one program name the
+  shell cannot find, and the line stays a change.
 
 ## 0.35.0 - 2026-11-25
 

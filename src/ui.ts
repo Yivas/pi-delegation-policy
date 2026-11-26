@@ -12,6 +12,7 @@ import { DelegatePanel, type DelegatePanelResult } from "./delegate-panel.ts";
 import { getProviderAdmissionsPath, writeProviderAdmissions } from "./provider-admissions.ts";
 import { getLaunchCorrectionPath, writeLaunchCorrectionMode } from "./launch-correction-mode.ts";
 import { emptyAdvisorLevelFile, writeAdvisorLevelFile } from "./advisor-level.ts";
+import { writeGuardMode } from "./guard-mode.ts";
 import { writeRoleEntries } from "./role-entries.ts";
 import { trimAdvisorRead, writeAdvisorRead } from "./advisor-read-mode.ts";
 import { trimAdvisorFilter, writeAdvisorFilters } from "./advisor-filter-mode.ts";
@@ -95,6 +96,8 @@ export async function openDelegateEditor(
         launchCorrection: state.launchCorrection,
         advisorLevel: state.advisorLevelFile?.level,
         advisorLevelInvalid: state.advisorLevelInvalid,
+        guardConsult: state.guardMode?.mode.consultBeforeFirstChange,
+        guardConsultInvalid: state.guardMode?.invalid,
         extensionCandidates,
         extensionProviders,
         ...(continuity
@@ -139,6 +142,18 @@ export async function openDelegateEditor(
           if (result === "saved" || result === "unchanged") state.launchCorrection = mode;
           return result;
         },
+        onSaveGuardConsult: async (consult) => {
+          // The writer derives the companion name from this path, as the level and the role entries
+          // do, so the caller passes the config path and never the sidecar path.
+          const result = await writeGuardMode(
+            { consultBeforeFirstChange: consult },
+            getGlobalConfigPath(),
+          );
+          // The file is the only scope this setting has, so the runtime follows the write.
+          if (result === "saved" || result === "unchanged")
+            state.guardMode = { mode: { consultBeforeFirstChange: consult }, invalid: false };
+          return result;
+        },
         onSaveAdvisorLevel: async (level) => {
           // The file also holds the per-model overrides and the brief mode, and a save here only
           // states the global level.
@@ -179,6 +194,7 @@ export async function openDelegateEditor(
           state.advisorLevel = refreshed.advisorLevel;
           state.advisorLevelFile = refreshed.advisorLevelFile;
           state.advisorLevelInvalid = refreshed.advisorLevelInvalid;
+          state.guardMode = refreshed.guardMode;
           state.advisorContextMode = refreshed.advisorContextMode;
           state.mainModel = refreshed.mainModel;
           return result === "success";
