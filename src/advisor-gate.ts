@@ -210,6 +210,24 @@ export function failureRunClause(count: number = GATE_CONSULT_FAILURES): string 
 const WAY_OUT_BROKEN = `${failureRunClause()}, so ask the user and stop rather than calling this again.`;
 
 /**
+ * The clause that says the consultation path looks broken. Every refusal that names a consultation
+ * ends with it once the gate has seen a run of failures, so the model cannot be sent round the same
+ * loop by the count gate and by a rule at once.
+ */
+export function wayOutBrokenClause(): string {
+  return WAY_OUT_BROKEN;
+}
+
+/**
+ * The one sentence that names how this configuration consults. Every refusal of every level uses it,
+ * so the ways out a model is offered cannot drift apart between the count and a rule.
+ */
+export function consultInstruction(launcher: GateLauncher, manualContext = false): string {
+  const toolPath = manualContext ? CONSULT_PATH.toolManual : CONSULT_PATH.tool;
+  return `${CONSULT_NOW}${launcher === "role" ? CONSULT_PATH.role : toolPath}`;
+}
+
+/**
  * `manualContext` is true when the agent, not the host, writes the consultation brief.
  * `wayOutBroken` appends the one clause that tells the model the hold now needs a person; without it
  * the text is byte-identical to the refusal this gate has always sent.
@@ -219,9 +237,7 @@ export function gateMessage(
   manualContext = false,
   wayOutBroken = false,
 ): string {
-  const toolPath = manualContext ? CONSULT_PATH.toolManual : CONSULT_PATH.tool;
-  const path = launcher === "role" ? CONSULT_PATH.role : toolPath;
-  const message = [...PREFIX, `${CONSULT_NOW}${path}`, AFTER];
+  const message = [...PREFIX, consultInstruction(launcher, manualContext), AFTER];
   if (wayOutBroken) message.push(WAY_OUT_BROKEN);
   return message.join("\n");
 }
@@ -369,5 +385,13 @@ export class AdvisorGate {
   get held(): boolean {
     if (!this.open) return false;
     return this.forced || this.changes + 1 >= GATE_HOLD_CHANGES;
+  }
+
+  /**
+   * True while a run of consultations has failed. A read-only view for the refusals of other rules:
+   * they append the same clause, and nothing about it passes a change.
+   */
+  get wayOutIsBroken(): boolean {
+    return this.open && this.wayOutBroken;
   }
 }

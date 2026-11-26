@@ -273,7 +273,8 @@ function isReadSegment(words: readonly CommandWord[]): boolean {
   if (name === "command") return rest.length > 0 && (rest[0] === "-v" || rest[0] === "-V");
   // `uniq INPUT OUTPUT` writes the second file, so it is a change when it names two paths.
   if (name === "uniq") return rest.filter((word) => !word.startsWith("-")).length <= 1;
-  const writers = WRITE_OPTIONS[name];
+  // `Object.hasOwn`, so a program named like a prototype member (`constructor`) owns no entry.
+  const writers = Object.hasOwn(WRITE_OPTIONS, name) ? WRITE_OPTIONS[name] : undefined;
   if (writers && rest.some((word) => writers.some((option) => isOption(word, option))))
     return false;
   // A bare `cd` changes nothing another segment can rely on, and every segment that follows is

@@ -86,7 +86,35 @@ waits for the main agent. Local timeouts do not cap external generation or cost.
 the other advisors' answers, and every reply is untrusted advice.
 
 The `strict` and `guard` Advisor levels hold every state-changing call of a task once several were
-made with no consultation, until an Advisor answers. `standard` only adds a note and `off` does
+made with no consultation, until an Advisor answers. `guard` decides on its own deterministic rules
+before that count, with no model call: a force push, a hard reset, a forced clean, a recursive delete
+of an absolute path, the home directory, a parent or `.git`, a download piped to a shell, a publish or
+pull-request merge, a write to credentials or to this
+extension's own files, and skipping the hooks are refused until the user allows them, while CI
+configuration, Git hooks, `.npmrc`, a lockfile edited by hand, a newly named package and a very long
+command wait for an answered consultation, which opens a pass for that rule and target
+only. Reading always passes, a refusal states its category and no pattern, and no rule acts in a
+subagent child session. The reader is certainty-based, and it cuts both ways: it holds a line
+only when that line is one or more simple commands with plain quotes, no backslash, substitution,
+backtick, here-doc, process substitution, wrapper (`bash -c`, `eval`, `cmd /c`,
+`powershell -Command`, `xargs`, `busybox`, `chroot`, `stdbuf`, `setsid`, `ionice`, `watch`,
+`strace`) or quoted or variable command word. `sudo`, `doas`, `env`, `nice`, `timeout`, `nohup`,
+`time`, `command`, `exec`, `builtin` and the package runners (`npx`, `pnpx`, `bunx`, `npm exec|x`,
+`pnpm exec|dlx`, `yarn exec|dlx`, `bun x`) are transparent with their documented options only: a
+runner is read only in its exact shape, with `-y`/`--yes`/`--no`/`-q`/`--quiet` and `--` allowed in
+its prefix, so an option with a value, an unknown flag or an assignment there makes the line
+uncertain rather than a plain package-manager command. A program run behind a runner is judged by the
+closed hard list only. The hard rules — a force push, a
+hard reset, a forced clean, a recursive delete of an absolute path, the home directory, a parent or
+`.git`, a download piped to a shell, a publish or a pull-request merge, a skipped hook, and a write
+to credentials or to this extension's own files — apply only to those lines. Every line the reader
+cannot read is refused, soft and covered once by an answered consultation for that exact line: a wrapper, an escape or a variable is held, never allowed and
+never a hard refusal, and a command over 1 KiB is held the same way. The write positions are the target of an unquoted `>` or `>>`, every operand of `tee` and `sponge`, the
+last operand of `cp` and `mv`, and the path an `edit` or `write` call names; a shell editor such as
+`vi` or `nano`, or `sed -i`, is not one of them, so rewriting a credential in place is not a hard
+refusal here. A package `publish --dry-run` is not a publish; `gh` and `hub` ignore the flag. Indirection it does not follow — a script the line names, an alias, a variable
+holding the words — evades it: this is an accident
+tripwire in front of the count, not a sandbox, and a hidden line is still a change for the count. `standard` only adds a note and `off` does
 nothing, except that a prompt starting with `??` holds the changes of its task at any level. The
 hold never covers asking the user, the task list or the supervisor channel, nor the wait tool
 recognised by its default name `bg_wait`, so a held task keeps its way to a person; a wait tool the
@@ -146,8 +174,10 @@ Content-free records are written only while a policy block is active. With deleg
 off, no new event is written except in the short window before the next request notices that the policy
 is off. `delegation-policy.events.jsonl` holds policy and consultation metadata plus one `task` counter
 record per main-agent task, one `launch` record per checked subagent call, and one `gate` record per
-task whose gate opened (a `strict` or `guard` task, or any task a `??` prompt opened), with counts
-only. `task` and `consultation` records carry `mainModel` and
+task whose gate opened (a `strict` or `guard` task, or any task a `??` prompt opened), written when
+it ends by a settle, a branch move or shutdown, with counts only and that reason. Its `ruleHits`
+also count `engine-failure` when the guard could not judge a call at all. `passes` counts the calls a consultation pass let through; neither carries the
+call, its command, its path or the text of a refusal. `task` and `consultation` records carry `mainModel` and
 `advisorLevel`, and `consultation` also carries `noArgs` and `contextBytes`, which is `0` in manual
 mode. It never holds questions, briefs, contexts, replies, conversations, project paths, or raw
 errors. It rotates at 256 KiB with one backup,

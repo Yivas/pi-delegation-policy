@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Changed
+
+- `guard` no longer behaves exactly like `strict`. Before the count it decides on a closed set of
+  deterministic rules, with no model call: a force push, a hard reset, a forced clean, a recursive
+  delete of an absolute path, the home directory, a parent, a path built from a variable or `.git`
+  (`rm -rf`), a download piped to
+  a shell, a publish or pull-request merge, a write to
+  credentials or to this extension's own files, and skipping the hooks are refused for the rest of
+  the task until the user allows it. Repeating the call or consulting an Advisor does not lift any of
+  them. A quoted mention is not a call: a commit message that names a flag skips no hook.
+- `guard` also holds these until an answered consultation: CI configuration, Git hooks, `.npmrc`, a
+  lockfile edited by hand, a newly named package and a very long command, plus three
+  failing runs in a row, the same file edited again after failures, and three distinct files edited
+  with no consultation. An answered consultation opens a pass for that exact rule and target for a
+  few calls, and for nothing else.
+- `guard` keeps the count `0.35.0` set, at 3 and 6, and a refused call still moves no counter.
+  Reading always passes, including `diff`, `grep -q` and `git diff --quiet`, whose non-zero exit is
+  not a failing run; a refusal names its category and never a count or a pattern; and no rule acts in
+  a subagent child session.
+- The rules read a line only when it is one they can read with certainty: one or more simple
+  commands, split on unquoted `;`, `|`, `&&`, `||`, `&` and newlines, with plain quotes and no
+  backslash, substitution, backtick, here-doc, process substitution, wrapper (`bash -c`, `eval`,
+  `cmd /c`, `powershell -Command`, `xargs`) or quoted or variable command word. The hard rules apply
+  only there. Everything else that changes state is a soft `long-command` refusal — "a line this
+  reader cannot judge with certainty" — with a single pass for that exact line once a consultation
+  answers: a wrapper, a substitution or a variable is held, never allowed and never hard. A command
+  over 1 KiB is not read at all and is held the same way. The prefixes that only set up the command
+  behind them — `sudo`, `doas`, `env`, `nice`, `timeout`, `nohup`, `time`, `command`, `exec`,
+  `builtin`, and the package runners — are transparent with their documented options only, and a
+  runner is read only in its exact shape with `-y`/`--yes`/`--no`/`-q`/`--quiet` and `--` allowed in
+  its prefix; the exact prefix and launcher lists are in the guard section of the wiki. Every refusal
+  says which exit it leaves open.
+- Once two consultations in a row reach an Advisor and fail, a refusal by any rule that names a
+  consultation ends with "ask the user and stop", like the count gate's refusal, while the rules only
+  the user can allow keep their own text.
+- When the session cannot consult at all, the rules that a consultation would lift refuse nothing,
+  because that hold would have no way out, while the rules only the user can allow still refuse.
+- One `gate` record is written per watched task when it ends by a settle, a branch move or shutdown,
+  and it adds `ruleHits`, the refusals of each `guard` rule by closed code, and `passes`, the calls a
+  consultation pass let through.
+- A package `publish` with `--dry-run` is not a publish, and a `gate` record counts a broken guard
+  under its own `engine-failure` code instead of mixing it with a line the reader could not read.
+- The guard report script in the repository (not in the package) summarises the `gate` records of a
+  log file and its rotated predecessor
+  without printing any of their content.
+
 ## 0.35.0 - 2026-11-25
 
 ### Changed

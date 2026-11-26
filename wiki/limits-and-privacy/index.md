@@ -103,7 +103,8 @@ reminder setting, which is now read only as a fallback when the level file does 
 Advisor off it has no effect. `off` leaves the written rules alone, `standard` adds a note every few
 tool results and refuses nothing, and `strict` holds every change of a task once several were made
 with no consultation, until an Advisor answers or the operator changes the level and sends a new
-prompt, or cancels the task. `guard` behaves like `strict` in this version.
+prompt, or cancels the task. `guard` adds its own deterministic rules in front of that count, listed
+under [guard rules](/configuration/#guard-rules), and calls no model in this version.
 [Configuration](/configuration/#advisor-nudge-level) describes the levels, the precedence and the
 file.
 
@@ -141,6 +142,11 @@ its way to a person; a wait tool the host renamed counts as a change like any ot
 never refuses when a consultation is not possible, and a `??` at the start of a prompt holds the
 changes of that task at any level, as long as an Advisor is available. At `off` and `standard` that hold ends with the first
 answer and no count starts afterwards.
+
+In `guard` the checkpoint is preceded by its own rules: a closed set only the user can lift, a closed
+set an answered consultation lifts with a pass for the exact rule and target, and three trajectory
+holds. A refusal names the category and never a count or a pattern, and no rule acts in a subagent
+child session. [Configuration](/configuration/#guard-rules) lists them.
 
 It is a nudge, not a security boundary or a sandbox. The extension decides what changes state from the
 tool name and the text of a shell command, which it never runs, and that reading can be wrong in both
@@ -294,8 +300,13 @@ and `launch` records repeat the policy hash they ran under. A `task` record also
 the exact `provider/id` key or `null`, and `advisorLevel`. A `consultation` record also carries
 `mainModel`, `advisorLevel`, `noArgs`, which is true when the model passed no question, brief or
 evidence, and `contextBytes`, which is `0` in manual mode. One `gate` record is written per task whose
-gate opened, which is a `strict` or `guard` task or any task a `??` prompt opened: `changes` (counted since the last answered consultation), `totalChanges`,
-`holds` (refused changes), `answers`, `failures`, `notes` (notes presented), `mainModel` and
+gate opened, which is a `strict` or `guard` task or any task a `??` prompt opened, including a task
+that ended by a branch move or by shutdown: `endReason` (`settled`, `branch-change` or `shutdown`),
+`changes` (counted since the last answered consultation), `totalChanges`,
+`holds` (refused changes), `answers`, `failures`, `ruleHits` (refusals by `guard` rule, by closed
+code, a code that never fired is absent; `engine-failure` is the code for a guard that could not judge
+the call at all), `passes` (calls a consultation pass let through), `notes`
+(notes presented), `mainModel` and
 `advisorLevel`. Every field is an enum, a boolean, a
 number or a bounded identifier such as the policy
 hash and model keys. `advisorConsults` counts attempts: a
@@ -311,7 +322,9 @@ in-flight filesystem operation may finish later, but starts no further operation
 predecessor, bounded to the last 4 MiB of each, and reports allowed launches per role plus a refusal
 count. The tail can cut a line, which is skipped, so the report may undercount and never invents a
 record; a missing or unreadable log reports `launches=none recorded`. Reading it changes no file and
-touches no launch.
+touches no launch. The guard report script in the repository is the other reader: it summarises the `gate` records of
+a log file and its rotated predecessor — tasks by end reason and the counters, `ruleHits` included —
+and prints nothing else from the log.
 
 No network telemetry is sent; model identifiers can still be sensitive.
 

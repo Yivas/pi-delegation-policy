@@ -56,7 +56,7 @@ import {
   type LaunchChildRole,
   type SubagentLaunchCheck,
 } from "./launch-guard.ts";
-import { AdvisorLog, type TaskSummary } from "./advisor-log.ts";
+import { AdvisorLog, type GateEndReason, type TaskSummary } from "./advisor-log.ts";
 import {
   AdvisorReminderState,
   isSubagentChildProcess,
@@ -69,7 +69,9 @@ import {
   failureEvidence,
   GATE_CONSULT_FAILURES,
   type ConsultationOutcome,
+  type GateReport,
 } from "./advisor-gate.ts";
+import { GuardRules, type GuardDecision, type GuardRuleReport } from "./guard-rules.ts";
 import { classifyToolCall, type ToolCallFacts } from "./state-change.ts";
 import {
   ADVISOR_QUESTION_MAX_BYTES,
@@ -879,6 +881,39 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const readConsults = new Set<string>();
     // Notes this task was shown, recorded when it closes and never with their text.
     let gateNotes = 0;
+    // The deterministic rules of the `guard` level: free, decided before the count, and inert in a
+    // child session because there is no user to ask there and no Advisor to answer.
+    const guardRules = new GuardRules();
+    /**
+     * Close the gate of the task that just ended, with the rule counters of the `guard` level. A
+     * level that never opened a task has nothing to close and writes nothing.
+     */
+    const closeGateTask = (): { report: GateReport; rules: GuardRuleReport } | undefined => {
+      const report = advisorGate.closeTask();
+      const rules = guardRules.report();
+      guardRules.closeTask();
+      return report === undefined ? undefined : { report, rules };
+    };
+    /**
+     * One record per task a level watched, with the level and the model the task ran under. The task
+     * says why it ended: a task that ends by a branch move or by shutdown is still one the level
+     * watched, and leaving those out made the log read as if they never happened.
+     */
+    const writeGateRecord = (
+      closed: { report: GateReport; rules: GuardRuleReport },
+      endReason: GateEndReason,
+      level: AdvisorLevel | undefined,
+      mainModel: string | null,
+    ): void => {
+      advisorLog.gate({
+        ...closed.report,
+        ...closed.rules,
+        endReason,
+        notes: gateNotes,
+        mainModel,
+        advisorLevel: level ?? latestRuntime?.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL,
+      });
+    };
     // Bumped whenever Advisor mode, launch or settings change, so a thread created under the
     // previous configuration is never resumed under the new one.
     let advisorEpoch = 0;
@@ -2255,7 +2290,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("session_start", async (_event, ctx) => {
       taskToken = undefined;
       advisorReminder.closeTask();
-      advisorGate.closeTask();
+      // A task ends by settling, by a branch move or by shutdown, and each of those writes its own
+      // record. A start that still found a task open would have no reason to state, so it closes the
+      // task without inventing one; the docs promise the three reasons and not exhaustiveness.
+      closeGateTask();
       // A request of the session that ended cannot stand in for this one's short prompt.
       previousRequest = undefined;
       advisorEpoch += 1;
@@ -2276,8 +2314,16 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       taskToken = undefined;
       advisorReminder.closeTask();
       // The earlier calls of the task belong to the branch the session left. Closing the task drops
-      // them, so the gate decides nothing on a state nobody remembers.
-      advisorGate.closeTask();
+      // them, so the gate decides nothing on a state nobody remembers, and the record says the branch
+      // moved instead of leaving the task out of the log.
+      const closed = closeGateTask();
+      if (closed)
+        writeGateRecord(
+          closed,
+          "branch-change",
+          observation?.level,
+          latestRuntime?.mainModel ?? null,
+        );
       taskMetrics = undefined;
       observation = undefined;
       // A request of the branch the session left cannot stand in for this branch's short prompt.
@@ -2349,6 +2395,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         gateNotes = 0;
         foregroundConsults.clear();
         readConsults.clear();
+        guardRules.openTask();
         if (child) return;
         if (observation) observation.level = level;
         // Only the two levels that hold changes count them: `standard` states a periodic note and
@@ -2450,7 +2497,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorReminder.closeTask();
       // The gate's report is closed with the task, whatever the answer was: it is the only record of
       // how many changes a task made without a consultation.
-      const gate = advisorGate.closeTask();
+      const closed = closeGateTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
       if (settledToken) {
@@ -2463,17 +2510,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       }
       const task = taskMetrics;
       const frozenLevel = observation?.level;
+      const frozenModel = latestRuntime?.mainModel ?? null;
       taskMetrics = undefined;
       observation = undefined;
       const advisorLevel =
         frozenLevel ?? latestRuntime?.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL;
-      if (gate)
-        advisorLog.gate({
-          ...gate,
-          notes: gateNotes,
-          mainModel: latestRuntime?.mainModel ?? null,
-          advisorLevel,
-        });
+      if (closed) writeGateRecord(closed, "settled", advisorLevel, frozenModel);
       if (task)
         advisorLog.task({
           durationMs: Date.now() - task.startedAt,
@@ -2556,18 +2598,45 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // result's business. A launch refused above attempted nothing.
       if (consulted) advisorReminder.noteConsultAttempt();
       if (launchKind === "consult") foregroundConsults.add(event.toolCallId);
+      const manualContext =
+        (latestRuntime?.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE) === "manual";
+      // The `guard` level decides on its own rules first, before anything is counted and before any
+      // call could cost money. A rule that refuses a call is a change the count gate never let
+      // through: the call runs nothing, so it moves no count and spends no pass but its own.
+      // A rule that throws must do neither of the two things a throw would do here: a throw in this
+      // hook blocks the tool, but it also breaks the turn, and a value that says nothing lets a call
+      // run. So the failure is turned into the soft refusal of a line the reader cannot account for.
+      let rule: GuardDecision | undefined;
+      try {
+        rule =
+          check?.refusal === undefined && observed?.level === "guard"
+            ? guardRules.decide(facts, event.toolName, {
+                launcher,
+                manualContext,
+                available: consultationPath(latestRuntime),
+                wayOutBroken: advisorGate.wayOutIsBroken,
+              })
+            : undefined;
+      } catch {
+        rule = guardRules.failedDecision({
+          launcher,
+          manualContext,
+          available: consultationPath(latestRuntime),
+          wayOutBroken: advisorGate.wayOutIsBroken,
+        });
+      }
+      const ruleRefused = rule?.action === "block";
       // The launch check already decided this subagent call, so a refusal there is never revisited.
       const decision =
-        check?.refusal === undefined && observed !== undefined
+        !ruleRefused && check?.refusal === undefined && observed !== undefined
           ? advisorGate.decide({
               changes: facts.changes && launchKind === undefined,
               available: consultationPath(latestRuntime),
               launcher,
-              manualContext:
-                (latestRuntime?.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE) === "manual",
+              manualContext,
             })
           : undefined;
-      const refused = decision?.action === "block";
+      const refused = ruleRefused || decision?.action === "block";
       countTaskToolCall(event, check, consulted, refused);
       // A refused call wrote nothing, so only a call that runs counts as an edit of this task; the
       // change it would have made is what the consultation carries instead.
@@ -2576,8 +2645,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       if (observed && facts.changes && check?.refusal === undefined)
         observed.pending = refused ? heldChange(facts, event.toolName, event.input) : undefined;
 
-      // The refusal names the consultation and nothing else, so it is the same text in both launch
-      // modes apart from the path each one has.
+      // A rule refusal names its category and what changes it, never a count or the pattern that
+      // matched. The checkpoint's refusal names the consultation and nothing else.
+      if (rule?.action === "block") return { block: true, reason: rule.message };
       if (decision?.action === "block") return { block: true, reason: decision.message };
       if (check) {
         // A control or management action launches nothing, so it records no `launch` event.
@@ -2661,12 +2731,17 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // nothing: the task stays held and the operator is told, because only a person can end a hold
       // whose way out does not work.
       const advisorLauncher = latestRuntime?.effective.advisorLaunch ?? "tool";
+      if (!isSubagentChildProcess())
+        guardRules.noteResult(event.toolName, event.input, event.isError);
       if (!isSubagentChildProcess() && advisorGate.watching) {
         const answered = answersConsultation(event, advisorLauncher);
         // Only an answer frees the task, and only a result that proves an Advisor started and did
         // not answer counts toward the notice. A call that consulted nobody counts nothing at all:
-        // no failure, no notice, and the hold stands.
-        if (answered === "answered") advisorGate.noteAnswer();
+        // no failure, no notice, and the hold stands. An answer also opens the rules' passes.
+        if (answered === "answered") {
+          advisorGate.noteAnswer();
+          guardRules.noteAnswer();
+        }
         // One notice per pair of failures, read from the constant that defines the pair: the level,
         // the launcher, the closed statuses it saw, and the three things a person can do. No error
         // text, brief, question or answer of the consultation reaches it, and no change is released.
@@ -2697,10 +2772,19 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     });
     pi.on("session_shutdown", async (_event, ctx) => {
       readerEpoch += 1;
+      // The task ends here with the session, so its record is written before the runtime it names is
+      // dropped, and it says it ended by shutdown.
+      const shuttingDown = closeGateTask();
+      if (shuttingDown)
+        writeGateRecord(
+          shuttingDown,
+          "shutdown",
+          observation?.level,
+          latestRuntime?.mainModel ?? null,
+        );
       latestRuntime = undefined;
       taskToken = undefined;
       advisorReminder.closeTask();
-      advisorGate.closeTask();
       taskMetrics = undefined;
       observation = undefined;
       correctionNotes.clear();

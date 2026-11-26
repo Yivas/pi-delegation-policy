@@ -3729,6 +3729,7 @@ test("public package contents exclude private planning, tests, archives, and old
     "src/context-shunt-reader.ts",
     "src/context-shunt.ts",
     "src/delegate-panel.ts",
+    "src/guard-rules.ts",
     "src/index.ts",
     "src/launch-correction-mode.ts",
     "src/launch-guard.ts",

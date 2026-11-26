@@ -614,15 +614,15 @@ towards a consultation, and `advisorLevel` holds the same setting in configurati
 | `off`      | None                                               | Never held                                                                                                                            |
 | `standard` | One after every 8 tool results of a task (default) | Never held                                                                                                                            |
 | `strict`   | One warning after 3 changes with no consultation   | Held from the 6th change until an Advisor answers, or until the operator changes the level and sends a new prompt or cancels the task |
-| `guard`    | Same as `strict`                                   | Same as `strict`                                                                                                                      |
+| `guard`    | Same as `strict`                                   | Its own [rules](#guard-rules) first, then the same count as `strict`                                                                  |
 
 A prompt that starts with `??` is the one exception to "never held": it holds the changes of its task
 at any level. At `off` and `standard` the hold ends with the first answered consultation and no
 count starts afterwards. Every Advisor stays available at every level and can be consulted at any
-time. `guard` behaves
-exactly like `strict` in this version. A later version adds a watcher on top of it, and that watcher
-is not part of this one. The count is per task and starts over when a consultation answers. The
-[checkpoint](#advisor-checkpoint) section describes what is held and what opens it.
+time. `guard` adds a closed set of its own decisions in front of the count, described under
+[guard rules](#guard-rules); it calls no model in this version. The count is per task and starts over
+when a consultation answers. The [checkpoint](#advisor-checkpoint) section describes what is held and
+what opens it.
 
 With Advisor off the level has no effect. It is resolved from a session override first, then from the
 entry for the current main model, then from the global level, then from `standard`, and a task keeps
@@ -775,6 +775,118 @@ The classification is a nudge, not a security boundary. It reads the tool name a
 shell command, it can be wrong in both directions, and it never authorizes or inspects a permission.
 In particular it knows a short list of options that make a known read write a file or run a program,
 and an option outside that list is not recognized.
+
+## Guard rules {#guard-rules}
+
+`guard` decides in this order: its own deterministic rules, then the [checkpoint](#advisor-checkpoint)
+count. Both are free and work with nothing else configured, and this version calls no model. A rule
+reads the same call the count reads, never refuses a read, and comes in one of three closed sets.
+
+**Only the user can allow these.** A consultation lifts nothing here: the way out is the user, who
+can make the call, change the level with `/delegate`, or cancel the task.
+
+| Rule                       | What it covers                                                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Force push                 | `git push --force`, `-f`, `--force-with-lease`, `origin +main`                                                                     |
+| Hard reset                 | `git reset --hard`                                                                                                                 |
+| Forced clean               | `git clean -f`, `-fd`, `-fdx`, and not `-n`                                                                                        |
+| Recursive delete           | `rm -rf` of an absolute path, the home directory, a parent, a path built from a variable, or `.git`                                |
+| Download piped to a shell  | `curl … \| sh`, `wget … \| bash`, `curl … \| zsh`, `curl … \| dash` on a certain line                                              |
+| Publishing                 | `npm publish` and the other registry publishers, `gh release create`, `gh pr merge`                                                |
+| Writing credentials        | `.env*`, `.ssh/`, `.netrc`, `.git-credentials`, `.aws/credentials`, `.docker/config.json`, `id_rsa`, `*.pem`, written and not read |
+| Skipping the hooks         | `--no-verify`, `core.hooksPath`, `HUSKY=0`                                                                                         |
+| This extension's own files | `delegation-policy*.json`, its log, its sidecars, `agents/pi-delegation-policy.*.md`                                               |
+
+A credential or policy file that only appears as an argument is not a write: `cat .env` and
+`git add .env` are not held for writing a credential. The write positions are exact: the
+target of an unquoted `>` or `>>`, every operand of `tee` and `sponge`, the last operand of `cp` and
+`mv`, and the path an `edit` or `write` tool call names. A commit message that mentions one writes
+nothing. A shell editor such as `vi` or `nano`, or `sed -i`, is not one of those positions, so
+rewriting a credential in place is not a hard refusal here: that is the declared edge of this cut,
+and the count still sees the change. A package `publish` with `--dry-run` is not a publish either;
+`gh` and `hub` have no dry run and ignore the flag. A download piped into an interpreter that reads it
+(`curl … | python -m json.tool`) is not this rule either, and neither is a script already on disk.
+
+**An answered consultation lifts these**, for the target it covers. An answered consultation opens a
+pass for the exact pair of rule and target that was refused, and the pass covers a few calls of that
+same pair and nothing else. A pass never covers a rule above and never moves the count.
+
+| Rule                    | What it covers                                                                                                              |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Continuous integration  | `.github/workflows`, `.github/actions`, `.gitlab-ci.yml`, `.circleci`, `Jenkinsfile`                                        |
+| Git hooks               | `.git/hooks`, `.husky`, `lefthook.yml`, `.pre-commit-config.yaml`                                                           |
+| npm configuration       | `.npmrc`                                                                                                                    |
+| Lockfile edited by hand | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum` and the like                                                   |
+| A newly named package   | an install that names a package, as opposed to `npm ci` or `npm run`                                                        |
+| A line it cannot judge  | a wrapper or launcher, an escape, a substitution, a quoted command word, a shell call with no text, or a command over 1 KiB |
+
+**Trajectory holds** look at the task instead of the call, and lift the same way:
+
+| Rule                         | What it covers                                                   |
+| ---------------------------- | ---------------------------------------------------------------- |
+| Repeated failing runs        | three executions in a row that failed, then the next command     |
+| The same file edited again   | three edits of one file with failures between them               |
+| Several files with no answer | three distinct files edited since the last answered consultation |
+
+The count keeps working as it did in `0.35.0`: a warning at 3 changes made with no consultation and
+a hold from the 6th. The rules do not lower it, and a refused call never moves it.
+
+The refusal names the category and says the call was not run; it states no count and no pattern, so
+that satisfying the text does not become a way through. A soft rule refuses like this in `tool`
+launch:
+
+```text
+Not an error: this call was not run. Guard rule: continuous integration configuration.
+Consult the Advisors now: call consult_advisor(). It needs no arguments; the host supplies the context.
+A consultation that answers covers this target for a few calls. Reading is not affected.
+```
+
+A rule above the count sends the model to the user instead, and repeating the call or consulting an
+Advisor does not change that.
+
+### What the reader is certain of {#guard-reader}
+
+The rules rest on reading a line, and no small reader reads every shell dialect. So this one never
+guesses: it either reads a line it is **certain** about, or it says it cannot and refuses to judge it
+as if it could.
+
+A certain line is a small grammar and nothing else: one or more simple commands and pipelines or
+lists split on `;`, `|`, `&&`, `||`, `&` and a newline outside quotes, so a two-line script is read
+line by line; plain words with single or double quotes, with no backslash, no `$(…)`, no backtick, no
+here-doc, no `<(…)` and no unclosed quote; and no wrapper at all. `sh`, `bash`, `zsh`, `dash`, `ksh`,
+`ash`, `fish`, `pwsh`, `powershell` and `cmd` with a wrapper flag (`-c`, a short group ending in `c`,
+`--command`, `-Command`), `eval`, `xargs`, `busybox`, `chroot`, `stdbuf`, `setsid`, `ionice`,
+`watch` and `strace` make a line **uncertain**: this reader does not follow them. The prefixes that
+only set up the command that follows are transparent — `sudo`, `doas`, `env`, `nice`, `timeout`,
+`nohup`, `time`, `command`, `exec`, `builtin`, and the package runners `npx`, `pnpx`, `bunx`,
+`npm exec|x`, `pnpm exec|dlx`, `yarn exec|dlx` and `bun x` — but only with the options each one
+documents and with `--` ending them, so `sudo -n rm -rf /`, `sudo -- rm -rf /`,
+`sudo -u root rm -rf /`, `nice -n 10 rm -rf /`, `env -i rm -rf /`, `timeout -s KILL 5 rm -rf /`,
+`command rm -rf /`, `exec -a x rm -rf /` and `npx rm -rf /` are read, while `npx tsc` is ordinary.
+An option one of them does not document makes the line uncertain instead of being skipped blindly.
+A runner is read only in its exact shape: the runner name, then the subcommand when it has one,
+then its flags and `--`, then the program. An option with a value, an unknown flag or an assignment
+in that prefix makes the line uncertain, and the program behind a runner is judged by the closed hard
+list only, so `npx rimraf .git` is not hard.
+
+Anything else is **uncertain**, and what makes it so is a construct, never a size: a backslash, a
+substitution, a backtick, a here-doc, process substitution, a wrapper, or a quoted or variable
+command word. An uncertain line is never allowed silently and never judged as if it parsed: it is a
+soft refusal under `long-command`, "a line this reader cannot judge with certainty", which an
+answered consultation covers for that exact line once and never another one. A command over 1 KiB is
+not read at all and is held the same way, with the refusal asking for it to be split into shorter
+commands or written with the write tool. Either way the refusal names an exit, and a line built to
+hide what it runs is still a change for the count.
+
+The rules never act in a subagent child session, where there is no user to ask and no Advisor to
+answer, and a soft or trajectory rule refuses nothing when this configuration cannot consult at all,
+because that hold would have no way out. They read the text of `bash`, which on Windows is Git Bash,
+so POSIX and Windows forms appear in the same line; the separate `powershell` tool is an unknown tool
+that already counts as a change. Once two consultations in a row reach an Advisor and fail, a refusal
+by any rule that names a consultation ends with the same clause the count adds and sends the model to
+you. What no part of this follows is indirection: a script the line names, an alias, a variable that
+holds the dangerous words. It is a nudge, not a sandbox, and the host's own permissions still decide
+what runs.
 
 ## Advisor child extensions {#advisor-child-extensions}
 

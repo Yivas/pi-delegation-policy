@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getGlobalConfigPath } from "./config.ts";
+import { GUARD_RULE_CODES, type GuardRuleCode } from "./guard-rules.ts";
 import type { LaunchChildRole, LaunchCorrectionCode, LaunchRefusalCode } from "./launch-guard.ts";
 import type { AdvisorTurnContext } from "./advisor-threads.ts";
 import type { AdvisorLevel } from "./advisor-level.ts";
@@ -66,13 +67,39 @@ export type ConsultationContext = {
   contextBytes: number;
 };
 
+/**
+ * Why a watched task stopped being watched. A task can end by its own settle, by a branch move or by
+ * shutdown, and a record that only ever said `settled` would hide the ones the level never finished.
+ */
+export type GateEndReason = "settled" | "branch-change" | "shutdown";
+
 /** One task's gate accounting, with the configuration it ran under. */
 export type GateRecord = GateReport & {
+  endReason: GateEndReason;
+  /** `guard` rule refusals by closed code; a code that never fired is absent. */
+  ruleHits: Readonly<Partial<Record<GuardRuleCode, number>>>;
+  /** Calls a consultation pass let through. */
+  passes: number;
   /** Ephemeral notes this level presented to the model. */
   notes: number;
   mainModel: string | null;
   advisorLevel: AdvisorLevel;
 };
+
+/**
+ * The rule hits of one task, bounded by the closed set and reduced to integers. A code this version
+ * does not know, and a count that is not a positive number, never reach the line.
+ */
+function ruleHitsRecord(
+  hits: Readonly<Partial<Record<GuardRuleCode, number>>>,
+): Record<string, number> {
+  const record: Record<string, number> = {};
+  for (const code of GUARD_RULE_CODES) {
+    const count = hits[code];
+    if (typeof count === "number" && count > 0) record[code] = Math.round(count);
+  }
+  return record;
+}
 
 export type LaunchOutcome = "allowed" | "refused";
 export type LaunchRecord = {
@@ -194,8 +221,9 @@ export class AdvisorLog {
   }
 
   /**
-   * One record per task a level watched: counted changes, held ones, answered consultations and
-   * notes presented. Counts and closed values only: no tool input, path, prompt or task body.
+   * One record per task a level watched: counted changes, held ones, answered consultations, the
+   * rules that refused, the passes a consultation opened, and why the task ended. Counts and closed
+   * values only: no tool input, path, prompt or task body.
    */
   gate(record: GateRecord): void {
     if (!this.lastHash) return;
@@ -203,11 +231,14 @@ export class AdvisorLog {
       event: "gate",
       version: VERSION,
       policyHash: this.lastHash,
+      endReason: record.endReason,
       changes: Math.max(0, Math.round(record.changes)),
       totalChanges: Math.max(0, Math.round(record.totalChanges)),
       holds: Math.max(0, Math.round(record.holds)),
       answers: Math.max(0, Math.round(record.answers)),
       failures: Math.max(0, Math.round(record.failures)),
+      ruleHits: ruleHitsRecord(record.ruleHits),
+      passes: Math.max(0, Math.round(record.passes)),
       notes: Math.max(0, Math.round(record.notes)),
       mainModel: record.mainModel ? record.mainModel.slice(0, 256) : null,
       advisorLevel: record.advisorLevel,
