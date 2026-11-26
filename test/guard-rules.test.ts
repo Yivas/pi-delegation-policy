@@ -1997,6 +1997,42 @@ test("no runner shape lets a program through unjudged, and none of them throws",
   }
 });
 
+/**
+ * The half of the runner shape the previous property did not touch: an option between the package
+ * manager and its subcommand. Any such option leaves the line uncertain, never clean.
+ */
+test("no option between a manager and its subcommand lets a program through unjudged", () => {
+  const managers = [
+    ["npm", "exec"],
+    ["npm", "x"],
+    ["pnpm", "exec"],
+    ["pnpm", "dlx"],
+    ["yarn", "exec"],
+    ["yarn", "dlx"],
+    ["bun", "x"],
+  ];
+  for (const [manager, subcommand] of managers)
+    for (const insertion of ["-C .", "-Z", "--filter a", "--prefix ."])
+      for (const runner of [manager!, `${manager}.cmd`, `${manager}.bat`]) {
+        const command = `${runner} ${insertion} ${subcommand} rm -rf /`;
+        const match = guardRule(classifyToolCall("bash", { command }), "bash");
+        assert.equal(match?.kind, "soft", command);
+        assert.equal(match?.code, "long-command", command);
+      }
+});
+
+/** A Windows shim starts the same program as the binary, so it is read as that program. */
+test("a Windows shim of a program is read as that program", () => {
+  for (const shim of ["npx.cmd", "npx.bat", "C:/nodejs/npx.cmd", "npx.exe", "NPX.CMD"])
+    assert.equal(
+      guardRule(classifyToolCall("bash", { command: `${shim} rm -rf /` }), "bash")?.code,
+      "recursive-delete",
+      shim,
+    );
+  for (const shim of ["wc.cmd", "wc.bat"])
+    assert.equal(classifyToolCall("bash", { command: `${shim} -l f` }).changes, false, shim);
+});
+
 test("a word named like a prototype member is not a table entry", () => {
   for (const command of ["constructor x", "sudo constructor x", "npx constructor x"]) {
     assert.doesNotThrow(() => guardRule(classifyToolCall("bash", { command }), "bash"), command);

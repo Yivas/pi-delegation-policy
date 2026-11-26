@@ -48,6 +48,18 @@
   log file and its rotated predecessor
   without printing any of their content.
 
+### Fixed
+
+- A consultation that names the Advisors in `workflow: "parallel"` is a consultation, not a change.
+  Its children are part of the same call, so no rule and no count refuses them and a held task gets
+  all of them. The hold lifts on the host's result as before: one Advisor that answered, read from
+  the per-child results, is enough. A parallel workflow that fails is unobservable by design — the
+  host reports a failed call with no details — so it lifts nothing; the way out is a consultation
+  that succeeds, such as a single-Advisor foreground launch.
+- A `bash` line that starts with an assignment whose value is quoted reads as the read it is:
+  `f="C:/x.md"; wc -l "$f"` no longer counts as a change. A value that expands or redirects inside
+  its quotes still does: `f="$(touch x)"`, `f="${X}"` and a backtick there remain changes.
+
 ## 0.35.0 - 2026-11-25
 
 ### Changed

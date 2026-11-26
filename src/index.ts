@@ -165,6 +165,8 @@ import {
 import { openDelegateEditor, type ContinuityActions } from "./ui.ts";
 
 const STATUS_KEY = "pi-delegation-policy";
+/** The nested call `pi-subagents` makes before a workflow starts one of its children. */
+const SUBAGENT_LAUNCH_TOOL = "subagent_launch";
 export type CommandAction =
   | { kind: "open" }
   | { kind: "intensity"; intensity: Intensity }
@@ -397,6 +399,26 @@ function advisorChildren(
 /** A call whose children are all Advisors consults, so it never counts as a launch. */
 function launchesOnlyAdvisors(children: readonly LaunchChildRole[]): boolean {
   return children.length > 0 && children.every((role) => role === "advisor");
+}
+
+/**
+ * The configured Advisor a child launch names, read from what the host runs: the packaged profile of
+ * one slot together with that slot's model. The profile name alone is not enough, because several
+ * Advisors share one, and a name the model sent is not identity at all.
+ */
+function advisorProfileFor(
+  state: RuntimeState,
+  input: Record<string, unknown>,
+): AdvisorSetting | undefined {
+  const agent = typeof input.agent === "string" ? input.agent : "";
+  const model = typeof input.model === "string" ? input.model.trim() : "";
+  if (!agent || !model) return undefined;
+  return validAdvisors(state).find(({ setting, index }) => {
+    if (advisorAgentNameFor(state, setting, index) !== agent) return false;
+    const reference = `${setting.provider}/${setting.model}`;
+    // The host appends the thinking level to the model it runs.
+    return model === reference || model.startsWith(`${reference}:`);
+  })?.setting;
 }
 
 /** Counters for one main-agent task: a user prompt to the next settle. */
@@ -874,8 +896,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     const advisorReminder = new AdvisorReminderState();
     // The gate counts the classified changes of one task and holds them once a consultation is due.
     const advisorGate = new AdvisorGate();
-    // Advisor launches of this task that the gate let through in the foreground, awaiting a result.
-    const foregroundConsults = new Set<string>();
+    // The consultations this task launched, by the id of the call that launched them: a foreground
+    // one is read when its result arrives, and a background one is remembered only so the children
+    // it starts belong to it instead of counting as changes of their own.
+    const consultationCalls = new Map<string, "consult" | "background">();
     // Consultation results this task already read: the host can report the same result twice, and a
     // call counts once whichever launcher read it.
     const readConsults = new Set<string>();
@@ -1262,9 +1286,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         advisorChildren(latestRuntime, event.input).length > 0);
     /**
      * Whether a launch is a consultation the host answers inside this call, or a background launch
-     * whose result is a run id and never an answer. Only a plain launch whose every child is a
-     * configured Advisor counts, and only `async: false` is foreground: the host defaults to
-     * background, so an omitted field is a launch the gate cannot open on.
+     * whose result is a run id and never an answer. Only a launch whose every child is a configured
+     * Advisor counts, and only `async: false` is foreground: the host defaults to background, so an
+     * omitted field is a launch the gate cannot open on. The named `parallel` workflow states its
+     * children in `args.tasks` like any other parallel call, and the host reports the same per-child
+     * results, so it consults too; a workflow script chooses its models in code this reader cannot
+     * see and stays a change.
      */
     const advisorLaunchKind = (
       event: ToolCallEvent,
@@ -1272,12 +1299,25 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     ): "consult" | "background" | undefined => {
       if (event.toolName !== "subagent" || latestRuntime === undefined) return undefined;
       if (check?.launch !== true || check.refusal !== undefined) return undefined;
-      // A workflow script reports its own result shape, which this reader does not know: only a
-      // plain launch (single or `tasks`) can be a consultation whose answer is read here.
-      if (event.input["workflow"] !== undefined) return undefined;
+      const workflow = event.input["workflow"];
+      if (workflow !== undefined && workflow !== "parallel") return undefined;
       if (advisorChildren(latestRuntime, event.input).length === 0) return undefined;
       if (!launchesOnlyAdvisors(check.children)) return undefined;
       return event.input["async"] === false ? "consult" : "background";
+    };
+    /**
+     * Whether this call is the host starting one child of a consultation this task launched. A
+     * workflow runs every child as a nested `subagent_launch` call, so the children of a consultation
+     * are part of it: refusing one of them as a change would fail the call and leave the hold with no
+     * working way out. The call is identified by the id of the consultation the host reports in
+     * `workflowRunId`, and its profile by the one this configuration resolves for an Advisor slot:
+     * the packaged profile name plus that Advisor's model, never a name on its own.
+     */
+    const isConsultationChild = (event: ToolCallEvent): boolean => {
+      if (event.toolName !== SUBAGENT_LAUNCH_TOOL || latestRuntime === undefined) return false;
+      const parent = event.input["workflowRunId"];
+      if (typeof parent !== "string" || !consultationCalls.has(parent)) return false;
+      return advisorProfileFor(latestRuntime, event.input) !== undefined;
     };
     /**
      * What a tool result proves about a consultation, or undefined when it is not one. A role launch
@@ -1290,7 +1330,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       launcher: AdvisorLaunch,
     ): ConsultationOutcome | undefined => {
       const details = "details" in event ? event.details : undefined;
-      const role = foregroundConsults.delete(event.toolCallId);
+      const role = consultationCalls.get(event.toolCallId) === "consult";
+      consultationCalls.delete(event.toolCallId);
       if (!role && (launcher !== "tool" || event.toolName !== "consult_advisor")) return undefined;
       if (readConsults.has(event.toolCallId)) return undefined;
       readConsults.add(event.toolCallId);
@@ -2393,7 +2434,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         taskToken = randomUUID();
         advisorReminder.openTask();
         gateNotes = 0;
-        foregroundConsults.clear();
+        consultationCalls.clear();
         readConsults.clear();
         guardRules.openTask();
         if (child) return;
@@ -2492,7 +2533,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const settledToken = taskToken;
       const parentKey = parentKeyFor(ctx);
       taskToken = undefined;
-      foregroundConsults.clear();
+      consultationCalls.clear();
       readConsults.clear();
       advisorReminder.closeTask();
       // The gate's report is closed with the task, whatever the answer was: it is the only record of
@@ -2568,6 +2609,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const launchKind = advisorLaunchKind(event, check);
       const consulted = isConsultAttempt(event, check);
       const facts = classifyToolCall(event.toolName, event.input);
+      // A workflow child of a consultation this task launched is part of that consultation: it is not
+      // a change of its own, so neither a rule nor the count may refuse it, and no rule sees it.
+      const consultationChild = isConsultationChild(event);
       const observed = isSubagentChildProcess() ? undefined : observation;
       if (observed) {
         if (facts.kind === "read") observePath(observed.readPaths, facts.path);
@@ -2597,7 +2641,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // An attempt that runs ends the periodic note for this task; whether it answers is the
       // result's business. A launch refused above attempted nothing.
       if (consulted) advisorReminder.noteConsultAttempt();
-      if (launchKind === "consult") foregroundConsults.add(event.toolCallId);
+      if (launchKind !== undefined) consultationCalls.set(event.toolCallId, launchKind);
       const manualContext =
         (latestRuntime?.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE) === "manual";
       // The `guard` level decides on its own rules first, before anything is counted and before any
@@ -2609,7 +2653,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       let rule: GuardDecision | undefined;
       try {
         rule =
-          check?.refusal === undefined && observed?.level === "guard"
+          check?.refusal === undefined && !consultationChild && observed?.level === "guard"
             ? guardRules.decide(facts, event.toolName, {
                 launcher,
                 manualContext,
@@ -2630,7 +2674,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const decision =
         !ruleRefused && check?.refusal === undefined && observed !== undefined
           ? advisorGate.decide({
-              changes: facts.changes && launchKind === undefined,
+              changes: facts.changes && launchKind === undefined && !consultationChild,
               available: consultationPath(latestRuntime),
               launcher,
               manualContext,
@@ -2642,7 +2686,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // change it would have made is what the consultation carries instead.
       if (observed && facts.kind === "edit" && !refused)
         observePath(observed.editedPaths, facts.path);
-      if (observed && facts.changes && check?.refusal === undefined)
+      if (observed && facts.changes && !consultationChild && check?.refusal === undefined)
         observed.pending = refused ? heldChange(facts, event.toolName, event.input) : undefined;
 
       // A rule refusal names its category and what changes it, never a count or the pattern that

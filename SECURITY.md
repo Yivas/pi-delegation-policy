@@ -176,8 +176,9 @@ is off. `delegation-policy.events.jsonl` holds policy and consultation metadata 
 record per main-agent task, one `launch` record per checked subagent call, and one `gate` record per
 task whose gate opened (a `strict` or `guard` task, or any task a `??` prompt opened), written when
 it ends by a settle, a branch move or shutdown, with counts only and that reason. Its `ruleHits`
-also count `engine-failure` when the guard could not judge a call at all. `passes` counts the calls a consultation pass let through; neither carries the
-call, its command, its path or the text of a refusal. `task` and `consultation` records carry `mainModel` and
+also count `engine-failure` when the guard could not judge a call at all. `passes` counts the calls a
+consultation pass let through; neither field carries the call, its command, its path or the text of a
+refusal. `task` and `consultation` records carry `mainModel` and
 `advisorLevel`, and `consultation` also carries `noArgs` and `contextBytes`, which is `0` in manual
 mode. It never holds questions, briefs, contexts, replies, conversations, project paths, or raw
 errors. It rotates at 256 KiB with one backup,

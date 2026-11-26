@@ -173,6 +173,31 @@ test("a documented option of a known read that writes or runs a program is a cha
     assert.equal(isStateChangeCommand(line), false, line);
 });
 
+/**
+ * The defect this fixes: a read-only line that opened with a quoted assignment was held as a change.
+ * `f="C:/x.md"; wc -l "$f"` counts nothing but reads, and the assignment itself is the whole culprit:
+ * the same line with an unquoted value, or each segment on its own, already read.
+ */
+const ASSIGNMENT_CASES: ReadonlyArray<{ line: string; changes: boolean; why: string }> = [
+  { line: 'f="C:/x.md"; wc -l "$f"', changes: false, why: "a quoted value states a variable" },
+  { line: 'f="C:/x.md"', changes: false, why: "the assignment alone reads nothing" },
+  { line: 'f="C:/dir/" | ls', changes: false, why: "the read after it is still the command" },
+  { line: "f=C:/x.md; wc -l $f", changes: false, why: "an unquoted value reads the same" },
+  { line: 'name="a b" wc -l f', changes: false, why: "a value with a space is still plain" },
+  // A value that expands or redirects inside its quotes builds a line this reader cannot account
+  // for, so the three forms the fix must not whitelist stay changes.
+  { line: 'f="$(touch x)"', changes: true, why: "a substitution inside the value runs" },
+  { line: 'f="${X}"', changes: true, why: "a variable inside the value expands" },
+  { line: 'f="`touch x`"', changes: true, why: "a backtick inside the value runs" },
+  { line: 'f="a > b"', changes: true, why: "a redirection inside the value is not plain" },
+  { line: 'f="C:/x.md"; rm -rf src', changes: true, why: "the read before a write covers nothing" },
+];
+
+test("a leading assignment with a plain value is noise, quoted or not", () => {
+  for (const { line, changes, why } of ASSIGNMENT_CASES)
+    assert.equal(isStateChangeCommand(line), changes, `${why}: ${line}`);
+});
+
 test("discarding output or merging streams does not turn a read into a change", () => {
   for (const line of [
     "ls 2>/dev/null",

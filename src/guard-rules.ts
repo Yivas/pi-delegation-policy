@@ -7,7 +7,7 @@
  * HARD rules apply only to certain lines, and every other changing line is a SOFT `long-command`
  * refusal with a one-call pass for that exact line. The transparent prefixes are `sudo`, `doas`,
  * `env`, `nice`, `timeout`, `nohup`, `time`, `command`, `exec`, `builtin` and the package runners
- * `npx`, `bunx`, `npm exec`, `pnpm exec|dlx`, `yarn exec|dlx` and `bun x`, each with its documented
+ * `npx`, `pnpx`, `bunx`, `npm exec|x`, `pnpm exec|dlx`, `yarn exec|dlx` and `bun x`, each with its documented
  * options only; a line with no command text at all is held like any other line this reader cannot
  * account for.
  *
@@ -135,7 +135,7 @@ const UNREADABLE_AFTER =
   "A consultation that answers covers this exact line once and never another one. Split it into shorter commands, or issue it plainly as a direct command, so it can be read.";
 /** The same refusal when the call carries no line at all: `{}` on a shell tool. */
 const UNREADABLE_CALL_AFTER =
-  "A consultation that answers covers this exact call once and never another one. Split it into shorter commands, or issue it plainly as a direct command, so it can be read.";
+  "A consultation that answers covers this exact call once and never another one. Send the command itself, as a plain line, so it can be read.";
 const FAILED_AFTER =
   "The guard failed while judging this call, so it was not run. No consultation lifts this one: report the failure to the user and stop.";
 
@@ -360,9 +360,13 @@ const DURATION = /^\d+(?:\.\d+)?[smhd]?$/;
 /** Two-letter Windows flags such as `/s`, as opposed to a POSIX path such as `/home/user`. */
 const WINDOWS_FLAG = /^\/[A-Za-z?]+$/;
 
+/**
+ * The program a word names. A Windows shim is the same program as the binary it starts, so `.exe`,
+ * `.cmd` and `.bat` are stripped: `npx.cmd` launches what `npx` launches.
+ */
 function baseName(text: string): string {
   const name = text.split(/[\\/]/).pop() ?? text;
-  return name.toLowerCase().replace(/\.exe$/, "");
+  return name.toLowerCase().replace(/\.(?:exe|cmd|bat)$/, "");
 }
 
 function isFlagWord(word: string): boolean {
@@ -370,14 +374,10 @@ function isFlagWord(word: string): boolean {
 }
 
 /**
- * The program a command runs, skipping assignments and the transparent prefixes in front of it. A
- * prefix option this table does not know, a quoted command word or a variable one all make the line
- * uncertain, which the caller reports.
- */
-/**
- * The package runner at this word, if it is one: `npx`, `bunx`, and `npm exec`, `pnpm exec|dlx`,
- * `yarn exec|dlx`, `bun x`. A runner's own global options are skipped to find its subcommand, and a
- * word that is not one of its subcommands means the word was the program after all (`npm test`).
+ * The package runner at this word, if it is one: `npx`, `pnpx`, `bunx`, and `npm exec|x`,
+ * `pnpm exec|dlx`, `yarn exec|dlx`, `bun x`. The word after the manager's name is the only candidate
+ * for its subcommand: an ordinary word there means this was a plain package-manager command
+ * (`npm test`), and an option there makes the line uncertain only when a runner subcommand follows.
  */
 function runnerPrefixAt(
   words: readonly Word[],
@@ -401,6 +401,11 @@ function runnerPrefixAt(
   return undefined;
 }
 
+/**
+ * The program a command runs, skipping assignments and the transparent prefixes in front of it. A
+ * prefix option this table does not know, a quoted command word or a variable one all make the line
+ * uncertain, which the caller reports.
+ */
 function commandOf(words: readonly Word[]): {
   program: string;
   args: string[];
@@ -1197,7 +1202,7 @@ export class GuardRules {
       `Not an error: this call was not run. Guard rule: ${GUARD_RULE_LABELS["engine-failure"]}.`,
       FAILED_AFTER,
     ];
-    if (!options.available) if (options.wayOutBroken) lines.push(wayOutBrokenClause());
+    if (!options.available && options.wayOutBroken) lines.push(wayOutBrokenClause());
     return { action: "block", message: lines.join("\n") };
   }
 

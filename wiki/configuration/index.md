@@ -865,9 +865,8 @@ documents and with `--` ending them, so `sudo -n rm -rf /`, `sudo -- rm -rf /`,
 `command rm -rf /`, `exec -a x rm -rf /` and `npx rm -rf /` are read, while `npx tsc` is ordinary.
 An option one of them does not document makes the line uncertain instead of being skipped blindly.
 A runner is read only in its exact shape: the runner name, then the subcommand when it has one,
-then its flags and `--`, then the program. An option with a value, an unknown flag or an assignment
-in that prefix makes the line uncertain, and the program behind a runner is judged by the closed hard
-list only, so `npx rimraf .git` is not hard.
+then its flags and `--`, then the program. An assignment in that prefix is uncertain too, and the
+program behind a runner is judged by the closed hard list only, so `npx rimraf .git` is not hard.
 
 Anything else is **uncertain**, and what makes it so is a construct, never a size: a backslash, a
 substitution, a backtick, a here-doc, process substitution, a wrapper, or a quoted or variable

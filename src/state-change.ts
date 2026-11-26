@@ -191,6 +191,9 @@ const HARMLESS_REDIRECTS = /(?:\d?>&\d)|(?:(?:&|\d)?>\s?(?:\/dev\/null|NUL|\$nul
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+/** Windows shim suffixes: the shell runs the same program through `.exe`, `.cmd` or `.bat`. */
+const PROGRAM_SHIM = /\.(?:exe|cmd|bat)$/i;
+
 /** One word of a shell segment, and whether it came from inside quotes. */
 type CommandWord = { text: string; quoted: boolean };
 
@@ -243,7 +246,7 @@ function isReadSegment(words: readonly CommandWord[]): boolean {
   let start = 0;
   while (start < words.length) {
     const word = words[start];
-    if (!word.quoted && isLeadingNoise(word.text)) {
+    if (isLeadingNoise(word)) {
       start += 1;
       continue;
     }
@@ -254,7 +257,7 @@ function isReadSegment(words: readonly CommandWord[]): boolean {
   const program = command[0];
   // A quoted first word is an argument someone else will read, not a command being run.
   if (program.quoted) return false;
-  const name = program.text;
+  const name = program.text.replace(PROGRAM_SHIM, "");
   const rest = command.slice(1).map((word) => word.text);
   if (WRAPPER_PROGRAMS.includes(name) && name !== "env") return false;
   if (name === "env") {
@@ -334,8 +337,17 @@ function isOption(word: string, option: string): boolean {
   return /^-[A-Za-z]{2,}/.test(word) && word.includes(letter);
 }
 
-function isLeadingNoise(text: string): boolean {
-  return ASSIGNMENT.test(text);
+/**
+ * A leading `NAME=value` assignment is noise: the shell states a variable and runs nothing. The value
+ * may be quoted, and one that is plain is still an assignment — `f="C:/x.md"; wc -l "$f"` reads.
+ * A value that expands or redirects inside its quotes is not plain: `f="$(touch x)"`, `f="${X}"` and
+ * a backtick build a line this reader cannot account for, so those stay commands.
+ */
+function isLeadingNoise(word: CommandWord): boolean {
+  const assignment = ASSIGNMENT.exec(word.text);
+  if (!assignment) return false;
+  const value = word.text.slice(assignment[0].length);
+  return !UNSAFE_TEXT.some((token) => value.includes(token));
 }
 
 /**

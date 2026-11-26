@@ -1116,23 +1116,106 @@ test("a launch that is not a consultation counts as a change and gets no async r
   });
 });
 
-test("a workflow launch is a change, not a consultation, because its result is not read", async () => {
+/**
+ * The real defect this covers: a held task consulted the Advisors the way the policy asks, in one
+ * parallel call, and the host started every child as its own `subagent_launch` call. Those children
+ * were classified as changes, so only the first one ran, the call failed, and the hold stood with no
+ * way out. Three Advisors, three slots, one call.
+ */
+const PARALLEL_ADVISORS = {
+  async: false,
+  workflow: "parallel",
+  args: {
+    tasks: [1, 2, 3].map((slot) => ({
+      agent: ADVISOR_AGENT,
+      model: "example/advisor:high",
+      task: `Advisor ${slot}: review the change.`,
+    })),
+  },
+};
+const THREE_ADVISORS: GlobalDefaults = { ...defaults, advisors: [advisor, advisor, advisor] };
+/** The child the host starts for one of those Advisors, as the nested call reports it. */
+const advisorChild = (workflowRunId: string, key: string, overrides = {}) => ({
+  workflowRunId,
+  key,
+  agent: ADVISOR_AGENT,
+  model: "example/advisor:high",
+  ...overrides,
+});
+
+test("a parallel workflow of Advisors consults, and every child it starts is part of it", async () => {
+  await withHarness({ config: THREE_ADVISORS }, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, "the hold is reached");
+
+    // The consultation itself is never a change, however many Advisors it names.
+    assert.equal(await harness.toolCall("subagent", PARALLEL_ADVISORS), undefined);
+    const parent = harness.lastCall()!;
+    // Every child of that call is part of the consultation: one refused child would fail the call
+    // and leave the hold with nothing that answers it.
+    for (const key of ["task-1", "task-2", "task-3"])
+      assert.equal(
+        await harness.toolCall("subagent_launch", advisorChild(parent, key)),
+        undefined,
+        key,
+      );
+    // One Advisor answered, read from the host's per-child results: the hold lifts.
+    await harness.toolResult("subagent", false, {
+      toolCallId: parent,
+      details: { mode: "workflow", ...roleDetails({ exitCode: 0, finalOutput: "ADVICE" }) },
+    });
+    assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined);
+  });
+});
+
+test("a child of a consultation is exempt only with the profile the host resolves", async () => {
   await withHarness({}, async (harness) => {
     await writeLevel({ level: "strict" });
     await harness.prompt();
-    const workflow = {
-      async: false,
-      workflow: "parallel",
-      args: { tasks: FOREGROUND_CONSULT.tasks },
-    };
-    assert.equal(await harness.toolCall("subagent", workflow), undefined);
-    for (let index = 2; index < GATE_HOLD_CHANGES; index += 1)
-      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
-    // The hold treats it like any other unknown call: it is refused rather than read as an answer
-    // this version cannot parse.
-    const refused = await harness.toolCall("subagent", workflow);
-    assert.equal(refused?.block, true);
-    assert.equal(refused?.reason, gateMessage("role"));
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+
+    await harness.toolCall("subagent", PARALLEL_ADVISORS);
+    const parent = harness.lastCall()!;
+    // An Advisor's profile with another model is not that Advisor, and neither is an ordinary child
+    // riding on the same call: both are changes like any other call, so the hold refuses them.
+    for (const [why, child] of [
+      ["another model", advisorChild(parent, "task-1", { model: "example/small:high" })],
+      ["an ordinary profile", advisorChild(parent, "task-1", { agent: "worker" })],
+      ["no model at all", advisorChild(parent, "task-1", { model: undefined })],
+    ] as const) {
+      const refused = await harness.toolCall("subagent_launch", child);
+      assert.equal(refused?.block, true, why);
+      assert.equal(refused?.reason, gateMessage("role"), why);
+    }
+    // A child whose parent is not a consultation this task launched is no part of one.
+    const stray = await harness.toolCall("subagent_launch", advisorChild("no-such-call", "task-1"));
+    assert.equal(stray?.block, true, "a call id the task never consulted with proves nothing");
+  });
+});
+
+test("a failed workflow result proves nothing, so it lifts no hold", async () => {
+  await withHarness({}, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    await harness.toolCall("subagent", PARALLEL_ADVISORS);
+    const parent = harness.lastCall()!;
+    // The host turns a logical failure into a thrown tool error, and an errored result carries no
+    // details: nothing there proves an Advisor started, so the hold stays and nothing is reported.
+    await harness.toolResult("subagent", true, { toolCallId: parent, details: {} });
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    assert.equal(
+      harness.notifications.filter(({ type }) => type === "warning").length,
+      0,
+      "an unreadable result is not evidence that an Advisor started",
+    );
   });
 });
 
