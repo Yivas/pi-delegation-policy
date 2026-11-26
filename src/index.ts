@@ -718,6 +718,17 @@ function guardConsultEnabled(state: RuntimeState): boolean {
   return state.guardMode?.mode.consultBeforeFirstChange === true;
 }
 
+/** The reviewer's stored mode, which says nothing about whether the model can act here. */
+function guardReviewerModeOf(state: RuntimeState): string {
+  return state.guardMode?.mode.reviewer.mode ?? "off";
+}
+
+/** The reviewer's model, or the reason the token cannot name one. */
+function guardReviewerModelOf(state: RuntimeState): string {
+  if (state.guardMode?.invalid) return "invalid";
+  return state.guardMode?.mode.reviewer.model ?? "none";
+}
+
 export function statusText(state: RuntimeState): string {
   const { effective } = state;
   const context = effective.contextShunt;
@@ -740,6 +751,7 @@ export function statusText(state: RuntimeState): string {
     `advisor-level=${state.advisorLevel?.level ?? DEFAULT_ADVISOR_LEVEL} (${state.advisorLevel?.source ?? "default"})`,
     `advisor-context=${state.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE}`,
     `guard-consult=${guardConsultEnabled(state) ? "on" : "off"} (${state.guardMode?.invalid ? "invalid" : guardConsultEnabled(state) ? "global" : "default"})`,
+    `guard-reviewer=${guardReviewerModeOf(state)} (${guardReviewerModelOf(state)})`,
     `main-model=${state.mainModel ?? "unknown"}`,
     ...effective.advisors.map(
       (entry, index) =>

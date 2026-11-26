@@ -246,6 +246,13 @@ const KEY_PART = /^[A-Za-z0-9._:@-]{1,128}$/;
 /** A model id may also carry a slash, as in `openai/gpt-6.1-sol`. */
 const KEY_ID = /^[A-Za-z0-9._:@/-]{1,128}$/;
 
+/** Whether a string is a plain "provider/id" key, split at the first slash like the file names it. */
+export function isModelKey(value: string): boolean {
+  const separator = value.indexOf("/");
+  if (separator <= 0) return false;
+  return KEY_PART.test(value.slice(0, separator)) && KEY_ID.test(value.slice(separator + 1));
+}
+
 /** "provider/id" for the host's current main model, or undefined when it cannot be named safely. */
 export function mainModelKey(model: unknown): string | undefined {
   if (!isRecord(model)) return undefined;

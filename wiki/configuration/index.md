@@ -635,6 +635,45 @@ cannot be read, and `/delegate status` reports it as `guard-consult=on (global)`
 copy: **Apply changes** and **Save effective configuration as defaults** both write it, and a file
 this version cannot read is reported instead of replaced.
 
+**Guard reviewer model** and **Guard reviewer mode** are the optional second opinion for `guard`, in
+user scope only and in that same `delegation-policy.guard.json`. The model row reuses the role model
+picker: `None` pins the default, only models this host can already use are listed, and the main
+model is never offered, because it would judge its own calls with the same prompt. The row says
+which state the reviewer is in:
+
+| Row reads                          | Meaning                                                         |
+| ---------------------------------- | --------------------------------------------------------------- |
+| `not set · rules only`             | No model, so no call is made                                    |
+| `<provider/id> · observing`        | Set, and running in `observe`                                   |
+| `<provider/id> · enforcing`        | Set, and running in `enforce`                                   |
+| `<model> · no credential · …`      | That provider has no configured credential here                 |
+| `<model> · not available · …`      | The model is not registered, or is outside this session's scope |
+| `<model> · same as the main model` | The main model cannot be the reviewer                           |
+| `<model> · idle (level is …)`      | Nothing runs, because the level in effect is not `guard`        |
+| `Invalid · off`                    | The file cannot be read, so every guard setting is off          |
+
+Choosing a model returns the mode to `observe`, the same model or another, so nothing enforces on a
+model you have not seen it run in this session. The mode row offers `observe` and `enforce`, says
+` · not running` when the stored mode cannot act, and refuses to switch when the model is missing, has
+no credential or is the main model. `off` is not a value you pick: it is what having no model means.
+Choosing a model states once what travels, in the same words the panel uses:
+
+> The guard reviewer is a second opinion, not a sandbox. It checks each change before it runs. For
+> every change it sends your messages in this task, the pending call's path and the start of the new
+> content or the command, and the headings of recent calls to `<provider/id>`, using that provider's
+> own credentials. It never sends tool output or the agent's own text. Expect one small extra model
+> call per change and a short wait before it.
+
+Switching to `enforce` states the same once, in its own words, and names the model that stays there:
+
+> Enforcing means a blocked call is not run. The agent must consult the Advisor before retrying, and
+> 3 blocks in a row stop it and ask you. Some blocks will be wrong. You can return to observe at any
+> time. Enter keeps `<provider/id>` in enforce, and Esc or Ctrl+C keeps the previous mode.
+
+The reviewer never lifts a rule only you can allow, never changes a permission of the host and never
+runs in a subagent child. This version stores the choice and reports it, and calls no model: `guard`
+still decides with its own rules and its count alone.
+
 With Advisor off the level has no effect. It is resolved from a session override first, then from the
 entry for the current main model, then from the global level, then from `standard`, and a task keeps
 the level it started with. The commands are `/delegate advisor level off|standard|strict|guard|default` for
@@ -958,8 +997,11 @@ What it costs and what it does not:
 
 - Global defaults: `~/.pi/agent/delegation-policy.json`, schema 7: intensity, preference, the
   tri-state ordinary roles, `uiDesign`, the thinking policies, and the ContextShunt configuration.
-- Guard settings: `delegation-policy.guard.json`, schema 1 with `consultBeforeFirstChange`. Missing
-  means off, an unreadable or invalid file is reported and means off, and writing off removes it.
+- Guard settings: `delegation-policy.guard.json`, schema 2 with `consultBeforeFirstChange` and an
+  optional `reviewer: {model, mode}`, and `reviewer: null` means the same as leaving it out. Missing
+  means off, an unreadable or invalid file is reported and means off with no reviewer, and writing
+  everything off removes the file. Schema 1 is still read, as a reviewer that is off. A `mode` other
+  than `off` needs a model, and the writer stores a mode with no model as `off`.
 - Launch correction mode: `delegation-policy.launch-correction.json`, schema 1 with `mode`. Missing
   or invalid state means `correct`. Older versions ignore it.
 - Advisor nudge level: `delegation-policy.advisor-level.json`, schema 1 with `level`, optional

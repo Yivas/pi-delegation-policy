@@ -31,7 +31,7 @@ import {
   type AdvisorLevelSaveResult,
   DEFAULT_ADVISOR_LEVEL,
 } from "./advisor-level.ts";
-import { isAdvisorEnabled } from "./runtime.ts";
+import { formatModelRef, isAdvisorEnabled } from "./runtime.ts";
 import { buildPolicyPreview } from "./prompt.ts";
 import {
   ADVISOR_LAUNCH_MODES,
@@ -73,7 +73,13 @@ import {
   trimAdvisorFilter,
   type AdvisorFilterSaveResult,
 } from "./advisor-filter-mode.ts";
-import { type GuardModeSaveResult } from "./guard-mode.ts";
+import {
+  defaultGuardMode,
+  type GuardMode,
+  type GuardModeSaveResult,
+  type GuardReviewerMode,
+  sameGuardMode,
+} from "./guard-mode.ts";
 
 const USE_GLOBAL_DEFAULT = "Use global default";
 const DISABLE_FOR_SESSION = "Disable for this session";
@@ -110,9 +116,17 @@ const FIELD_IDS = [
   "advisor3",
   "advisorLevel",
   "guardConsult",
+  "guardReviewerModel",
+  "guardReviewerMode",
   "launchCorrection",
 ] as const;
 type DelegateField = (typeof FIELD_IDS)[number];
+/** Guard settings that live in the same user-scope companion as the consult switch. */
+const GUARD_FIELDS = ["guardConsult", "guardReviewerModel", "guardReviewerMode"] as const;
+type GuardField = (typeof GUARD_FIELDS)[number];
+function isGuardField(field: string): field is GuardField {
+  return (GUARD_FIELDS as readonly string[]).includes(field);
+}
 const THINKING_FIELDS = [
   "thinkingSmall",
   "thinkingMedium",
@@ -141,6 +155,11 @@ const ENTRY_FIELDS = [
 ] as const;
 type EntryField = (typeof ENTRY_FIELDS)[number];
 type ModelField = ThinkingKey | AdvisorField | EntryField;
+/**
+ * The reviewer's model reuses the role picker, but it stages no session value: it belongs to the
+ * guard companion, in user scope, like the two rows around it.
+ */
+type PanelModelField = ModelField | "guardReviewerModel";
 const ENTRY_FIELD_KEYS: Record<EntryField, OptionalRoleEntryKey> = {
   uiDesign2: "uiDesign2",
   uiDesign3: "uiDesign3",
@@ -233,7 +252,7 @@ type PanelMode =
   | { kind: "provider"; index: number; selected: number }
   | { kind: "advisor-read"; index: number; selected: number }
   | { kind: "extension"; index: number; provider: string; selected: number }
-  | { kind: "model"; field: ModelField; selected: number; query: string }
+  | { kind: "model"; field: PanelModelField; selected: number; query: string }
   | { kind: "advanced"; selected: number }
   | { kind: "advanced-reader-enabled"; selected: number }
   | { kind: "advanced-reader-role"; selected: number }
@@ -248,6 +267,9 @@ type PanelMode =
     }
   | { kind: "continuity"; selected: number }
   | { kind: "guard-consult"; selected: number }
+  | { kind: "guard-reviewer-mode"; selected: number }
+  | { kind: "guard-reviewer-notice"; text: string }
+  | { kind: "guard-reviewer-confirm"; text: string; model: string; previous: GuardReviewerMode }
   | { kind: "discard-confirm"; selected: number };
 
 type ThinkingAction = "inherit" | "unset" | "fixed" | "range";
@@ -313,12 +335,21 @@ export interface DelegatePanelOptions {
   advisorLevelInvalid?: boolean;
   /** Stores the global nudge level; Apply and Save both write a changed value first. */
   onSaveAdvisorLevel?: (level: AdvisorLevel) => Promise<AdvisorLevelSaveResult>;
-  /** User scope only: hold the first change of every `guard` task until a consultation answers. */
-  guardConsult?: boolean;
-  /** The guard companion is unreadable or invalid, so the switch shown is off and not a choice. */
-  guardConsultInvalid?: boolean;
+  /** User scope only, as the guard companion holds it: the consult switch and the reviewer. */
+  guardMode?: GuardMode;
+  /** The guard companion is unreadable or invalid, so all three rows show the defaults. */
+  guardModeInvalid?: boolean;
   /** Stores the guard settings; Apply and Save both write a changed value before their own step. */
-  onSaveGuardConsult?: (consult: boolean) => Promise<GuardModeSaveResult>;
+  onSaveGuardMode?: (mode: GuardMode) => Promise<GuardModeSaveResult>;
+  /** "provider/id" of the host's main model: it is never offered as the reviewer. */
+  mainModel?: string;
+  /** The level this session runs, so the guard rows can say they are idle outside `guard`. */
+  effectiveLevel?: AdvisorLevel;
+  /**
+   * Why the reviewer's configured model cannot run here. The picker lists only the models this host
+   * can already use, so this row speaks about a model the picker does not offer.
+   */
+  reviewerModelIssue?: (model: string) => ReviewerModelIssue | undefined;
   /** Installed user packages that pass the identity check, offered as provider extensions. */
   extensionCandidates?: readonly ProviderPackage[];
   /** Providers that an extension registered in this session; only these offer the step. */
@@ -382,6 +413,8 @@ const FIELD_LABELS: Record<DelegateField, string> = {
   advisorMode: "Advisor mode",
   advisorLevel: "Advisor nudge",
   guardConsult: "Guard consult first",
+  guardReviewerModel: "Guard reviewer model",
+  guardReviewerMode: "Guard reviewer mode",
   launchCorrection: "Launch correction",
 };
 
@@ -444,9 +477,56 @@ const FIELD_DESCRIPTIONS: Record<DelegateField, string> = {
   advisorLevel: NUDGE_DESCRIPTION,
   guardConsult:
     "Holds the first change of every guard task until an Advisor consultation answers. Strict and the other levels are not affected.",
+  guardReviewerModel:
+    "A second opinion that may refuse one call. It runs no tool, lifts no rule and changes no permission.",
+  guardReviewerMode:
+    "Observing records what it would refuse. Enforcing refuses that call until an Advisor answer covers it.",
   launchCorrection:
     "Global for every session; Apply or Save stores it. Block refuses the launches the check would correct, to measure the original behavior.",
 };
+
+/**
+ * What choosing a reviewer model tells the user, once, at the moment of choosing: what travels, what
+ * never does, what it costs and what it is not. The same text is in the wiki.
+ */
+function guardReviewerDisclosure(model: string): string {
+  // The caveat opens the text: on a short terminal the tail is the first thing the notice loses.
+  return `The guard reviewer is a second opinion, not a sandbox. It checks each change before it runs. For every change it sends your messages in this task, the pending call's path and the start of the new content or the command, and the headings of recent calls to ${model}, using that provider's own credentials. It never sends tool output or the agent's own text. Expect one small extra model call per change and a short wait before it.`;
+}
+
+/**
+ * What switching to `enforce` means, stated where the switch is made. It names the model that stays
+ * in `enforce` and says how to decline, because the mode is already staged behind this screen.
+ */
+function guardReviewerEnforceConfirm(model: string): string {
+  return `Enforcing means a blocked call is not run. The agent must consult the Advisor before retrying, and 3 blocks in a row stop it and ask you. Some blocks will be wrong. You can return to observe at any time. Enter keeps ${model} in enforce, and Esc or Ctrl+C keeps the previous mode.`;
+}
+const GUARD_REVIEWER_MODE_DESCRIPTION =
+  "Observing records what the reviewer would have refused and runs every call. Enforcing refuses the call until an Advisor answer covers it. It never lifts a rule only you can allow and it changes no permission of the host. Only a model that exists here with a configured credential can enforce.";
+/** Offered in this order: Enter keeps the mode that blocks nothing, and enforce is the deliberate step. */
+const GUARD_REVIEWER_MODE_CHOICES = [
+  "observe: record what it would refuse, and run every call",
+  "enforce: refuse that call until the agent consults the Advisor",
+] as const;
+const GUARD_REVIEWER_NONE = "None";
+const GUARD_REVIEWER_NONE_DESCRIPTION = "rules only, no reviewer calls";
+
+/** Why a configured reviewer cannot run, in the words the rows use. */
+type ReviewerModelIssue = "no-credential" | "unavailable";
+
+/** The reason a mode switch is refused, so the row never claims a reviewer that cannot act. */
+function reviewerRefusalText(blocker: "no-model" | "main-model" | ReviewerModelIssue): string {
+  switch (blocker) {
+    case "no-model":
+      return "No reviewer model is set, so there is nothing to switch on. Choose a model first.";
+    case "main-model":
+      return "The reviewer cannot be the main model. Choose another model.";
+    case "no-credential":
+      return "That model has no configured credential here, so the reviewer cannot run. Choose another model.";
+    case "unavailable":
+      return "That model is not available in this session, so the reviewer cannot run. Choose another model.";
+  }
+}
 
 const GUARD_CONSULT_DESCRIPTION =
   "Global for every session, not a session setting: Apply or Save stores it in delegation-policy.guard.json. When it is on, a guard task starts held, so its first change waits for an Advisor consultation that answers, and the guard count applies after it. Strict is unchanged, and with no valid Advisor and launcher nothing is held.";
@@ -514,10 +594,17 @@ function roleEntriesFailureText(result: RoleEntriesSaveResult): string {
     : "Could not save the optional role entries.";
 }
 
-function guardConsultFailureText(result: GuardModeSaveResult): string {
+function guardModeFailureText(result: GuardModeSaveResult): string {
   return result === "unknown-state"
     ? "Guard settings file is unreadable or invalid; fix or remove delegation-policy.guard.json, then retry."
-    : "Could not save the consult-before-first-change switch.";
+    : "Could not save the guard settings.";
+}
+
+/** What a saved guard companion holds, for the message that names it without denying the write. */
+function guardModeSummary(mode: GuardMode): string {
+  const reviewer =
+    mode.reviewer.model === null ? "off" : `${mode.reviewer.model} ${mode.reviewer.mode}`;
+  return `the guard settings (consult ${mode.consultBeforeFirstChange ? "on" : "off"}, reviewer ${reviewer})`;
 }
 
 function advisorLevelFailureText(result: AdvisorLevelSaveResult): string {
@@ -688,17 +775,21 @@ export class DelegatePanel implements Component, Focusable {
   private advisorLevel: AdvisorLevel | undefined;
   private draftAdvisorLevel: AdvisorLevel;
   private readonly advisorLevelInvalid: boolean;
-  private readonly onSaveGuardConsult: DelegatePanelOptions["onSaveGuardConsult"];
-  /** As the companion holds it: the switch is user scope only, so there is no session copy. */
-  private guardConsult: boolean;
-  private draftGuardConsult: boolean;
-  private readonly guardConsultInvalid: boolean;
+  private readonly onSaveGuardMode: DelegatePanelOptions["onSaveGuardMode"];
+  /** As the companion holds it: the guard settings are user scope only, so no session copy. */
+  private guardMode: GuardMode;
+  private draftGuardMode: GuardMode;
+  private readonly guardModeInvalid: boolean;
+  private readonly mainModel: string | undefined;
+  /** The level this session runs, which the guard rows read to report that they are idle. */
+  private readonly effectiveLevel: AdvisorLevel;
+  private readonly reviewerModelIssue: DelegatePanelOptions["reviewerModelIssue"];
   /** Global steps already on disk from this editor, so a later failure never denies them. */
   private readonly savedGlobals = new Map<
     | "admissions"
     | "launchCorrection"
     | "advisorLevel"
-    | "guardConsult"
+    | "guardMode"
     | "roleEntries"
     | "advisorRead"
     | "advisorFilter",
@@ -761,10 +852,13 @@ export class DelegatePanel implements Component, Focusable {
     this.advisorLevel = options.advisorLevel;
     this.draftAdvisorLevel = options.advisorLevel ?? DEFAULT_ADVISOR_LEVEL;
     this.advisorLevelInvalid = options.advisorLevelInvalid ?? false;
-    this.onSaveGuardConsult = options.onSaveGuardConsult;
-    this.guardConsult = options.guardConsult ?? false;
-    this.draftGuardConsult = this.guardConsult;
-    this.guardConsultInvalid = options.guardConsultInvalid ?? false;
+    this.onSaveGuardMode = options.onSaveGuardMode;
+    this.guardMode = structuredClone(options.guardMode ?? defaultGuardMode());
+    this.draftGuardMode = structuredClone(this.guardMode);
+    this.guardModeInvalid = options.guardModeInvalid ?? false;
+    this.mainModel = options.mainModel;
+    this.effectiveLevel = options.effectiveLevel ?? DEFAULT_ADVISOR_LEVEL;
+    this.reviewerModelIssue = options.reviewerModelIssue;
   }
 
   get focused(): boolean {
@@ -809,9 +903,9 @@ export class DelegatePanel implements Component, Focusable {
     return this.draftAdvisorLevel !== (this.advisorLevel ?? DEFAULT_ADVISOR_LEVEL);
   }
 
-  private guardConsultDirty(): boolean {
-    if (!this.onSaveGuardConsult) return false;
-    return this.draftGuardConsult !== this.guardConsult;
+  private guardModeDirty(): boolean {
+    if (!this.onSaveGuardMode) return false;
+    return !sameGuardMode(this.guardMode, this.draftGuardMode);
   }
 
   private roleEntriesDirty(): boolean {
@@ -878,7 +972,7 @@ export class DelegatePanel implements Component, Focusable {
       this.admissionsDirty() ||
       this.launchCorrectionDirty() ||
       this.advisorLevelDirty() ||
-      this.guardConsultDirty() ||
+      this.guardModeDirty() ||
       this.roleEntriesDirty() ||
       this.advisorReadDirty() ||
       this.advisorFilterDirty()
@@ -969,6 +1063,10 @@ export class DelegatePanel implements Component, Focusable {
     else if (this.mode.kind === "correction") this.handleCorrectionInput(data);
     else if (this.mode.kind === "nudge") this.handleNudgeInput(data);
     else if (this.mode.kind === "guard-consult") this.handleGuardConsultInput(data);
+    else if (this.mode.kind === "guard-reviewer-mode") this.handleGuardReviewerModeInput(data);
+    else if (this.mode.kind === "guard-reviewer-notice") this.handleGuardReviewerNoticeInput(data);
+    else if (this.mode.kind === "guard-reviewer-confirm")
+      this.handleGuardReviewerConfirmInput(data);
     else if (this.mode.kind === "provider") this.handleProviderInput(data);
     else if (this.mode.kind === "advisor-read") this.handleAdvisorReadInput(data);
     else if (this.mode.kind === "extension") this.handleExtensionInput(data);
@@ -1007,6 +1105,17 @@ export class DelegatePanel implements Component, Focusable {
     if (mode.kind === "correction") return this.renderCorrection(width, budget, mode);
     if (mode.kind === "nudge") return this.renderNudge(width, budget, mode);
     if (mode.kind === "guard-consult") return this.renderGuardConsult(width, budget, mode);
+    if (mode.kind === "guard-reviewer-mode")
+      return this.renderGuardReviewerMode(width, budget, mode);
+    if (mode.kind === "guard-reviewer-notice")
+      return this.renderNotice(width, budget, mode.text, "Enter or Esc returns to the settings.");
+    if (mode.kind === "guard-reviewer-confirm")
+      return this.renderNotice(
+        width,
+        budget,
+        mode.text,
+        "Enter confirms enforcing. Esc or Ctrl+C keeps the previous mode.",
+      );
     if (mode.kind === "provider") return this.renderProvider(width, budget, mode);
     if (mode.kind === "advisor-read") return this.renderAdvisorRead(width, budget, mode);
     if (mode.kind === "extension") return this.renderExtension(width, budget, mode);
@@ -1098,18 +1207,23 @@ export class DelegatePanel implements Component, Focusable {
               ? "Delegation policy / Advisor nudge (global)"
               : this.mode.kind === "guard-consult"
                 ? "Delegation policy / Guard consult first (global)"
-                : this.mode.kind === "advanced" ||
-                    this.mode.kind === "advanced-reader-enabled" ||
-                    this.mode.kind === "advanced-reader-role" ||
-                    this.mode.kind === "advanced-input"
-                  ? "Delegation policy / Context advanced"
-                  : this.mode.kind === "advisor-read"
-                    ? `Delegation policy / Advisor ${this.mode.index + 1} reading`
-                    : this.mode.kind === "provider"
-                      ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
-                      : this.mode.kind === "extension"
-                        ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
-                        : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
+                : this.mode.kind === "guard-reviewer-mode"
+                  ? "Delegation policy / Guard reviewer mode (global)"
+                  : this.mode.kind === "guard-reviewer-notice" ||
+                      this.mode.kind === "guard-reviewer-confirm"
+                    ? "Delegation policy / Guard reviewer (global)"
+                    : this.mode.kind === "advanced" ||
+                        this.mode.kind === "advanced-reader-enabled" ||
+                        this.mode.kind === "advanced-reader-role" ||
+                        this.mode.kind === "advanced-input"
+                      ? "Delegation policy / Context advanced"
+                      : this.mode.kind === "advisor-read"
+                        ? `Delegation policy / Advisor ${this.mode.index + 1} reading`
+                        : this.mode.kind === "provider"
+                          ? `Delegation policy / Advisor ${this.mode.index + 1} profile`
+                          : this.mode.kind === "extension"
+                            ? `Delegation policy / Advisor ${this.mode.index + 1} provider extension`
+                            : `Delegation policy / ${FIELD_LABELS[this.mode.field]}`;
     const status = this.working ?? (this.isDirty() ? "Modified" : "");
     const gap = Math.max(1, width - visibleWidth(modeLabel) - visibleWidth(status));
     const statusText = this.theme.fg("warning", status);
@@ -1190,6 +1304,60 @@ export class DelegatePanel implements Component, Focusable {
     return `${pad(FIELD_LABELS[field], labelWidth)}${value}`;
   }
 
+  /**
+   * The reviewer as the two rows report it: the model the companion holds, the reason it cannot run
+   * here, and the mode it would run in. One resolution feeds both rows, so they never disagree
+   * about a reviewer that is set and not running.
+   */
+  private reviewerState(): {
+    model: string | null;
+    blocker?: "main-model" | ReviewerModelIssue;
+    mode: GuardReviewerMode;
+  } {
+    const reviewer = this.draftGuardMode.reviewer;
+    if (reviewer.model === null) return { model: null, mode: "off" };
+    const blocker = this.reviewerBlocker(reviewer.model);
+    return blocker
+      ? { model: reviewer.model, blocker, mode: "off" }
+      : { model: reviewer.model, mode: reviewer.mode };
+  }
+
+  private reviewerBlocker(model: string): "main-model" | ReviewerModelIssue | undefined {
+    if (model === this.mainModel) return "main-model";
+    if (this.reviewerModelIssue) return this.reviewerModelIssue(model);
+    // Without a host resolver the picker is the only evidence, and it lists models this host can
+    // already use.
+    const offered = this.candidates.some(
+      (candidate) =>
+        formatModelRef({ provider: candidate.provider, model: candidate.id }) === model,
+    );
+    return offered ? undefined : "unavailable";
+  }
+
+  private guardReviewerModelValue(): string {
+    if (this.guardModeInvalid && !this.guardModeDirty()) return "Invalid · off";
+    const reviewer = this.reviewerState();
+    if (reviewer.model === null) return "not set · rules only";
+    // A reviewer acts only in `guard`, so outside it the row says why nothing runs.
+    if (this.effectiveLevel !== "guard")
+      return `${reviewer.model} · idle (level is ${this.effectiveLevel})`;
+    if (reviewer.blocker === "main-model")
+      return `${reviewer.model} · same as the main model · reviewer off`;
+    if (reviewer.blocker === "no-credential")
+      return `${reviewer.model} · no credential · reviewer off`;
+    if (reviewer.blocker === "unavailable")
+      return `${reviewer.model} · not available · reviewer off`;
+    return `${reviewer.model} · ${reviewer.mode === "observe" ? "observing" : reviewer.mode === "enforce" ? "enforcing" : "off"}`;
+  }
+
+  private guardReviewerModeValue(): string {
+    if (this.guardModeInvalid && !this.guardModeDirty()) return "Invalid · off";
+    const reviewer = this.reviewerState();
+    if (reviewer.model === null) return "off";
+    // A stored mode that cannot act says so instead of promising a call nothing will make.
+    return reviewer.blocker ? `${this.draftGuardMode.reviewer.mode} · not running` : reviewer.mode;
+  }
+
   private settingsValue(
     field: DelegateField,
     effective: ReturnType<typeof resolveDelegateState>,
@@ -1234,14 +1402,17 @@ export class DelegatePanel implements Component, Focusable {
       return this.advisorLevelInvalid && !this.advisorLevelDirty()
         ? "Invalid · standard"
         : `${this.draftAdvisorLevel} · ${this.advisorLevel === undefined ? "default" : "global"}`;
-    // An unreadable companion changes nothing by itself: the level behaves as it does with the switch
-    // off, and the row says that is not a choice the user made until a different value is staged.
+    // An unreadable companion changes nothing by itself: the level behaves as it does with the
+    // switch off and no reviewer, and the row says that is not a choice the user made until a
+    // different value is staged.
     if (field === "guardConsult")
-      return this.guardConsultInvalid && !this.guardConsultDirty()
+      return this.guardModeInvalid && !this.guardModeDirty()
         ? "Invalid · off"
-        : this.draftGuardConsult
+        : this.draftGuardMode.consultBeforeFirstChange
           ? "on · global"
           : "off · default";
+    if (field === "guardReviewerModel") return this.guardReviewerModelValue();
+    if (field === "guardReviewerMode") return this.guardReviewerModeValue();
     if (field === "launchCorrection")
       return this.draftLaunchCorrection === "block"
         ? "block · global · measurement"
@@ -1573,14 +1744,19 @@ export class DelegatePanel implements Component, Focusable {
         }`,
         "session or model override: /delegate advisor level",
       ];
-    if (field === "guardConsult")
-      return [
-        "built-in off",
-        `global ${
-          this.guardConsultInvalid ? "unreadable or invalid" : this.guardConsult ? "on" : "off"
-        }`,
-        "not a session setting",
-      ];
+    if (isGuardField(field)) {
+      const reviewer = this.draftGuardMode.reviewer;
+      const global = this.guardModeInvalid
+        ? "unreadable or invalid"
+        : field === "guardConsult"
+          ? this.guardMode.consultBeforeFirstChange
+            ? "on"
+            : "off"
+          : reviewer.model === null
+            ? "no reviewer"
+            : `${reviewer.model} ${reviewer.mode}`;
+      return ["built-in off", `global ${global}`, "not a session setting"];
+    }
     if (field === "launchCorrection")
       return [
         `built-in ${DEFAULT_LAUNCH_CORRECTION_MODE}`,
@@ -1754,12 +1930,88 @@ export class DelegatePanel implements Component, Focusable {
       this.mode = { kind: "settings" };
     else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
       // Without a writer the switch would show in the row and never reach the file, so it is refused.
-      if (!this.onSaveGuardConsult) {
+      if (!this.onSaveGuardMode) {
         this.message = { kind: "error", text: noWriterText("delegation-policy.guard.json") };
         this.mode = { kind: "settings" };
         return;
       }
-      this.draftGuardConsult = this.mode.selected === 1;
+      this.draftGuardMode = {
+        ...this.draftGuardMode,
+        consultBeforeFirstChange: this.mode.selected === 1,
+      };
+      this.mode = { kind: "settings" };
+    }
+  }
+
+  /**
+   * The mode needs a reviewer that can actually run: a mode is only reached from a model the user
+   * chose, and enforcing on a model that is missing, unauthenticated or the main model would promise
+   * a call that never happens. There is no third choice, and no way to switch off by hand, because
+   * off is what having no model means.
+   */
+  private handleGuardReviewerModeInput(data: string): void {
+    if (this.mode.kind !== "guard-reviewer-mode") return;
+    const count = GUARD_REVIEWER_MODE_CHOICES.length;
+    if (matchesKey(data, "up")) this.mode.selected = (this.mode.selected - 1 + count) % count;
+    else if (matchesKey(data, "down")) this.mode.selected = (this.mode.selected + 1) % count;
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))
+      this.mode = { kind: "settings" };
+    else if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      if (!this.onSaveGuardMode) {
+        this.message = { kind: "error", text: noWriterText("delegation-policy.guard.json") };
+        this.mode = { kind: "settings" };
+        return;
+      }
+      const reviewer = this.reviewerState();
+      if (reviewer.model === null) {
+        this.message = { kind: "error", text: reviewerRefusalText("no-model") };
+        this.mode = { kind: "settings" };
+        return;
+      }
+      if (reviewer.blocker) {
+        this.message = { kind: "error", text: reviewerRefusalText(reviewer.blocker) };
+        this.mode = { kind: "settings" };
+        return;
+      }
+      const mode: GuardReviewerMode = this.mode.selected === 1 ? "enforce" : "observe";
+      const previous = this.draftGuardMode.reviewer.mode;
+      this.draftGuardMode = { ...this.draftGuardMode, reviewer: { model: reviewer.model, mode } };
+      // Enforcing is staged behind a confirmation that can be declined: Escape puts the previous
+      // mode back, so applying another row later never ships a mode the user refused.
+      this.mode =
+        mode === "enforce"
+          ? {
+              kind: "guard-reviewer-confirm",
+              text: guardReviewerEnforceConfirm(reviewer.model),
+              model: reviewer.model,
+              previous,
+            }
+          : { kind: "settings" };
+    }
+  }
+
+  /** The disclosure is read and dismissed: it changes no setting by itself. */
+  private handleGuardReviewerNoticeInput(data: string): void {
+    if (this.mode.kind !== "guard-reviewer-notice") return;
+    if (
+      matchesKey(data, "enter") ||
+      matchesKey(data, "space") ||
+      matchesKey(data, "escape") ||
+      matchesKey(data, "ctrl+c")
+    )
+      this.mode = { kind: "settings" };
+  }
+
+  /** Enforcing only survives an explicit Enter: Escape or Ctrl+C restores the mode it replaced. */
+  private handleGuardReviewerConfirmInput(data: string): void {
+    if (this.mode.kind !== "guard-reviewer-confirm") return;
+    const { model, previous } = this.mode;
+    if (matchesKey(data, "enter") || matchesKey(data, "space")) {
+      this.mode = { kind: "settings" };
+      return;
+    }
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+      this.draftGuardMode = { ...this.draftGuardMode, reviewer: { model, mode: previous } };
       this.mode = { kind: "settings" };
     }
   }
@@ -1861,6 +2113,42 @@ export class DelegatePanel implements Component, Focusable {
       0,
       Math.max(0, budget - Math.min(blocks.length, budget)),
     );
+    return [
+      ...description,
+      ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
+    ];
+  }
+
+  /**
+   * A whole paragraph, wrapped, with one line saying how to leave it. The hint line is reserved
+   * first, and a paragraph that does not fit loses its tail behind an explicit ellipsis rather than
+   * silently.
+   */
+  private renderNotice(width: number, budget: number, text: string, hint: string): string[] {
+    const hintLine = truncateToWidth(this.theme.fg("dim", hint), width, "");
+    const available = Math.max(1, budget - 2);
+    const lines = wrapTextWithAnsi(text, width);
+    if (lines.length <= available) return [...lines, "", hintLine].slice(0, budget);
+    const shown = lines.slice(0, available);
+    shown[shown.length - 1] = truncateToWidth(`${shown[shown.length - 1]} …`, width, "…");
+    return [...shown, "", hintLine].slice(0, budget);
+  }
+
+  private renderGuardReviewerMode(
+    width: number,
+    budget: number,
+    mode: Extract<PanelMode, { kind: "guard-reviewer-mode" }>,
+  ): string[] {
+    const reviewer = this.reviewerState();
+    const blocker = reviewer.model === null ? "no-model" : reviewer.blocker;
+    const blocks = GUARD_REVIEWER_MODE_CHOICES.map((choice, index) => [
+      selectedLine(this.theme, choice, width, index === mode.selected),
+    ]);
+    // Reserve the choices first, so a wrapped explanation never hides the selection.
+    const description = wrapTextWithAnsi(
+      blocker ? reviewerRefusalText(blocker) : GUARD_REVIEWER_MODE_DESCRIPTION,
+      width,
+    ).slice(0, Math.max(0, budget - Math.min(blocks.length, budget)));
     return [
       ...description,
       ...this.renderBlockViewport(blocks, mode.selected, width, budget - description.length),
@@ -2388,7 +2676,21 @@ export class DelegatePanel implements Component, Focusable {
       return;
     }
     if (item === "guardConsult") {
-      this.mode = { kind: "guard-consult", selected: this.draftGuardConsult ? 1 : 0 };
+      this.mode = {
+        kind: "guard-consult",
+        selected: this.draftGuardMode.consultBeforeFirstChange ? 1 : 0,
+      };
+      return;
+    }
+    if (item === "guardReviewerModel") {
+      this.openModelSelector(item);
+      return;
+    }
+    if (item === "guardReviewerMode") {
+      this.mode = {
+        kind: "guard-reviewer-mode",
+        selected: this.draftGuardMode.reviewer.mode === "enforce" ? 1 : 0,
+      };
       return;
     }
     if (item === "launchCorrection") {
@@ -2775,12 +3077,15 @@ export class DelegatePanel implements Component, Focusable {
     else delete this.draft.contextShunt;
   }
 
-  private openModelSelector(field: ModelField): void {
+  private openModelSelector(field: PanelModelField): void {
     this.searchInput.setValue("");
     const choices = this.modelChoices(field, "");
-    const current = isEntryField(field)
-      ? (this.entryList(entryKeyOf(field)) ?? null)
-      : this.modelSetting(this.draft, field);
+    const current =
+      field === "guardReviewerModel"
+        ? this.reviewerReference()
+        : isEntryField(field)
+          ? (this.entryList(entryKeyOf(field)) ?? null)
+          : this.modelSetting(this.draft, field);
     let selected = 0;
     if (current === null) selected = choices.findIndex((choice) => choice.kind === "disabled");
     else if (current) selected = choices.findIndex((choice) => choice.key === modelKey(current));
@@ -2930,6 +3235,25 @@ export class DelegatePanel implements Component, Focusable {
       else this.mode = { kind: "settings" };
       return;
     }
+    if (field === "guardReviewerModel") {
+      // Without a writer the choice would show in the row and never reach the file, so it is refused.
+      if (!this.onSaveGuardMode) {
+        this.message = { kind: "error", text: noWriterText("delegation-policy.guard.json") };
+        this.mode = { kind: "settings" };
+        return;
+      }
+      const model = choice.kind === "model" ? formatModelRef(choice.reference) : null;
+      // Choosing a model, the same one or another, always starts in observe: nothing enforces on a
+      // model the user has not seen it run in this session.
+      const mode: GuardReviewerMode = model === null ? "off" : "observe";
+      this.draftGuardMode = { ...this.draftGuardMode, reviewer: { model, mode } };
+      // What travels and what it costs is said once, here, where the model is chosen.
+      this.mode =
+        model === null
+          ? { kind: "settings" }
+          : { kind: "guard-reviewer-notice", text: guardReviewerDisclosure(model) };
+      return;
+    }
     if (isEntryField(field)) {
       const key = entryKeyOf(field);
       const family = entryFamilyOf(key);
@@ -3022,7 +3346,16 @@ export class DelegatePanel implements Component, Focusable {
     this.draft.advisors = entries.length ? entries : null;
   }
 
-  private modelChoices(field: ModelField, query: string): ModelChoice[] {
+  /** The companion's "provider/id" as a reference, so the picker can preselect it. */
+  private reviewerReference(): ModelRef | null {
+    const model = this.draftGuardMode.reviewer.model;
+    if (model === null) return null;
+    const separator = model.indexOf("/");
+    return { provider: model.slice(0, separator), model: model.slice(separator + 1) };
+  }
+
+  private modelChoices(field: PanelModelField, query: string): ModelChoice[] {
+    if (field === "guardReviewerModel") return this.reviewerChoices(query);
     // An entry has no session state and no inherited default: it is either a model or nothing, so the
     // only pinned choice is the removal that closes the family's gap.
     const entry = isEntryField(field) ? this.entryList(entryKeyOf(field)) : undefined;
@@ -3078,6 +3411,40 @@ export class DelegatePanel implements Component, Focusable {
         reference: { provider: model.provider, model: model.id },
       })),
     ];
+  }
+
+  /**
+   * The role picker for the reviewer: one pinned `None`, then the models this host can already use.
+   * The main model is not offered, because a reviewer that is the agent judging itself would answer
+   * with the same model and the same prompt, and its own calls are the ones under review.
+   */
+  private reviewerChoices(query: string): ModelChoice[] {
+    const filtered = query
+      ? fuzzyFilter(this.candidates, query, (model) =>
+          `${model.provider} ${model.provider}/${model.id} ${model.provider} ${model.id} ${model.name ?? ""}`.trim(),
+        )
+      : this.candidates;
+    return [
+      {
+        kind: "disabled",
+        key: "disabled",
+        label: GUARD_REVIEWER_NONE,
+        description: GUARD_REVIEWER_NONE_DESCRIPTION,
+      },
+      ...filtered
+        .filter((model) => !this.isMainModel(model))
+        .map<ModelChoice>((model) => ({
+          kind: "model",
+          key: modelKey({ provider: model.provider, model: model.id }),
+          label: model.id,
+          ...(model.name && model.name !== model.id ? { description: model.name } : {}),
+          reference: { provider: model.provider, model: model.id },
+        })),
+    ];
+  }
+
+  private isMainModel(model: Model<Api>): boolean {
+    return formatModelRef({ provider: model.provider, model: model.id }) === this.mainModel;
   }
 
   private handleDiscardInput(data: string): void {
@@ -3214,22 +3581,20 @@ export class DelegatePanel implements Component, Focusable {
   }
 
   /**
-   * The guard switch is user scope only, so Apply and Save both write a changed value before their
-   * own step. A failure stops that step: an unreadable file is reported instead of overwritten.
+   * The guard settings are user scope only, so Apply and Save both write a changed value before
+   * their own step. One step writes the whole companion, because both rows and the switch share it.
+   * A failure stops that step: an unreadable file is reported instead of overwritten.
    */
-  private async saveGuardConsult(): Promise<GuardModeSaveResult> {
+  private async saveGuardMode(): Promise<GuardModeSaveResult> {
     let result: GuardModeSaveResult;
     try {
-      result = (await this.onSaveGuardConsult?.(this.draftGuardConsult)) ?? "failed";
+      result = (await this.onSaveGuardMode?.(structuredClone(this.draftGuardMode))) ?? "failed";
     } catch {
       result = "failed";
     }
     if (result === "saved" || result === "unchanged") {
-      this.guardConsult = this.draftGuardConsult;
-      this.savedGlobals.set(
-        "guardConsult",
-        `the consult-before-first-change switch (${this.draftGuardConsult ? "on" : "off"})`,
-      );
+      this.guardMode = structuredClone(this.draftGuardMode);
+      this.savedGlobals.set("guardMode", guardModeSummary(this.draftGuardMode));
     }
     return result;
   }
@@ -3306,12 +3671,12 @@ export class DelegatePanel implements Component, Focusable {
         return false;
       }
     }
-    if (this.guardConsultDirty()) {
-      const result = await this.saveGuardConsult();
+    if (this.guardModeDirty()) {
+      const result = await this.saveGuardMode();
       if (result !== "saved" && result !== "unchanged") {
         this.message = {
           kind: "error",
-          text: `${guardConsultFailureText(result)}${
+          text: `${guardModeFailureText(result)}${
             savedClause(this.savedGlobalsList()) || " Nothing else was changed."
           }`,
         };

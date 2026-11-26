@@ -59,7 +59,12 @@ import {
   readLaunchCorrectionMode,
   writeLaunchCorrectionMode,
 } from "../src/launch-correction-mode.ts";
-import { getGuardModePath, readGuardMode } from "../src/guard-mode.ts";
+import { getGuardModePath, readGuardMode, writeGuardMode } from "../src/guard-mode.ts";
+import {
+  emptyAdvisorLevelFile,
+  getAdvisorLevelPath,
+  writeAdvisorLevelFile,
+} from "../src/advisor-level.ts";
 import { readProviderAdmissions, writeProviderAdmissions } from "../src/provider-admissions.ts";
 import { getRoleEntriesPath, readRoleEntries } from "../src/role-entries.ts";
 import { getAdvisorReadPath } from "../src/advisor-read-mode.ts";
@@ -143,6 +148,8 @@ function context(
     authenticated?: (candidate: TestModel) => boolean;
     terminalRows?: number;
     mode?: "tui" | "rpc";
+    /** The host's current main model, which the runtime names as `main-model`. */
+    mainModel?: TestModel;
     runCustom?: (component: InteractiveComponent) => void | Promise<void>;
   } = {},
 ): TestContext & ExtensionContext {
@@ -166,6 +173,7 @@ function context(
     cwd: "/project",
     hasUI: true,
     mode: options.mode ?? "tui",
+    ...(options.mainModel ? { model: options.mainModel } : {}),
     scopedModels: options.scopedModels ?? [],
     sessionManager: { getBranch: () => options.branch ?? [] },
     modelRegistry: {
@@ -2077,9 +2085,10 @@ async function waitForRenderedText(component: InteractiveComponent, text: string
  * Move the focus to a named field. Rows appear and disappear with the configuration, so a test that
  * counts keystrokes breaks the moment a row is added; the panel reports what it is showing.
  */
-function focusField(panel: DelegatePanel, field: string): void {
+function focusField(panel: InteractiveComponent, field: string): void {
   sendKeys(panel, KEY_HOME);
-  const fields = panel.visibleFields() as string[];
+  // The panel a caller holds may be typed as a plain component; what the focus needs is its rows.
+  const fields = (panel as unknown as DelegatePanel).visibleFields() as string[];
   const target = fields.indexOf(field);
   if (target < 0) throw new Error(`the panel does not show ${field}: ${fields.join(", ")}`);
   sendKeys(panel, ...Array.from({ length: target }, () => KEY_DOWN));
@@ -2805,9 +2814,13 @@ test("the delegate panel explains fields, enum choices, previews, and selected m
 });
 
 test("the settings list keeps one row per field and one hint block that follows the focus", () => {
-  const harness = createPanelHarness({ rows: 24 });
+  // Tall enough that the viewport shows every row, so the count below is the whole list and a
+  // duplicate or a missing row fails here even though a by-name focus could not see it.
+  const harness = createPanelHarness({ rows: 60 });
   const item =
-    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design|Vision|Writing|Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Guard consult first|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
+    /^[> ] (Intensity|Preference|Small model|Medium model|Large model|Visual Design|Vision|Writing|Context protection|Context advanced|Small thinking|Medium thinking|Large thinking|Visual Design thinking|Advisor|Advisor thinking|Guard consult first|Guard reviewer model|Guard reviewer mode|Launch correction|Apply changes|Save effective configuration as defaults|Reset draft to off|Cancel)/;
+  /** Apply, Save defaults, Reset and Cancel are the four rows after the settings. */
+  const ACTION_ROWS = 4;
   const view = (steps: number) => {
     for (let step = 0; step < steps; step += 1) sendKeys(harness.panel, KEY_DOWN);
     const lines = harness.panel.render(80);
@@ -2818,8 +2831,11 @@ test("the settings list keeps one row per field and one hint block that follows 
   };
 
   const first = view(0);
-  // On 24 rows the preview and the reserved hint leave 13 of the settings rows visible.
-  assert.equal(first.rows, 13, "one row per field");
+  assert.equal(
+    first.rows,
+    harness.panel.visibleFields().length + ACTION_ROWS,
+    "one row per field and one per action",
+  );
   assert.match(first.body, /When delegation is worth considering/);
 
   const context = view(9);
@@ -3241,8 +3257,8 @@ test("the editor stores the guard switch in its own file and reopens with it on"
     const applyContext = context({
       branch: applied,
       runCustom: (component) => {
-        // Launch correction sits below this row and the four actions below that.
-        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
+        // Rows are resolved by name: the guard group grows, and counting keys would just track it.
+        focusField(component, "guardConsult");
         assert.match(
           component.render(100).join("\n"),
           /^> Guard consult first\s+off · default\s*$/m,
@@ -3262,7 +3278,7 @@ test("the editor stores the guard switch in its own file and reopens with it on"
     // caller that handed the writer a sidecar path would write `…guard.guard.json` and persist
     // nothing the reader ever looks at.
     assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
-      schemaVersion: 1,
+      schemaVersion: 2,
       consultBeforeFirstChange: true,
     });
     await assert.rejects(
@@ -3270,7 +3286,7 @@ test("the editor stores the guard switch in its own file and reopens with it on"
       "the writer must not apply the suffix twice",
     );
     assert.deepEqual(await readGuardMode(configPath), {
-      mode: { consultBeforeFirstChange: true },
+      mode: { consultBeforeFirstChange: true, reviewer: { model: null, mode: "off" } },
       invalid: false,
     });
 
@@ -3278,13 +3294,110 @@ test("the editor stores the guard switch in its own file and reopens with it on"
     let reopened = "";
     const reopenContext = context({
       runCustom: (component) => {
-        sendKeys(component, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
+        focusField(component, "guardConsult");
         reopened = component.render(100).join("\n");
         sendKeys(component, KEY_ESCAPE);
       },
     });
     await openDelegateEditor(reopenContext, { appendEntry: () => undefined } as never);
     assert.match(reopened, /^> Guard consult first\s+on · global\s*$/m);
+  });
+});
+
+test("the editor reads the reviewer's credential and the level this session runs", async () => {
+  await withAgentDirectory(async (directory) => {
+    const configPath = getGlobalConfigPath(directory);
+    await writeConfig(configPath, defaults);
+    // `secure` is available and registered, and has no credential: it never reaches the picker, so
+    // only the host resolver can tell the row why the reviewer cannot run.
+    const secure = { provider: "example", id: "secure", name: "secure", reasoning: true };
+    await writeGuardMode(
+      { consultBeforeFirstChange: false, reviewer: { model: "example/secure", mode: "observe" } },
+      configPath,
+    );
+    // The reviewer acts only in `guard`, so the level is written first for the reason to show.
+    await writeAdvisorLevelFile({ ...emptyAdvisorLevelFile(), level: "guard" }, configPath);
+    let reviewerRow = "";
+    const unauthenticated = context({
+      mainModel: model(medium),
+      availableModels: [model(small), model(medium), model(large), secure],
+      authenticated: (candidate: TestModel) => candidate.id !== "secure",
+      runCustom: (component) => {
+        focusField(component, "guardReviewerModel");
+        reviewerRow = component.render(100).join("\n");
+        // Nothing is staged, so Escape closes the editor instead of asking to discard.
+        sendKeys(component, KEY_ESCAPE);
+      },
+    });
+    await openDelegateEditor(unauthenticated, { appendEntry: () => undefined } as never);
+    assert.match(reviewerRow, /example\/secure · no credential · reviewer off/);
+
+    // The level in effect decides whether the reviewer acts, and the row has to read it.
+    await writeGuardMode(
+      { consultBeforeFirstChange: false, reviewer: { model: "example/large", mode: "observe" } },
+      configPath,
+    );
+    assert.ok(getAdvisorLevelPath(configPath).endsWith("delegation-policy.advisor-level.json"));
+    let acting = "";
+    const guarded = context({
+      mainModel: model(medium),
+      runCustom: (component) => {
+        focusField(component, "guardReviewerModel");
+        acting = component.render(100).join("\n");
+        sendKeys(component, KEY_ESCAPE);
+      },
+    });
+    await openDelegateEditor(guarded, { appendEntry: () => undefined } as never);
+    assert.match(acting, /example\/large · observing/);
+    assert.doesNotMatch(acting, /idle/, "the level in effect is guard, not the default");
+
+    // A level that is not `guard` reaches the row as the level this session runs: the default in
+    // the panel is `standard`, so `strict` here proves the editor passes what the runtime resolved.
+    await writeAdvisorLevelFile({ ...emptyAdvisorLevelFile(), level: "strict" }, configPath);
+    let idle = "";
+    const strict = context({
+      mainModel: model(medium),
+      runCustom: (component) => {
+        focusField(component, "guardReviewerModel");
+        idle = component.render(100).join("\n");
+        sendKeys(component, KEY_ESCAPE);
+      },
+    });
+    await openDelegateEditor(strict, { appendEntry: () => undefined } as never);
+    assert.match(idle, /example\/large · idle \(level is strict\)/);
+  });
+});
+
+/**
+ * The reviewer row is wired through `src/ui.ts`, not only through the panel: the main model has to
+ * reach the picker's exclusion and the choice has to reach the global file in `observe`.
+ */
+test("the editor excludes the main model from the reviewer picker and stores observe", async () => {
+  await withAgentDirectory(async (directory) => {
+    const configPath = getGlobalConfigPath(directory);
+    await writeConfig(configPath, defaults);
+    const path = getGuardModePath(configPath);
+    let picker = "";
+    const editorContext = context({
+      mainModel: model(medium),
+      runCustom: (component) => {
+        focusField(component, "guardReviewerModel");
+        sendKeys(component, KEY_ENTER);
+        picker = component.render(100).join("\n");
+        // `None` is pinned first, so the first offered model is one step down. Choosing it states
+        // the disclosure, which Enter acknowledges.
+        sendKeys(component, KEY_DOWN, KEY_ENTER, KEY_ENTER);
+        sendKeys(component, "a");
+      },
+    });
+    await openDelegateEditor(editorContext, { appendEntry: () => undefined } as never);
+    assert.match(picker, /rules only, no reviewer calls/);
+    assert.match(picker, /large \[example\]/);
+    assert.doesNotMatch(picker, /medium/, "the main model is never offered");
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
+      schemaVersion: 2,
+      reviewer: { model: "example/large", mode: "observe" },
+    });
   });
 });
 

@@ -4,9 +4,20 @@
 
 ### Added
 
+- **Guard reviewer model** and **Guard reviewer mode**, two user-scope rows in `/delegate`, off by
+  default. The first reuses the role model picker with a `None` entry, hides the main model and
+  shows why a configured model cannot act (`no credential`, `not available`, `same as the main
+model`). Choosing a model states once what travels to its provider, what never does and what it
+  costs. The second switches between `observe`, which only records, and `enforce`, which refuses
+  that call until an Advisor answer covers it and asks you after three blocks in a row, behind a
+  confirmation that Enter accepts and Escape or Ctrl+C declines. Choosing a model, the same one or
+  another, returns the mode to `observe`. Both live in `delegation-policy.guard.json`, schema 2,
+  which still reads schema 1 and accepts `reviewer: null` as no reviewer, and `/delegate status`
+  reports `guard-reviewer=` with the model, or `off (invalid)` when the file cannot be read.
+  Nothing calls a model in this version.
 - **Guard consult first**, a user switch, off by default: when it is on, every `guard` task starts
   held, so its first change waits until an Advisor consultation answers, and the guard count applies
-  after that answer. It is user scope only (`delegation-policy.guard.json`, schema 1), changes
+  after that answer. It is user scope only (`delegation-policy.guard.json`), changes
   nothing in `strict`, `standard` or `off`, acts in no subagent child, and holds nothing when this
   session has no valid Advisor and no launcher, because a hold with no way out is worse than none.
   It opens no consultation of its own and passes no rule. The row says what it does, and

@@ -23,6 +23,7 @@ import {
   isAdvisorEnabled,
   loadRuntime,
   modelCandidates,
+  validateModelReference,
 } from "./runtime.ts";
 
 /**
@@ -34,6 +35,25 @@ export type ContinuityActions = {
   recover: () => Promise<{ message: string; type: "info" | "error" }>;
   reset: () => Promise<{ message: string; type: "info" | "error" }>;
 };
+
+/**
+ * Why the reviewer's configured model cannot run here, for a row that has to name the reason. The
+ * picker offers only the models this host can already use, so this speaks about a model the
+ * companion holds and the picker does not offer.
+ */
+function reviewerModelIssue(
+  ctx: ExtensionContext,
+  model: string,
+): "no-credential" | "unavailable" | undefined {
+  const separator = model.indexOf("/");
+  if (separator <= 0) return "unavailable";
+  const status = validateModelReference(ctx, {
+    provider: model.slice(0, separator),
+    model: model.slice(separator + 1),
+  });
+  if (status.kind === "available") return undefined;
+  return status.kind === "no-credentials" ? "no-credential" : "unavailable";
+}
 
 export async function openDelegateEditor(
   ctx: ExtensionContext,
@@ -96,8 +116,11 @@ export async function openDelegateEditor(
         launchCorrection: state.launchCorrection,
         advisorLevel: state.advisorLevelFile?.level,
         advisorLevelInvalid: state.advisorLevelInvalid,
-        guardConsult: state.guardMode?.mode.consultBeforeFirstChange,
-        guardConsultInvalid: state.guardMode?.invalid,
+        guardMode: state.guardMode?.mode,
+        guardModeInvalid: state.guardMode?.invalid,
+        mainModel: state.mainModel,
+        effectiveLevel: state.advisorLevel?.level,
+        reviewerModelIssue: (model) => reviewerModelIssue(ctx, model),
         extensionCandidates,
         extensionProviders,
         ...(continuity
@@ -142,16 +165,13 @@ export async function openDelegateEditor(
           if (result === "saved" || result === "unchanged") state.launchCorrection = mode;
           return result;
         },
-        onSaveGuardConsult: async (consult) => {
+        onSaveGuardMode: async (mode) => {
           // The writer derives the companion name from this path, as the level and the role entries
           // do, so the caller passes the config path and never the sidecar path.
-          const result = await writeGuardMode(
-            { consultBeforeFirstChange: consult },
-            getGlobalConfigPath(),
-          );
-          // The file is the only scope this setting has, so the runtime follows the write.
+          const result = await writeGuardMode(mode, getGlobalConfigPath());
+          // The file is the only scope these settings have, so the runtime follows the write.
           if (result === "saved" || result === "unchanged")
-            state.guardMode = { mode: { consultBeforeFirstChange: consult }, invalid: false };
+            state.guardMode = { mode, invalid: false };
           return result;
         },
         onSaveAdvisorLevel: async (level) => {

@@ -1443,6 +1443,7 @@ test("the reminder writer stores the mode, keeps an unknown state and reports a 
 
 const KEY_UP = "\x1b[A";
 const KEY_DOWN = "\x1b[B";
+const KEY_HOME = "\x1b[H";
 const KEY_END = "\x1b[F";
 const KEY_ENTER = "\r";
 const KEY_ESCAPE = "\x1b";
@@ -1490,11 +1491,15 @@ function createPanelHarness(
 }
 
 /**
- * The nudge row sits six rows above the last one: the guard consult switch, launch correction, then
- * the four actions.
+ * The nudge row is resolved by name. Counting keystrokes from the last row breaks the moment a row is
+ * added, which is what the guard rows did.
  */
 function focusNudgeRow(panel: InteractiveComponent): void {
-  sendKeys(panel, KEY_END, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP, KEY_UP);
+  sendKeys(panel, KEY_HOME);
+  const fields = (panel as unknown as DelegatePanel).visibleFields() as string[];
+  const target = fields.indexOf("advisorLevel");
+  if (target < 0) throw new Error(`the panel does not show advisorLevel: ${fields.join(", ")}`);
+  sendKeys(panel, ...Array.from({ length: target }, () => KEY_DOWN));
 }
 
 test("the panel shows the nudge level, stores it on Apply and leaves it alone on Cancel", async () => {
