@@ -499,7 +499,7 @@ function guardReviewerDisclosure(model: string): string {
  * in `enforce` and says how to decline, because the mode is already staged behind this screen.
  */
 function guardReviewerEnforceConfirm(model: string): string {
-  return `Enforcing means a blocked call is not run. The agent must consult the Advisor before retrying, and 3 blocks in a row stop it and ask you. Some blocks will be wrong. You can return to observe at any time. Enter keeps ${model} in enforce, and Esc or Ctrl+C keeps the previous mode.`;
+  return `Enforcing means a change the reviewer blocks is not run: the agent has to find another way that stays within what you asked, or consult you. An Advisor answer covers that tool and that target for 3 calls, and 3 refused changes in a row stop every change of the task until you write again. When the reviewer cannot answer, an edit inside the working directory runs unreviewed and everything else waits for an Advisor answer. Some blocks will be wrong. You can return to observe at any time. Enter keeps ${model} in enforce, and Esc or Ctrl+C keeps the previous mode.`;
 }
 const GUARD_REVIEWER_MODE_DESCRIPTION =
   "Observing records what the reviewer would have refused and runs every call. Enforcing refuses the call until an Advisor answer covers it. It never lifts a rule only you can allow and it changes no permission of the host. Only a model that exists here with a configured credential can enforce.";

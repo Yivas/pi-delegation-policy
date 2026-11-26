@@ -328,12 +328,22 @@ and prints nothing else from the log.
 A `reviewer` record is written per review the `guard` reviewer runs or skips: `turn` (the assistant
 message it ran in), `tool` (the tool name, reduced to an identifier token), `stage1` (`block`,
 `allow` or `null`), `stage2` (one of the five closed categories or `null`), `status` (`ok`,
-`cached`, `skipped-cap`, `unparseable`, `timeout`, `error` or `internal`), `stage1Ms`, `stage2Ms`,
-`inputBytes` of the JSON data block, `model`, `mode` and `target`, which is a 16-hex digest of the
+`cached`, `skipped-cap`, `unparseable`, `timeout`, `error`, `internal` or `off`), `stage1Ms`, `stage2Ms`,
+`inputBytes` of the JSON data block, `model`, `mode`, `lane` (`observe`, `pass`, `unreviewed` or
+`refuse`, which is what the extension did with the outcome) and `target`, which is a 16-hex digest of the
 tool and its normalised target salted once per session, so no path or command line is stored and two
-sessions cannot be joined on it. The same task's `gate` record adds `reviewed` (reviews that reached
-a model), `wouldBlock` (block verdicts, including the ones answered from the task's memory),
-`noVerdict` (reviews that concluded nothing) and `cacheHits` (pairs answered without a call).
+sessions cannot be joined on it. The same task's `gate` record adds `reviewed` (reviews that started a request),
+`wouldBlock` (block verdicts, including the ones answered from the task's memory),
+`noVerdict` (reviews that concluded nothing) and `cacheHits` (pairs answered without a call), plus
+`blocked` (calls a block refused), `reviewPasses` (calls an Advisor answer's pass let through, apart from the rules' own `passes`),
+`unreviewed` (calls the failure lane let through), `unavailable` (calls it refused) and
+`escalations` (times a task stopped after three refused changes in a row). The `target` a verdict,
+a pass or a block is keyed on is the tool and the normalised target, never the content: the several
+spellings of one path (`./a`, `a/./b`, `a/x/../b`, and the case of a drive path) collapse to one
+pair, and one `ALLOW` covers every later call to that path in the task. The workspace rule of the
+failure lane reads the two strings only: it places drive-relative paths, another drive, network
+shares and home shortcuts as outside, and a link inside the workspace that resolves outside still
+reads as inside, because no hook in this extension touches the disk.
 
 No network telemetry is sent; model identifiers can still be sensitive.
 

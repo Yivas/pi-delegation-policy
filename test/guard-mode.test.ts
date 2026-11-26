@@ -553,9 +553,9 @@ test("switching to enforce states what a block does", async () => {
   focusField(panel, "guardReviewerMode");
   sendKeys(panel, KEY_ENTER, KEY_DOWN, KEY_ENTER);
   const confirm = paragraph(panel);
-  assert.match(confirm, /a blocked call is not run/);
-  assert.match(confirm, /must consult the Advisor before retrying/);
-  assert.match(confirm, /3 blocks in a row stop it and ask you/);
+  assert.match(confirm, /a change the reviewer blocks is not run/);
+  assert.match(confirm, /An Advisor answer covers that tool and that target for 3 calls/);
+  assert.match(confirm, /3 refused changes in a row stop every change of the task until you write/);
   assert.match(confirm, /Some blocks will be wrong/);
   assert.match(confirm, /return to observe at any time/);
   // The confirmation names the model that would keep enforcing, and says how to decline.

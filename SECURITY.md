@@ -65,7 +65,12 @@ Two surfaces can send content to another model, and both need an explicit tool c
   travel to a reviewer's provider; the extension redacts nothing here because the reviewer has to
   read what would be written. Two stages: a single-token `BLOCK` or `ALLOW`, and, only after a block,
   one careful answer ending in a category from a closed set. Observing never refuses or delays a
-  call, a review of one tool and one target runs once per task while the task remembers the pair (64
+  call, and in `enforce` the same review refuses that one call and nothing else, with its category
+  and with the consultation as its only exit; an Advisor answer covers the pair for three calls, also
+  after the reviewer's own breaker has stopped its paid calls. A reviewer that cannot answer lets an
+  edit of the workspace through unreviewed while shell calls,
+  unknown tools, writes outside the workspace and pushes wait (the workspace test compares two
+  strings, so a link inside the workspace that resolves elsewhere is not seen), a review of one tool and one target runs once per task while the task remembers the pair (64
   pairs, oldest forgotten first), three absent verdicts in a row or five in a task turn the reviewer
   off for the session, and its local record keeps closed values, the durations, the byte count, the
   model, the mode and a salted digest of the target, never the text. Each stated limit is exact: a

@@ -667,9 +667,12 @@ Choosing a model states once what travels, in the same words the panel uses:
 
 Switching to `enforce` states the same once, in its own words, and names the model that stays there:
 
-> Enforcing means a blocked call is not run. The agent must consult the Advisor before retrying, and
-> 3 blocks in a row stop it and ask you. Some blocks will be wrong. You can return to observe at any
-> time. Enter keeps `<provider/id>` in enforce, and Esc or Ctrl+C keeps the previous mode.
+> Enforcing means a change the reviewer blocks is not run: the agent has to find another way that
+> stays within what you asked, or consult you. An Advisor answer covers that tool and that target for
+> 3 calls, and 3 refused changes in a row stop every change of the task until you write again. When
+> the reviewer cannot answer, an edit inside the working directory runs unreviewed and everything
+> else waits for an Advisor answer. Some blocks will be wrong. You can return to observe at any time.
+> Enter keeps `<provider/id>` in enforce, and Esc or Ctrl+C keeps the previous mode.
 
 The reviewer never lifts a rule only you can allow, never changes a permission of the host and never
 runs in a subagent child.
@@ -701,17 +704,34 @@ task, up to the 64 pairs a task remembers: past that the oldest is forgotten and
 an identical retry reuses the verdict without another call. Three reviews in a row that
 return no verdict, or five in one task, turn the reviewer off for the session and tell you once; the
 level keeps its rules and its count. The caps, the two timeouts (3 s and 8 s) and that threshold are
-**provisional**: the shadow data of `0.36.0` fixes them. A review records one local line with the
+**provisional**: the shadow data of `0.36.0` fixes them. There is no accumulated per-turn time
+ceiling in this build, so the worst case an enforced turn can hold is three reviews of up to 11 s
+each. A review records one local line with the
 verdicts, the status, the durations, the bytes sent, the model, the mode and a salted digest of the
-target, and the task's `gate` record adds `reviewed` (reviews that reached a model), `wouldBlock`
+target, and the task's `gate` record adds `reviewed` (reviews that started a request), `wouldBlock`
 (block verdicts, including the ones answered from memory), `noVerdict` (reviews that concluded
 nothing) and `cacheHits` (pairs answered without a call).
 
-**Enforce** stores the intent to refuse, and this build still only records: the refusal of a blocked
-call, the pass an answered consultation opens for it, and the three blocks that ask you are the next
-step of the same unreleased version, not something this build does. Nothing here is a sandbox: the
-host's permissions, the rules and the count decide what runs, and a block is a judgement about intent
-that will sometimes be wrong.
+**Enforce** acts on the same review. A change waits for stage 1, and for stage 2 only after a block,
+inside the two timeouts, and a confirmed block refuses **that call** with the category the second
+stage chose and one exit: find another way inside what you asked, or consult the Advisors. The agent
+keeps working; the refusal is a tool result, not the end of the turn. An Advisor answer covers that
+tool and that target for 3 calls, and an identical retry is refused from the task's memory without
+another paid call. The key is the tool and the normalised path, never the content, so one `ALLOW`
+covers every later call to that path in the task and the several spellings of one path are one
+pair. Three refused changes in a row stop every change of the task until the next message you write,
+and tell you once. When the reviewer cannot answer at all — no verdict, a timeout, an exceeded
+cap or an open breaker — the failure lane decides: an edit or write inside the working directory
+runs and is recorded as unreviewed, while a shell call, an unknown tool, a write outside the working
+directory and a push wait for an Advisor answer, and that answer then covers the call for its three
+passes. An open breaker only stops the paid calls: the verdict this task already holds and the passes
+an answer opened are checked first, so neither is lost when the reviewer switches itself off. The
+workspace rule compares the two strings alone: a drive-relative path (a bare `C:` included), another
+drive, a network share and a home shortcut count as outside, and a
+link inside the working directory that resolves outside still reads as inside. Nothing here is a sandbox: the host's permissions,
+the rules and the count decide first, a reviewer block is a judgement about intent that will
+sometimes be wrong, and the reviewer never lifts a rule only you can allow, never changes a host
+permission and never runs in a subagent child.
 
 With Advisor off the level has no effect. It is resolved from a session override first, then from the
 entry for the current main model, then from the global level, then from `standard`, and a task keeps

@@ -72,8 +72,10 @@ export const REVIEWER_RECENT_TARGET_CHARS = 200;
  * evicted oldest first, so a task with more distinct targets re-reviews and re-pays for an old one.
  */
 export const REVIEWER_CACHE_LIMIT = 64;
-/** Bytes of one call's JSON that identity a call this module cannot see inside; the rest is dropped. */
-export const REVIEWER_DIGEST_CHARS = 4096;
+/** Calls one answered Advisor consultation covers for the same tool and target. */
+export const REVIEWER_PASS_CALLS = 3;
+/** Confirmed blocks in a row after which every change of the task waits for the user. */
+export const REVIEWER_BLOCK_STREAK = 3;
 
 /**
  * The closed category set of the second stage. The names follow the groups the permission classifier
@@ -94,11 +96,12 @@ export type ReviewerVerdict =
   Readonly<{ decision: "block"; category: ReviewerCategory }> | Readonly<{ decision: "allow" }>;
 
 /**
- * One closed status per review. `cached` also covers a second identical call still in flight, and
- * `internal` is the reviewer's own failure to assemble a review: never a provider answer.
+ * One closed status per review. `cached` also covers a second identical call still in flight,
+ * `internal` is the reviewer's own failure to assemble a review and `off` is a review skipped because
+ * the breaker already switched the reviewer off for the session: none of them is a provider answer.
  */
 export type ReviewerStatus =
-  "ok" | "timeout" | "error" | "unparseable" | "skipped-cap" | "cached" | "internal";
+  "ok" | "timeout" | "error" | "unparseable" | "skipped-cap" | "cached" | "internal" | "off";
 
 /** One content-free record per review: closed values, integers and a salted digest, never text. */
 export type ReviewerRecord = Readonly<{
@@ -117,27 +120,50 @@ export type ReviewerRecord = Readonly<{
   mode: GuardReviewerMode;
   /** Salted digest of the tool and its normalised target, so no path or line reaches the log. */
   target: string;
+  /** What the extension did with the outcome: recorded only, let through, or refused. */
+  lane: ReviewerLane;
 }>;
 
 /** The record before a review has a result: what the call was and where, and nothing it concluded. */
 type ReviewerRecordBase = Omit<
   ReviewerRecord,
-  "status" | "stage1" | "stage2" | "stage1Ms" | "stage2Ms" | "inputBytes"
+  "status" | "stage1" | "stage2" | "stage1Ms" | "stage2Ms" | "inputBytes" | "lane"
 >;
 
 /**
  * What one task's reviews add up to, for the task's `gate` record. The units differ on purpose and
  * are stated here so no reader compares them as if they were the same thing: `reviewed` counts
- * reviews that reached a model, `wouldBlock` counts block verdicts whether they came from that call
- * or from a rememberd pair, `noVerdict` counts reviews that concluded nothing, and `cacheHits` counts
- * pairs answered without a call.
+ * reviews this task attempted, `wouldBlock` counts block verdicts whether they came from that call
+ * or from a remembered pair, `noVerdict` counts reviews that concluded nothing, and `cacheHits`
+ * counts pairs answered without a call. The last five belong to `enforce`: `blocked` counts calls
+ * refused by a block, `reviewPasses` calls a consultation pass let through, `unreviewed` calls the failure
+ * lane let through, `unavailable` calls it refused, and `escalations` counts the times a task made
+ * three refused changes in a row and stopped.
  */
 export type ReviewerReport = Readonly<{
   reviewed: number;
   wouldBlock: number;
   noVerdict: number;
   cacheHits: number;
+  blocked: number;
+  reviewPasses: number;
+  unreviewed: number;
+  unavailable: number;
+  escalations: number;
 }>;
+
+/**
+ * What the extension did with one review. `observe` recorded it and let the call run, `pass` let a
+ * call through on a verdict or on a pass an answered consultation opened, `unreviewed` let an edit of
+ * the workspace through in the failure lane, and `refuse` refused the call.
+ */
+export type ReviewerLane = "observe" | "pass" | "unreviewed" | "refuse";
+
+/** What `enforce` tells the hook to do with the pending call. The message is composed by the caller. */
+export type ReviewerDecision =
+  | Readonly<{ action: "pass"; lane: "pass" | "unreviewed" }>
+  | Readonly<{ action: "refuse"; reason: "blocked"; category: ReviewerCategory }>
+  | Readonly<{ action: "refuse"; reason: "unavailable" | "escalated" }>;
 
 /** The one method of the host registry this module uses, so a test can stub it without a network. */
 export type ReviewerRegistry = Readonly<{
@@ -265,9 +291,42 @@ export function reviewCallHead(
   return { tool, text: tool, key: key(`input:${inputDigest(input)}`) };
 }
 
-/** One spelling per path, so `./src/a.ts` and `src\a.ts` are the same target of a dedup cache. */
+/**
+ * One spelling per path, so the several ways to write the same file are one pair: the separators are
+ * folded, `.` and `..` are collapsed while they stay inside the path, a trailing separator goes, and
+ * a drive path is folded to one case. It is never cut either: the key decides whether a refusal or a
+ * pass covers a call, so two paths that share a long prefix must stay two pairs.
+ */
 function normaliseTarget(path: string): string {
-  return path.trim().replace(/\\/g, "/").replace(/^\.\//, "").slice(0, 256);
+  const value = path.trim().replace(/\\/g, "/");
+  const drive = /^([A-Za-z]):\//.exec(value);
+  const collapsed = collapse(drive ? value.slice(2) : value);
+  if (collapsed === undefined) return value;
+  // A drive path is one case-insensitive file, whatever case it was spelled in; anything else keeps
+  // its case, because on a case-sensitive system `a.ts` and `A.ts` are two files.
+  const parts = drive ? collapsed.map((part) => part.toLowerCase()) : collapsed;
+  const joined = parts.join("/");
+  if (drive) return `${drive[1]!.toLowerCase()}:${joined}`;
+  return value.startsWith("/") ? `/${joined}` : joined;
+}
+
+/**
+ * One path as its segments, with `.` dropped and `..` taking the segment before it. `undefined` means
+ * the walk leaves the path it started in, which is what the workspace rule needs to know and what the
+ * key keeps as spelled.
+ */
+function collapse(value: string): string[] | undefined {
+  const parts: string[] = [];
+  for (const segment of value.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (parts.length === 0) return undefined;
+      parts.pop();
+      continue;
+    }
+    parts.push(segment);
+  }
+  return parts;
 }
 
 function commandDigest(command: string): string {
@@ -277,8 +336,11 @@ function commandDigest(command: string): string {
 function inputDigest(input: unknown): string {
   let text: string;
   try {
-    // A bounded prefix, because this runs on the hook's own path with a whole tool input in hand.
-    text = (JSON.stringify(input) ?? "").slice(0, REVIEWER_DIGEST_CHARS);
+    // The whole input is hashed, never a prefix: in `enforce` a shared key is a shared refusal, so two
+    // calls that only agree at their head must not collapse into one pair. It costs one synchronous
+    // serialisation on the hook path for a tool this module cannot see inside, which the caps bound:
+    // at most three such calls per turn, and none when the level, the mode or the model rule it out.
+    text = JSON.stringify(input) ?? "";
   } catch {
     // A value JSON cannot express is still one call of one tool: it is keyed as unreadable.
     text = "";
@@ -327,7 +389,7 @@ export function parseStage1Answer(text: string): "block" | "allow" | undefined {
   const token = text
     .trim()
     .toLowerCase()
-    .replace(/^[\s"'`*_]+|[\s"'`*_.,;:!)\]…]+$/g, "");
+    .replace(/^[\s"'`*_([{<]+|[\s"'`*_.,;:!)\]}>…]+$/g, "");
   if (token === "block") return "block";
   return token === "allow" ? "allow" : undefined;
 }
@@ -346,6 +408,90 @@ export function parseStage2Answer(text: string): ReviewerCategory | undefined {
   const name = match[1]!.toLowerCase();
   return REVIEWER_CATEGORIES.find((category) => category === name);
 }
+
+/**
+ * One path inside another, worked out from the two strings alone: no disk, no real path, no case rule
+ * a platform switch could change. Both branches collapse `.` and `..` first, so an absolute path can
+ * walk out and back in only if it really lands inside. A drive-relative path (`C:foo`), a drive this
+ * reader cannot compare, a network share and a home shortcut are all outside, because none of them
+ * can be placed; a relative path is inside only while its own walk never leaves the root. Anything
+ * this cannot read is outside, which is the closed direction.
+ *
+ * A string cannot see a link: a path inside the workspace that resolves through a symlink to another
+ * place still reads as inside, and that residual is stated in the wiki and in SECURITY.md.
+ */
+export function isInsideWorkspace(path: string, workspace: string): boolean {
+  const value = (text: string) => text.trim().replace(/\\/g, "/");
+  const target = value(path);
+  const root = value(workspace);
+  if (target === "" || root === "") return false;
+  // Drive-relative, network share and home shortcut: not a path this reader can place.
+  if (target.startsWith("//") || target.startsWith("~")) return false;
+  if (/^[A-Za-z]:([^/]|$)/.test(target)) return false;
+  const windows = /^[A-Za-z]:\//.test(root);
+  const folded = (parts: readonly string[]) =>
+    windows ? parts.map((part) => part.toLowerCase()) : [...parts];
+  /** A collapsed target under a collapsed root, compared as segments and never as a prefix. */
+  const under = (rest: string, base: string): boolean => {
+    const inside = collapse(rest);
+    const rootParts = collapse(base);
+    if (inside === undefined || rootParts === undefined) return false;
+    const targetParts = folded(inside);
+    const baseParts = folded(rootParts);
+    return (
+      baseParts.length <= targetParts.length &&
+      baseParts.every((part, index) => part === targetParts[index])
+    );
+  };
+  if (/^[A-Za-z]:\//.test(target)) {
+    if (target.slice(0, 2).toLowerCase() !== root.slice(0, 2).toLowerCase()) return false;
+    return under(target.slice(2), windows ? root.slice(2) : root);
+  }
+  if (target.startsWith("/")) return under(target, root);
+  return collapse(target) !== undefined;
+}
+
+/**
+ * Which lane a call falls into when the reviewer cannot answer. Only a plain edit or write of the
+ * workspace may run unreviewed; a shell call, an unknown tool and a write anywhere else wait for an
+ * answered consultation, because those are the changes a silent reviewer must not wave through.
+ */
+export function failureLane(facts: ToolCallFacts, workspace: string): "pass" | "refuse" {
+  if (facts.kind !== "edit") return "refuse";
+  if (facts.path === undefined) return "refuse";
+  return isInsideWorkspace(facts.path, workspace) ? "pass" : "refuse";
+}
+
+/**
+ * The refusal of a confirmed block. It names the category the second stage chose and the one exit, and
+ * never a count, a pattern or the text that matched: those are the things a model can satisfy.
+ */
+export function reviewerBlockText(category: ReviewerCategory): string {
+  return `Not an error: this call was not run. Guard reviewer: ${category}.\nFind another way that stays within what the user asked; do not route around it.`;
+}
+
+/** The refusal of the failure lane: no verdict was read, so nothing was judged. */
+export const REVIEWER_UNAVAILABLE_TEXT =
+  "Not an error: this call was not run. Guard reviewer unavailable: this change could not be reviewed, so it waits for a consultation that answers.";
+
+/**
+ * The refusal once a task made three refused changes in a row. It names the person as the only exit,
+ * because that is the one thing the model cannot satisfy or forge.
+ */
+export const REVIEWER_ESCALATED_TEXT = [
+  "Not an error: this call was not run. Guard reviewer: three changes in a row were refused in this task, so every change now waits.",
+  "Ask the user how to continue and stop. Retrying, rephrasing or consulting an Advisor does not lift this; only the next message the user writes does.",
+].join("\n");
+
+/** What one review concluded, before the extension decides what to do with the call. */
+type Outcome = Readonly<{
+  status: ReviewerStatus;
+  stage1: "block" | "allow" | null;
+  stage2: ReviewerCategory | null;
+  stage1Ms: number | null;
+  stage2Ms: number | null;
+  verdict?: ReviewerVerdict;
+}>;
 
 type StageOutcome =
   | Readonly<{ kind: "text"; text: string; durationMs: number }>
@@ -420,6 +566,8 @@ export type ReviewerRequest = Readonly<{
   newText: string;
   facts: ToolCallFacts;
   branchEntries: readonly unknown[];
+  /** The directory the session works in, which decides the failure lane of an edit. */
+  workspace: string;
   mode: GuardReviewerMode;
   /** "provider/id" of the model, as the guard companion names it. */
   modelKey: string;
@@ -467,7 +615,8 @@ export class GuardReviewer {
   private sessionReviews = 0;
   private readonly recent: ReviewerCallHead[] = [];
   private readonly decided = new Map<string, ReviewerVerdict>();
-  private readonly inFlight = new Set<string>();
+  /** The stage promise of every pair in flight, so a duplicate call shares one paid review. */
+  private readonly inFlight = new Map<string, Promise<Outcome>>();
   /** The abort of every review still in flight, so closing the task cancels its provider requests. */
   private readonly runs = new Set<AbortController>();
   private absentStreak = 0;
@@ -481,6 +630,17 @@ export class GuardReviewer {
   private wouldBlock = 0;
   private noVerdict = 0;
   private cacheHits = 0;
+  // `enforce` state, per task: the pairs it refused, the passes an answer opened for them, how many
+  // changes in a row it refused, and whether the task is now waiting for the user.
+  private readonly blockedPairs = new Set<string>();
+  private readonly passes = new Map<string, number>();
+  private blockStreak = 0;
+  private escalated = false;
+  private blocked = 0;
+  private passesUsed = 0;
+  private unreviewedCalls = 0;
+  private unavailableCalls = 0;
+  private escalations = 0;
 
   constructor(options: { record?: (record: ReviewerRecord) => void } = {}) {
     this.record = options.record ?? (() => undefined);
@@ -515,12 +675,21 @@ export class GuardReviewer {
     this.recent.length = 0;
     this.decided.clear();
     this.inFlight.clear();
+    this.blockedPairs.clear();
+    this.passes.clear();
+    this.blockStreak = 0;
+    this.escalated = false;
     this.turnReviews = 0;
     this.absentInTask = 0;
     this.reviewed = 0;
     this.wouldBlock = 0;
     this.noVerdict = 0;
     this.cacheHits = 0;
+    this.blocked = 0;
+    this.passesUsed = 0;
+    this.unreviewedCalls = 0;
+    this.unavailableCalls = 0;
+    this.escalations = 0;
   }
 
   /** Reviews still waiting for a model. Zero once a task closes, which is the invariant it keeps. */
@@ -550,7 +719,22 @@ export class GuardReviewer {
       wouldBlock: this.wouldBlock,
       noVerdict: this.noVerdict,
       cacheHits: this.cacheHits,
+      blocked: this.blocked,
+      reviewPasses: this.passesUsed,
+      unreviewed: this.unreviewedCalls,
+      unavailable: this.unavailableCalls,
+      escalations: this.escalations,
     };
+  }
+
+  /**
+   * An Advisor consultation answered, so every pair this task refused is covered for a few more
+   * calls. It opens no rule, no count and no escalation: a change refused three times in a row waits
+   * for the user, and a hard rule waits for nobody else.
+   */
+  noteAnswer(): void {
+    for (const key of this.blockedPairs) this.passes.set(key, REVIEWER_PASS_CALLS);
+    this.blockedPairs.clear();
   }
 
   /**
@@ -575,6 +759,7 @@ export class GuardReviewer {
       if (known?.decision === "block") this.wouldBlock += 1;
       this.emit({
         ...base,
+        lane: "observe",
         status: "cached",
         stage1: known === undefined ? null : known.decision === "block" ? "block" : "allow",
         stage2: known?.decision === "block" ? known.category : null,
@@ -590,6 +775,7 @@ export class GuardReviewer {
     ) {
       this.emit({
         ...base,
+        lane: "observe",
         status: "skipped-cap",
         stage1: null,
         stage2: null,
@@ -610,13 +796,10 @@ export class GuardReviewer {
     this.turnReviews += 1;
     this.sessionReviews += 1;
     this.reviewed += 1;
-    this.inFlight.add(head.key);
     const run = new AbortController();
     this.runs.add(run);
     const epoch = this.epoch;
-    // The chain of a fire-and-forget call never rejects: `run` answers every failure with a value,
-    // and the catch is the last line that keeps a defect here from ending the host process.
-    void this.run({
+    const input: RunInput = {
       key: head.key,
       base,
       payload,
@@ -627,7 +810,13 @@ export class GuardReviewer {
       run,
       signal: request.signal,
       notify: request.notify,
-    })
+    };
+    const stages = this.review(input);
+    this.inFlight.set(head.key, stages);
+    // The chain of a fire-and-forget call never rejects: `review` answers every failure with a value,
+    // and the catch is the last line that keeps a defect here from ending the host process.
+    void stages
+      .then((outcome) => this.settle(input, outcome, "observe"))
       .catch(() => undefined)
       .finally(() => {
         // A late finish of a closed task must not release the mark of the next task's own review.
@@ -637,12 +826,233 @@ export class GuardReviewer {
   }
 
   /**
+   * Review one change and refuse it when the model says so — the `enforce` half of the reviewer.
+   *
+   * It answers with a value and never throws, because a throw in `tool_call` blocks the tool. A pair
+   * this task already judged is answered from memory, without another paid call, and a pair an
+   * answered consultation covered passes for its remaining calls. A stage that produced no verdict,
+   * a cap and an open breaker all end in the failure lane: a plain edit of the workspace runs and is
+   * recorded as unreviewed, and anything else waits for a consultation that answers, whose answer then
+   * covers that pair for a few calls. An open breaker only means no model is asked: the cache and the
+   * passes are checked first, so what this task already decided and what a consultation covered still
+   * apply. Three refused changes in a row stop the task's changes until the user writes again.
+   */
+  async enforce(request: ReviewerRequest): Promise<ReviewerDecision> {
+    try {
+      return await this.decideCall(request);
+    } catch {
+      // Nothing here may throw from `tool_call`: an internal fault is the failure lane's business.
+      try {
+        return this.failLane(request, "");
+      } catch {
+        return { action: "refuse", reason: "unavailable" };
+      }
+    }
+  }
+
+  /** The body of one `enforce` call, which the public method wraps so it can never throw. */
+  private async decideCall(request: ReviewerRequest): Promise<ReviewerDecision> {
+    if (this.escalated) return { action: "refuse", reason: "escalated" };
+    const head = reviewCallHead(request.toolName, request.input, request.facts);
+    const base: ReviewerRecordBase = {
+      turn: this.turn,
+      toolName: head.tool,
+      model: request.modelKey,
+      mode: request.mode,
+      target: this.digest(head.key),
+    };
+    const passes = this.passes.get(head.key) ?? 0;
+    if (passes > 0) {
+      if (passes > 1) this.passes.set(head.key, passes - 1);
+      else this.passes.delete(head.key);
+      this.passesUsed += 1;
+      return { action: "pass", lane: "pass" };
+    }
+    const known = this.decided.get(head.key);
+    if (known !== undefined) {
+      this.cacheHits += 1;
+      this.emit({
+        ...base,
+        lane: known.decision === "block" ? "refuse" : "pass",
+        status: "cached",
+        stage1: known.decision === "block" ? "block" : "allow",
+        stage2: known.decision === "block" ? known.category : null,
+        stage1Ms: null,
+        stage2Ms: null,
+        inputBytes: 0,
+      });
+      return this.decide(
+        head.key,
+        {
+          status: "ok",
+          stage1: known.decision === "block" ? "block" : "allow",
+          stage2: known.decision === "block" ? known.category : null,
+          stage1Ms: null,
+          stage2Ms: null,
+          verdict: known,
+        },
+        request.notify,
+      );
+    }
+    // A breaker that is open means no model is asked, and nothing more: what this task already
+    // decided still applies from the cache above, and a pass an answered consultation opened still
+    // covers the call. Only a pair with neither falls to the failure lane.
+    if (this.off) {
+      this.emit({
+        ...base,
+        lane: this.laneOf(request),
+        status: "off",
+        stage1: null,
+        stage2: null,
+        stage1Ms: null,
+        stage2Ms: null,
+        inputBytes: 0,
+      });
+      return this.failLane(request, head.key);
+    }
+    const waiting = this.inFlight.get(head.key);
+    if (waiting !== undefined) {
+      // The same pair is already being reviewed in this batch: one paid call, one shared answer.
+      const outcome = await waiting.catch(() => undefined);
+      if (outcome === undefined) return this.failLane(request, head.key);
+      this.cacheHits += 1;
+      this.emit({
+        ...base,
+        lane:
+          outcome.verdict === undefined
+            ? "refuse"
+            : outcome.verdict.decision === "block"
+              ? "refuse"
+              : "pass",
+        status: "cached",
+        stage1: outcome.stage1,
+        stage2: outcome.stage2,
+        stage1Ms: null,
+        stage2Ms: null,
+        inputBytes: 0,
+      });
+      return this.decide(head.key, outcome, request.notify);
+    }
+    if (
+      this.turnReviews >= REVIEWER_CALLS_PER_TURN ||
+      this.sessionReviews >= REVIEWER_CALLS_PER_SESSION
+    ) {
+      this.emit({
+        ...base,
+        lane: this.laneOf(request),
+        status: "skipped-cap",
+        stage1: null,
+        stage2: null,
+        stage1Ms: null,
+        stage2Ms: null,
+        inputBytes: 0,
+      });
+      return this.failLane(request, head.key);
+    }
+    const payload = buildReviewPayload({
+      toolName: request.toolName,
+      newText: request.newText,
+      facts: request.facts,
+      branchEntries: request.branchEntries,
+      recent: this.priorHeads(head),
+    });
+    const first = reviewRequest(payload, 1);
+    this.turnReviews += 1;
+    this.sessionReviews += 1;
+    this.reviewed += 1;
+    const run = new AbortController();
+    this.runs.add(run);
+    const epoch = this.epoch;
+    const input: RunInput = {
+      key: head.key,
+      base,
+      payload,
+      bytes: first.bytes,
+      registry: request.registry,
+      model: request.model,
+      epoch,
+      run,
+      signal: request.signal,
+      notify: request.notify,
+    };
+    const stages = this.review(input);
+    this.inFlight.set(head.key, stages);
+    let outcome: Outcome | undefined;
+    try {
+      outcome = await stages;
+    } finally {
+      if (epoch === this.epoch) this.inFlight.delete(head.key);
+      this.runs.delete(run);
+    }
+    // The task closed while the review was waiting: its verdict is not this task's to act on.
+    if (outcome === undefined) return this.failLane(request, head.key);
+    const lane: ReviewerLane =
+      outcome.verdict === undefined
+        ? failureLane(request.facts, request.workspace) === "pass"
+          ? "unreviewed"
+          : "refuse"
+        : outcome.verdict.decision === "block"
+          ? "refuse"
+          : "pass";
+    this.settle(input, outcome, lane);
+    if (epoch !== this.epoch) return this.failLane(request, head.key);
+    return outcome.verdict === undefined
+      ? this.failLane(request, head.key)
+      : this.decide(head.key, outcome, request.notify);
+  }
+
+  /** The consequence of one verdict: a block is a refusal, an allow clears the streak, and three
+   * refusals in a row stop the task until the user writes again. */
+  private decide(
+    key: string,
+    outcome: Outcome,
+    notify: (message: string) => void,
+  ): ReviewerDecision {
+    if (outcome.verdict === undefined) return { action: "refuse", reason: "unavailable" };
+    if (outcome.verdict.decision === "allow") {
+      this.blockStreak = 0;
+      return { action: "pass", lane: "pass" };
+    }
+    const category = outcome.verdict.category;
+    this.blockedPairs.add(key);
+    this.blocked += 1;
+    this.blockStreak += 1;
+    if (this.blockStreak >= REVIEWER_BLOCK_STREAK && !this.escalated) {
+      this.escalated = true;
+      this.escalations += 1;
+      try {
+        notify(
+          `Guard reviewer: ${REVIEWER_BLOCK_STREAK} changes in a row were refused in this task, so every change now waits for you. The agent has been told to ask how to continue and to stop; nothing it does lifts this, and only your next message does.`,
+        );
+      } catch {
+        // A notice the host cannot show is lost to the operator, never to the caller's chain.
+      }
+    }
+    return { action: "refuse", reason: "blocked", category };
+  }
+
+  /** The failure lane: an edit of the workspace runs unreviewed, everything else waits for an answer. */
+  private failLane(request: ReviewerRequest, key: string): ReviewerDecision {
+    if (failureLane(request.facts, request.workspace) === "pass") {
+      this.unreviewedCalls += 1;
+      return { action: "pass", lane: "unreviewed" };
+    }
+    // A pair refused for want of a verdict waits for a consultation, exactly like a block does.
+    this.blockedPairs.add(key);
+    this.unavailableCalls += 1;
+    return { action: "refuse", reason: "unavailable" };
+  }
+
+  /**
    * One review the caller could not even assemble — a hook that threw before a model was asked, which
    * is never a provider's answer. It is recorded as `internal` and counted as an absent verdict, so a
    * reviewer that fails this way reaches the breaker's notice instead of looking like one that was
    * never configured. The message of the failure never enters the record.
    */
   failed(request: ReviewerRequest): void {
+    // A reviewer the breaker already switched off records nothing more: the streak it stands for is
+    // bounded, and a record per change after that would describe a session that is not running.
+    if (this.off) return;
     const head = reviewCallHead(request.toolName, request.input, request.facts);
     this.noVerdict += 1;
     this.absentStreak += 1;
@@ -660,6 +1070,7 @@ export class GuardReviewer {
       stage1Ms: null,
       stage2Ms: null,
       inputBytes: 0,
+      lane: this.laneOf(request),
     });
     if (
       this.absentStreak >= REVIEWER_ABSENT_STREAK ||
@@ -670,6 +1081,15 @@ export class GuardReviewer {
 
   private digest(key: string): string {
     return createHash("sha256").update(`${this.salt}\u0000${key}`).digest("hex").slice(0, 16);
+  }
+
+  /**
+   * The lane a record names for a call this task did not judge: `observe` from the observing mode,
+   * and otherwise what the failure lane would do with it.
+   */
+  private laneOf(request: ReviewerRequest): ReviewerLane {
+    if (request.mode === "observe") return "observe";
+    return failureLane(request.facts, request.workspace) === "pass" ? "unreviewed" : "refuse";
   }
 
   /** The caller's sink: a record it cannot write is lost, but never this chain's rejection. */
@@ -690,7 +1110,7 @@ export class GuardReviewer {
   }
 
   /** Stage 1, then stage 2 only after a block. Every failure is a value, never a throw. */
-  private async run(input: RunInput): Promise<void> {
+  private async review(input: RunInput): Promise<Outcome> {
     const first = await askStage({
       registry: input.registry,
       model: input.model,
@@ -703,23 +1123,23 @@ export class GuardReviewer {
     const stage1 = first.kind === "text" ? parseStage1Answer(first.text) : undefined;
     // A stage that answered nothing readable ends here: `undefined` is no verdict, not an allow.
     if (first.kind !== "text" || stage1 === undefined) {
-      this.settle(input, {
+      return {
         status: first.kind === "text" ? "unparseable" : first.kind,
         stage1: null,
         stage2: null,
         stage1Ms: first.durationMs,
-      });
-      return;
+        stage2Ms: null,
+      };
     }
     if (stage1 === "allow") {
-      this.settle(input, {
+      return {
         status: "ok",
         stage1: "allow",
         stage2: null,
         stage1Ms: first.durationMs,
+        stage2Ms: null,
         verdict: { decision: "allow" },
-      });
-      return;
+      };
     }
     const second = await askStage({
       registry: input.registry,
@@ -732,23 +1152,22 @@ export class GuardReviewer {
     });
     const category = second.kind === "text" ? parseStage2Answer(second.text) : undefined;
     if (second.kind !== "text" || category === undefined) {
-      this.settle(input, {
+      return {
         status: second.kind === "text" ? "unparseable" : second.kind,
         stage1: "block",
         stage2: null,
         stage1Ms: first.durationMs,
         stage2Ms: second.durationMs,
-      });
-      return;
+      };
     }
-    this.settle(input, {
+    return {
       status: "ok",
       stage1: "block",
       stage2: category,
       stage1Ms: first.durationMs,
       stage2Ms: second.durationMs,
       verdict: { decision: "block", category },
-    });
+    };
   }
 
   /**
@@ -757,17 +1176,7 @@ export class GuardReviewer {
    * something it never concluded. A review whose task has closed in the meantime is dropped: its
    * record would be the only trace of a call the new task never made.
    */
-  private settle(
-    input: RunInput,
-    outcome: {
-      status: ReviewerStatus;
-      stage1: "block" | "allow" | null;
-      stage2: ReviewerCategory | null;
-      stage1Ms: number | null;
-      stage2Ms?: number | null;
-      verdict?: ReviewerVerdict;
-    },
-  ): void {
+  private settle(input: RunInput, outcome: Outcome, lane: ReviewerLane): void {
     if (input.epoch !== this.epoch) return;
     if (outcome.verdict !== undefined) {
       this.absentStreak = 0;
@@ -790,11 +1199,12 @@ export class GuardReviewer {
     }
     this.emit({
       ...input.base,
+      lane,
       status: outcome.status,
       stage1: outcome.stage1,
       stage2: outcome.stage2,
       stage1Ms: outcome.stage1Ms,
-      stage2Ms: outcome.stage2Ms ?? null,
+      stage2Ms: outcome.stage2Ms,
       inputBytes: input.bytes,
     });
   }
@@ -823,7 +1233,7 @@ export class GuardReviewer {
     const made = `(${this.absentStreakUnparsed} unparseable answers, ${this.absentStreakFailed} failed or internal)`;
     try {
       notify(
-        `Guard reviewer off for this session: ${cause} ${made} with ${model}. guard keeps its rules and its count, and no further review calls are made. Check that model and its credential, or choose another one in /delegate.`,
+        `Guard reviewer off for this session: ${cause} ${made} with ${model}. guard keeps its rules and its count, and no further review calls are made: what this task already decided, and what an answered consultation covers, still apply. Check that model and its credential, or choose another one in /delegate.`,
       );
     } catch {
       // A notice the host cannot show is lost to the operator, never to the caller's chain.

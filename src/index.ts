@@ -65,14 +65,23 @@ import {
 } from "./advisor-reminders.ts";
 import {
   AdvisorGate,
+  consultInstruction,
   consultationOutcome,
   failureEvidence,
   GATE_CONSULT_FAILURES,
+  wayOutBrokenClause,
   type ConsultationOutcome,
   type GateReport,
 } from "./advisor-gate.ts";
 import { GuardRules, type GuardDecision, type GuardRuleReport } from "./guard-rules.ts";
-import { GuardReviewer, type ReviewerReport } from "./guard-reviewer.ts";
+import {
+  GuardReviewer,
+  REVIEWER_ESCALATED_TEXT,
+  REVIEWER_UNAVAILABLE_TEXT,
+  failureLane,
+  reviewerBlockText,
+  type ReviewerReport,
+} from "./guard-reviewer.ts";
 import type { GuardReviewerMode } from "./guard-mode.ts";
 import { classifyToolCall, type ToolCallFacts } from "./state-change.ts";
 import {
@@ -1414,19 +1423,29 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       if (stored === undefined || stored.model === null || stored.mode === "off") return undefined;
       return { model: stored.model, mode: stored.mode };
     };
-    const reviewChange = (
+    /**
+     * Ask the optional reviewer of `guard` about one change and, in `enforce`, act on its answer.
+     *
+     * Observing records and returns nothing; the call runs and is never delayed by the opinion.
+     * Enforcing awaits the verdict inside the reviewer's own 3 s and 8 s caps and may refuse this one
+     * call, with the category the second stage chose and the one exit that lifts it. A reviewer that
+     * cannot answer at all falls to its closed failure lane inside the reviewer itself, so nothing
+     * here can throw or leave a call undecided.
+     */
+    const reviewChange = async (
       ctx: ExtensionContext,
       event: ToolCallEvent,
       facts: ToolCallFacts,
-    ): void => {
+    ): Promise<{ block: true; reason: string } | undefined> => {
       const reviewer = reviewerSetting();
-      if (reviewer === undefined) return;
-      const request = {
+      if (reviewer === undefined) return undefined;
+      const base = {
         toolName: event.toolName,
         input: event.input,
         newText: "",
         facts,
         branchEntries: [] as readonly unknown[],
+        workspace: ctx.cwd,
         mode: reviewer.mode,
         modelKey: reviewer.model,
         model: undefined as never,
@@ -1434,30 +1453,61 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         signal: ctx.signal,
         notify: (message: string) => ctx.ui.notify(message, "warning"),
       };
+      const separator = reviewer.model.indexOf("/");
+      if (separator <= 0) return undefined;
       try {
         const state = latestRuntime;
-        const separator = reviewer.model.indexOf("/");
-        if (separator <= 0) return;
         // Missing, outside this session's scope or without a credential: no call, and no record to
-        // mistake for a review that found nothing.
+        // mistake for a review that found nothing. An unusable model is not a failure lane either.
         const status = validateModelReference(ctx, {
           provider: reviewer.model.slice(0, separator),
           model: reviewer.model.slice(separator + 1),
         });
-        if (state === undefined || status.kind !== "available") return;
+        if (state === undefined || status.kind !== "available") return undefined;
         // The main model would judge its own calls with the prompt that produced them.
-        if (reviewer.model === state.mainModel) return;
-        guardReviewer.observe({
-          ...request,
+        if (reviewer.model === state.mainModel) return undefined;
+        const request = {
+          ...base,
           newText: newEditText(event.toolName, event.input),
           branchEntries: ctx.sessionManager.getBranch(),
           model: status.model,
-        });
+        };
+        if (reviewer.mode === "observe") {
+          guardReviewer.observe(request);
+          return undefined;
+        }
+        const decision = await guardReviewer.enforce(request);
+        if (decision.action === "pass") return undefined;
+        // A refusal states its closed reason and one exit, and never a count or a pattern.
+        if (decision.reason === "escalated")
+          return { block: true, reason: REVIEWER_ESCALATED_TEXT };
+        const prefix =
+          decision.reason === "blocked"
+            ? reviewerBlockText(decision.category)
+            : REVIEWER_UNAVAILABLE_TEXT;
+        const launcher = latestRuntime?.effective.advisorLaunch ?? "tool";
+        const manual = latestRuntime?.advisorContextMode === "manual";
+        const exit = consultationAvailable(latestRuntime)
+          ? [consultInstruction(launcher, manual)]
+          : ["Ask the user how to continue and stop."];
+        if (advisorGate.wayOutIsBroken) exit.push(wayOutBrokenClause());
+        return { block: true, reason: [prefix, ...exit].join("\n") };
       } catch {
         // A reviewer this extension could not even ask is a closed status, not silence: the shadow
         // has to tell a broken reviewer from one that was never configured. The failure message is
-        // never recorded, and the call goes on regardless.
-        guardReviewer.failed(request);
+        // never recorded, and the call goes on unless the failure lane says otherwise.
+        try {
+          if (reviewer.mode === "observe") guardReviewer.failed(base);
+        } catch {
+          // Even the record of the failure is best effort; the call is what matters.
+        }
+        if (reviewer.mode === "observe") return undefined;
+        return failureLane(facts, ctx.cwd) === "pass"
+          ? undefined
+          : {
+              block: true,
+              reason: `${REVIEWER_UNAVAILABLE_TEXT}\nAsk the user how to continue and stop.`,
+            };
       }
     };
     // The notice follows the user's turns, not host turns. `input` reports where the next prompt
@@ -2801,7 +2851,19 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               manualContext,
             })
           : undefined;
-      const refused = ruleRefused || decision?.action === "block";
+      const gateRefused = ruleRefused || decision?.action === "block";
+      // The reviewer is the last step of `guard`, after the rules, the count and the launch check:
+      // only a call that is going to run reaches it. In `observe` it returns nothing at all.
+      const reviewed =
+        !gateRefused &&
+        check?.refusal === undefined &&
+        observed !== undefined &&
+        observed.level === "guard" &&
+        facts.changes &&
+        !consultationChild
+          ? await reviewChange(ctx, event, facts)
+          : undefined;
+      const refused = gateRefused || reviewed !== undefined;
       countTaskToolCall(event, check, consulted, refused);
       // A refused call wrote nothing, so only a call that runs counts as an edit of this task; the
       // change it would have made is what the consultation carries instead.
@@ -2814,6 +2876,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // matched. The checkpoint's refusal names the consultation and nothing else.
       if (rule?.action === "block") return { block: true, reason: rule.message };
       if (decision?.action === "block") return { block: true, reason: decision.message };
+      if (reviewed !== undefined) return reviewed;
       // The id is recorded after the background cut, the rules and the count gate, so none of those
       // refusals can leave an entry behind. The launch check's own refusal still comes below, and the
       // entry it leaves is inert: a refused launch starts no child, so nothing can claim the id, and
@@ -2879,16 +2942,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           );
         }
       }
-      // The reviewer is the last step of `guard`, after the rules, the count gate and the launch
-      // check: only a change that is going to run reaches it. A workflow child of a consultation is
-      // part of that consultation and is not a change of its own, so it is never reviewed either.
-      if (
-        observed !== undefined &&
-        observed.level === "guard" &&
-        facts.changes &&
-        !consultationChild
-      )
-        reviewChange(ctx, event, facts);
       const settings = latestRuntime?.effective.contextShunt;
       if (!settings || settings.mode === "off") {
         shunt.clearPending();
@@ -2921,6 +2974,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         if (answered === "answered") {
           advisorGate.noteAnswer();
           guardRules.noteAnswer();
+          guardReviewer.noteAnswer();
         }
         // One notice per pair of failures, read from the constant that defines the pair: the level,
         // the launcher, the closed statuses it saw, and the three things a person can do. No error

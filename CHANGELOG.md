@@ -22,10 +22,23 @@
   are provisional until the shadow data fixes them, and each stated character or byte limit is exact:
   a cut is a silent prefix. Three absent verdicts in a row or five in a task turn the reviewer off for
   the session and tell you once. Each review writes a content-free local line and the task's `gate`
-  record gains `reviewed` (reviews that reached a model), `wouldBlock` (block verdicts, memory
-  included), `noVerdict` (reviews that concluded nothing) and `cacheHits` (pairs answered without a
-  call). `enforce` still refuses nothing in this build:
-  the block, its pass and its question are the next step of the same unreleased version.
+  record gains `reviewed` (reviews that started a request), `wouldBlock` (block verdicts, memory included),
+  `noVerdict` (reviews that concluded nothing) and `cacheHits` (pairs answered without a call).
+- **The guard reviewer can now enforce.** With `enforce` set and a model that can run, a change waits
+  for stage 1 — and for stage 2 only after a block — inside the 3 s and 8 s caps, and a confirmed
+  block refuses that one call with its category and one exit: find another way inside what the user
+  asked, or consult the Advisors. An answered consultation covers that tool and target for 3 calls, an
+  identical retry is refused from the task's memory without another paid call, and 3 refused changes
+  in a row stop every change of the task until the next user message, with one notice. A reviewer that
+  cannot answer falls to its failure lane: an edit or write inside the working directory runs and is
+  recorded as `unreviewed`, while shell calls, unknown tools, writes outside the working directory and
+  pushes wait for an answered consultation. An open breaker pays for nothing and routes every change
+  it has not already judged, or covered by an answered consultation, to the failure lane, so the
+  consultation its refusal names is a real exit. The several spellings of one path are one pair,
+  keyed on the tool and the target and never on the content. The reviewer record carries a `lane`
+  (`observe`, `pass`,
+  `unreviewed`, `refuse`) and the gate record adds `blocked`, `reviewPasses`, `unreviewed`, `unavailable`
+  and `escalations`.
 - **Guard reviewer model** and **Guard reviewer mode**, two user-scope rows in `/delegate`, off by
   default. The first reuses the role model picker with a `None` entry, hides the main model and
   shows why a configured model cannot act (`no credential`, `not available`, `same as the main
