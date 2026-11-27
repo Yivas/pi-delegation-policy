@@ -76,6 +76,11 @@ Two surfaces can send content to another model, and both need an explicit tool c
   model, the mode and a salted digest of the target, never the text. Each stated limit is exact: a
   cut is a silent prefix, so no text travels past the cap it names.
 
+The review is a call the extension makes itself, billed by the provider of the model you chose, and
+only a `guard` task with a model that can run makes it. It never lifts a rule or a hold of the count,
+never grants, widens or inspects a permission, and its refusals are judgements about intent: it is an
+accident tripwire behind the rules, not a sandbox.
+
 One residual stays outside the extension's reach: a fork default configured in `pi-subagents` itself is
 not read here, and the host would honour it. Review that setting for sessions that must not reach an
 Advisor's provider, or turn the Advisor off.

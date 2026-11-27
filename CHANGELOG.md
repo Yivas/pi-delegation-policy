@@ -49,7 +49,6 @@ model`). Choosing a model states once what travels to its provider, what never d
   another, returns the mode to `observe`. Both live in `delegation-policy.guard.json`, schema 2,
   which still reads schema 1 and accepts `reviewer: null` as no reviewer, and `/delegate status`
   reports `guard-reviewer=` with the model, or `off (invalid)` when the file cannot be read.
-  Nothing calls a model in this version.
 - **Guard consult first**, a user switch, off by default: when it is on, every `guard` task starts
   held, so its first change waits until an Advisor consultation answers, and the guard count applies
   after that answer. It is user scope only (`delegation-policy.guard.json`), changes
@@ -132,13 +131,24 @@ model`). Choosing a model states once what travels to its provider, what never d
 
 ### Fixed
 
+- **A consultation launch is not reviewed, and neither are the children it verified.** With a
+  reviewer set, the step `guard` runs after the rules and the count now skips the `subagent` call that
+  launches Advisors, as the count already did. Reviewing the way out paid for a call on every
+  consultation, and in `enforce` a block could refuse the one exit its own refusal names. The host
+  starts every child of a parallel call as its own `subagent_launch`, and a background run carries an
+  id of its own instead of the call's, so the children that call verified are remembered by Advisor
+  slot: one child consumes one entry, and a child that names another model or another profile, or
+  that carries a worktree, a resume, commands, an output path, a field this version does not know or a
+  directory other than this session's, stays a change. Nothing of this lifts a hold: only the host's
+  report of the run does that.
 - A consultation that names the Advisors in `workflow: "parallel"` is a consultation, not a change.
   Its children are part of the same call, so no rule and no count refuses them and a held task gets
-  all of them. That exemption covers a foreground workflow: in the background the host reports a
-  different parent id for each child, so those children count as changes like any other launch and
-  can reach the hold in the middle of the call. The hold lifts on the host's result as before: one
-  Advisor that answered, read from the per-child results, is enough. A parallel workflow that fails is unobservable by design — the
-  host reports a failed call with no details — so it lifts nothing; the way out is a consultation
+  all of them. That holds in the background as well, where the run carries an id of its own: those
+  children are bound to the slots the launch verified, one child per slot and thinking level, and
+  only a child that fails the closed field list stays a change that can reach the hold in the middle
+  of the call. The hold lifts on the host's result as before: one Advisor that answered, read from
+  the per-child results, is enough. A parallel workflow that fails is unobservable by design, since
+  the host reports a failed call with no details, so it lifts nothing; the way out is a consultation
   that succeeds, such as a single-Advisor foreground launch.
 - A `bash` line that starts with an assignment whose value is quoted reads as the read it is:
   `f="C:/x.md"; wc -l "$f"` no longer counts as a change. A value that expands or redirects inside

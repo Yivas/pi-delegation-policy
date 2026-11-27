@@ -187,6 +187,21 @@ import { openDelegateEditor, type ContinuityActions } from "./ui.ts";
 const STATUS_KEY = "pi-delegation-policy";
 /** The nested call `pi-subagents` makes before a workflow starts one of its children. */
 const SUBAGENT_LAUNCH_TOOL = "subagent_launch";
+/**
+ * The fields `pi-subagents` 0.89.1 sends for a workflow child: its declared parameters in
+ * `src/extension/subagent-launch-tool.js`, plus the `cwd` of a local child and a `commands` list it
+ * writes only when that list is not empty. Anything else means this is not the launch a consultation
+ * verified, so it stays a change. An empty `commands` is accepted below as a tolerance of this code,
+ * not because the host sends that shape.
+ */
+const CONSULTATION_CHILD_FIELDS = new Set([
+  "workflowRunId",
+  "key",
+  "agent",
+  "task",
+  "model",
+  "async",
+]);
 export type CommandAction =
   | { kind: "open" }
   | { kind: "intensity"; intensity: Intensity }
@@ -461,6 +476,17 @@ function advisorProfileFor(
     const level = model.slice(reference.length + 1);
     return (THINKING_LEVEL_NAMES as readonly string[]).includes(level);
   })?.setting;
+}
+
+/**
+ * One Advisor child as the launch and the host's nested call are matched: the packaged profile name the
+ * launch resolved, that slot's own model and the thinking level the launch asked for. A child that runs
+ * the same slot at another level is not that child, so the level is part of the key. `model` is the
+ * string `advisorProfileFor` accepted, with the level as its suffix or with none.
+ */
+function advisorSlotKey(agent: string, setting: AdvisorSetting, model: string): string {
+  const reference = `${setting.provider}/${setting.model}`;
+  return `${agent}|${reference}|${model === reference ? "" : model.slice(reference.length + 1)}`;
 }
 
 /**
@@ -1468,18 +1494,79 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       return event.input["async"] === false ? "consult" : "background";
     };
     /**
+     * The Advisor children a background consultation of this task verified, counted by slot. The host
+     * names a background run with an id of its own rather than the call that launched it, so the child
+     * is matched to the slot it was verified with, and one child consumes one entry. Entries live
+     * until the task ends: pi-subagents 0.89.1 starts an async workflow body detached
+     * (`src/runs/foreground/subagent-executor.js:5604`) and reports the parent's result before every
+     * child has been approved (`:6199`), so the parent result does not close this window.
+     */
+    const consultationSlots = new Map<string, number>();
+    /**
+     * Record the Advisor children one background consultation verified, one entry per child. The model
+     * is the one the launch check resolved for that child, which includes the call's own top-level model
+     * when the child inherits it instead of stating one: otherwise an admitted consultation would leave
+     * its children unexempted, and the run would be the one this whole binding exists to keep whole.
+     */
+    const noteConsultationSlots = (input: Record<string, unknown>): void => {
+      const state = latestRuntime;
+      if (state === undefined) return;
+      for (const { entry, model } of statedChildren(input)?.children ?? []) {
+        if (entry === undefined || model === undefined) continue;
+        const agent = typeof entry["agent"] === "string" ? entry["agent"] : "";
+        const setting = advisorProfileFor(state, { ...entry, model });
+        if (!agent || setting === undefined) continue;
+        const key = advisorSlotKey(agent, setting, model);
+        consultationSlots.set(key, (consultationSlots.get(key) ?? 0) + 1);
+      }
+    };
+    /**
+     * The slot a child the host started for a background consultation belongs to, or undefined when
+     * this call is not one. Fail closed: only the fields the host sends for a verified child pass, a
+     * directory has to be this session's own, and an empty `commands` is the only shape of that field
+     * that carries nothing.
+     */
+    const verifiedConsultationSlot = (
+      input: Record<string, unknown>,
+      cwd: string,
+    ): string | undefined => {
+      const state = latestRuntime;
+      if (state === undefined) return undefined;
+      for (const [field, value] of Object.entries(input)) {
+        if (CONSULTATION_CHILD_FIELDS.has(field)) continue;
+        if (field === "cwd" && value === cwd) continue;
+        if (field === "commands" && Array.isArray(value) && value.length === 0) continue;
+        return undefined;
+      }
+      const agent = typeof input["agent"] === "string" ? input["agent"] : "";
+      const model = typeof input["model"] === "string" ? input["model"] : "";
+      if (!agent || !model) return undefined;
+      const setting = advisorProfileFor(state, input);
+      if (setting === undefined) return undefined;
+      const key = advisorSlotKey(agent, setting, model);
+      return (consultationSlots.get(key) ?? 0) > 0 ? key : undefined;
+    };
+    /**
      * Whether this call is the host starting one child of a consultation this task launched. A
      * workflow runs every child as a nested `subagent_launch` call, so the children of a consultation
      * are part of it: refusing one of them as a change would fail the call and leave the hold with no
-     * working way out. The call is identified by the id of the consultation the host reports in
-     * `workflowRunId`, and its profile by the one this configuration resolves for an Advisor slot:
-     * the packaged profile name plus that Advisor's model, never a name on its own.
+     * working way out. A foreground workflow names the call it belongs to in `workflowRunId`; a
+     * background one names each run with an id of its own, so there the child is bound by the slot the
+     * launch verified. Either way its profile has to be the one this configuration resolves for that
+     * Advisor slot: the packaged profile name plus that slot's model, never a name on its own.
      */
-    const isConsultationChild = (event: ToolCallEvent): boolean => {
+    const isConsultationChild = (event: ToolCallEvent, cwd: string): boolean => {
       if (event.toolName !== SUBAGENT_LAUNCH_TOOL || latestRuntime === undefined) return false;
       const parent = event.input["workflowRunId"];
-      if (typeof parent !== "string" || !consultationCalls.has(parent)) return false;
-      return advisorProfileFor(latestRuntime, event.input) !== undefined;
+      if (typeof parent === "string" && consultationCalls.has(parent))
+        return advisorProfileFor(latestRuntime, event.input) !== undefined;
+      const slot = verifiedConsultationSlot(event.input, cwd);
+      if (slot === undefined) return false;
+      // One child per verified slot: a repeat of the same launch has no entry left, so it is a change.
+      const remaining = (consultationSlots.get(slot) ?? 0) - 1;
+      if (remaining > 0) consultationSlots.set(slot, remaining);
+      else consultationSlots.delete(slot);
+      return true;
     };
     /**
      * What a tool result proves about a consultation, or undefined when it is not one. A role launch
@@ -2596,6 +2683,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("session_start", async (_event, ctx) => {
       taskToken = undefined;
       advisorReminder.closeTask();
+      // A child the host starts for a consultation of the session that ended is not this one's.
+      consultationCalls.clear();
+      consultationSlots.clear();
       // A task ends by settling, by a branch move or by shutdown, and each of those writes its own
       // record. A start that still found a task open would have no reason to state, so it closes the
       // task without inventing one; the docs promise the three reasons and not exhaustiveness.
@@ -2626,6 +2716,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       pendingInvalidation = "session-changed";
       taskToken = undefined;
       advisorReminder.closeTask();
+      // The branch moved, so the consultations of the branch it left belong to nobody here.
+      consultationCalls.clear();
+      consultationSlots.clear();
       // The earlier calls of the task belong to the branch the session left. Closing the task drops
       // them, so the gate decides nothing on a state nobody remembers, and the record says the branch
       // moved instead of leaving the task out of the log.
@@ -2708,6 +2801,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         advisorReminder.openTask();
         gateNotes = 0;
         consultationCalls.clear();
+        consultationSlots.clear();
         readConsults.clear();
         guardRules.openTask();
         guardReviewer.openTask();
@@ -2814,6 +2908,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const parentKey = parentKeyFor(ctx);
       taskToken = undefined;
       consultationCalls.clear();
+      consultationSlots.clear();
       readConsults.clear();
       advisorReminder.closeTask();
       // The gate's report is closed with the task, whatever the answer was: it is the only record of
@@ -2897,7 +2992,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const facts = classifyToolCall(event.toolName, event.input);
       // A workflow child of a consultation this task launched is part of that consultation: it is not
       // a change of its own, so neither a rule nor the count may refuse it, and no rule sees it.
-      const consultationChild = isConsultationChild(event);
+      const consultationChild = isConsultationChild(event, ctx.cwd);
       const child = isSubagentChildProcess();
       const observed = child ? undefined : observation;
       // Every call of a `guard` task with a reviewer is remembered as a head for its trajectory: the
@@ -2961,13 +3056,17 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           : undefined;
       const gateRefused = ruleRefused || decision?.action === "block";
       // The reviewer is the last step of `guard`, after the rules, the count and the launch check:
-      // only a call that is going to run reaches it. In `observe` it returns nothing at all.
+      // only a call that is going to run reaches it. In `observe` it returns nothing at all. A
+      // consultation is not a change, so a launch of Advisors is excluded here as it already is from
+      // the count, and so are the children that launch verified: paying to review the way out would be
+      // waste, and with the mode on `enforce` a block could refuse the one exit its own refusal names.
       const reviewed =
         !gateRefused &&
         check?.refusal === undefined &&
         observed !== undefined &&
         observed.level === "guard" &&
         facts.changes &&
+        launchKind === undefined &&
         !consultationChild
           ? await reviewChange(ctx, event, facts)
           : undefined;
@@ -2990,6 +3089,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // entry it leaves is inert: a refused launch starts no child, so nothing can claim the id, and
       // the map is cleared when the task ends.
       if (launchKind !== undefined) consultationCalls.set(event.toolCallId, launchKind);
+      // A consultation that runs in the background names the run, not the call, so the slots it
+      // verified are remembered for the children the host starts for it.
+      if (launchKind === "background") noteConsultationSlots(event.input);
       if (check) {
         // A control or management action launches nothing, so it records no `launch` event.
         if (check.launch)
@@ -3129,6 +3231,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       completionClient?.abortPending();
       completionClient = undefined;
       backgroundConsults.closeTask();
+      consultationCalls.clear();
+      consultationSlots.clear();
       // The task ends here with the session, so its record is written before the runtime it names is
       // dropped, and it says it ended by shutdown.
       const shuttingDown = closeGateTask();

@@ -1207,6 +1207,172 @@ test("a parallel workflow of Advisors consults, and every child it starts is par
   });
 });
 
+/**
+ * The host names a child of a background workflow with a run id of its own, which is not the id of the
+ * call that launched the consultation: `workflowRunId = randomUUID()` in pi-subagents for an async
+ * workflow. The child is still part of the same consultation, so refusing it fails the call and
+ * leaves a held task with no way out, the defect a foreground workflow no longer has.
+ */
+const BACKGROUND_RUN = "3f0c2f7e-8f2f-4f1e-9a4f-000000000001";
+const backgroundChild = (key: string, overrides: Record<string, unknown> = {}) =>
+  advisorChild(BACKGROUND_RUN, key, { async: true, ...overrides });
+
+/** One parallel call of the three Advisors in the background, which is what the policy asks for. */
+const BACKGROUND_CONSULTATION = { ...PARALLEL_ADVISORS, async: true };
+
+test("every child of a background workflow of Advisors is part of its consultation", async () => {
+  await withHarness({ config: THREE_ADVISORS }, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, "the hold is reached");
+
+    // The policy asks for one parallel call in the background, and the call itself is no change.
+    assert.equal(await harness.toolCall("subagent", BACKGROUND_CONSULTATION), undefined);
+    // One child per verified slot, whatever run id the host gave them: all three start.
+    for (const key of ["task-1", "task-2", "task-3"])
+      assert.equal(
+        await harness.toolCall("subagent_launch", backgroundChild(key)),
+        undefined,
+        `child ${key} is not a change of its own`,
+      );
+    // The slots were consumed once each, so a fourth child of the same launch is a change again.
+    assert.equal(
+      (await harness.toolCall("subagent_launch", backgroundChild("task-4")))?.block,
+      true,
+    );
+    // And none of that opened the task: only the host's own report of the run does.
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, "nothing lifted");
+  });
+});
+
+test("a background consultation child is exempt only with the fields the host sends", async () => {
+  const cases: Array<[string, Record<string, unknown>, boolean]> = [
+    ["this session's own directory", { cwd: "/project" }, true],
+    ["an empty command list", { commands: [] }, true],
+    ["an output path the launch never named", { output: "/tmp/report.md" }, false],
+    ["a worktree the launch never asked for", { worktree: true }, false],
+    ["commands to run after the child", { commands: [{ command: "npm test" }] }, false],
+    ["a resume of another child", { resume: "run-9" }, false],
+    ["a field this version does not know", { tools: ["bash"] }, false],
+    ["another directory", { cwd: "C:/elsewhere" }, false],
+  ];
+  await withHarness({ config: THREE_ADVISORS }, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    for (const [why, extra, exempt] of cases) {
+      // A fresh call each time, so the ledger holds the three slots this case may consume.
+      assert.equal(await harness.toolCall("subagent", BACKGROUND_CONSULTATION), undefined, why);
+      const result = await harness.toolCall("subagent_launch", backgroundChild("task-1", extra));
+      if (exempt) assert.equal(result, undefined, why);
+      else {
+        assert.equal(result?.block, true, why);
+        assert.equal(result?.reason, gateText("role"), why);
+      }
+    }
+  });
+});
+
+test("a background consultation child is exempt only for the profile the launch verified", async () => {
+  await withHarness({ config: THREE_ADVISORS }, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    assert.equal(await harness.toolCall("subagent", BACKGROUND_CONSULTATION), undefined);
+    for (const [why, child] of [
+      ["another model", backgroundChild("task-1", { model: "example/small:high" })],
+      [
+        "a suffix that is not a thinking level",
+        backgroundChild("task-1", { model: "example/advisor:loquesea" }),
+      ],
+      ["an ordinary profile", backgroundChild("task-1", { agent: "worker" })],
+      ["no model at all", backgroundChild("task-1", { model: undefined })],
+    ] as const) {
+      const refused = await harness.toolCall("subagent_launch", child);
+      assert.equal(refused?.block, true, why);
+      assert.equal(refused?.reason, gateText("role"), why);
+    }
+  });
+});
+
+test("a background consultation child keeps the model the call inherited", async () => {
+  await withHarness({ config: THREE_ADVISORS }, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, "the hold is reached");
+    // The call states the model once, at its own top level, and the host runs every child with it.
+    assert.equal(
+      await harness.toolCall("subagent", {
+        async: true,
+        workflow: "parallel",
+        model: "example/advisor:high",
+        args: {
+          tasks: [1, 2, 3].map((slot) => ({
+            agent: ADVISOR_AGENT,
+            task: `Advisor ${slot}: review the change.`,
+          })),
+        },
+      }),
+      undefined,
+      "a consultation that states one model for all of its children is admitted",
+    );
+    for (const key of ["task-1", "task-2", "task-3"])
+      assert.equal(
+        await harness.toolCall("subagent_launch", backgroundChild(key)),
+        undefined,
+        `${key} runs the model the call inherited`,
+      );
+  });
+});
+
+test("a background consultation child is bound to the thinking level the call asked for", async () => {
+  await withHarness({ config: THREE_ADVISORS }, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, "the hold is reached");
+    assert.equal(await harness.toolCall("subagent", BACKGROUND_CONSULTATION), undefined);
+    // The call asked for one level, so a child of that slot at another level is another child.
+    const other = await harness.toolCall(
+      "subagent_launch",
+      backgroundChild("task-1", { model: "example/advisor:medium" }),
+    );
+    assert.equal(other?.block, true);
+    assert.equal(other?.reason, gateText("role"));
+    // A refusal consumes nothing: the level the call asked for still passes.
+    assert.equal(await harness.toolCall("subagent_launch", backgroundChild("task-1")), undefined);
+  });
+});
+
+test("the slots a background consultation verified do not outlive its task", async () => {
+  await withHarness({ config: THREE_ADVISORS }, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
+    assert.equal(await harness.toolCall("subagent", BACKGROUND_CONSULTATION), undefined);
+    assert.equal(await harness.toolCall("subagent_launch", backgroundChild("task-1")), undefined);
+    // The next task remembers nothing of the call the one before it made.
+    await harness.settled();
+    await harness.prompt();
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await harness.toolCall("edit", SMALL_EDIT);
+    assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, "the new task holds");
+    const refused = await harness.toolCall("subagent_launch", backgroundChild("task-1"));
+    assert.equal(refused?.block, true, "a slot left over from the last task proves nothing");
+  });
+});
+
 test("a child of a consultation is exempt only with the profile the host resolves", async () => {
   await withHarness({}, async (harness) => {
     await writeLevel({ level: "strict" });

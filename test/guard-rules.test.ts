@@ -1731,6 +1731,98 @@ test("the guard report counts a record with no end reason apart instead of inven
   });
 });
 
+/**
+ * The shadow reads these figures to evaluate the pre-registered criteria, so a synthetic log has to
+ * produce them exactly, twice, and the script must leave the file it read untouched.
+ */
+test("the guard report prints the reviewer counters and the completion statuses it needs", async () => {
+  await withAgentDirectory(async (directory) => {
+    const path = join(directory, "events.jsonl");
+    const shadow = [
+      JSON.stringify({
+        event: "gate",
+        endReason: "settled",
+        changes: 5,
+        totalChanges: 9,
+        holds: 2,
+        answers: 1,
+        failures: 0,
+        passes: 3,
+        notes: 1,
+        ruleHits: { "force-push": 2, "read-unreadable": 1 },
+        reviewed: 6,
+        wouldBlock: 2,
+        noVerdict: 1,
+        cacheHits: 4,
+        blocked: 1,
+        reviewPasses: 3,
+        unreviewed: 0,
+        unavailable: 0,
+        escalations: 1,
+      }),
+      JSON.stringify({
+        event: "gate",
+        endReason: "shutdown",
+        changes: 0,
+        reviewed: 0,
+        wouldBlock: 0,
+        noVerdict: 0,
+        cacheHits: 0,
+        blocked: 0,
+        reviewPasses: 0,
+        unreviewed: 0,
+        unavailable: 0,
+        escalations: 0,
+      }),
+      ...["answered", "answered", "failed", "ignored", "unreadable", "notice-failed"].map(
+        (status) => JSON.stringify({ event: "completion", status }),
+      ),
+      // A line this script does not count is skipped, never printed as if it were a record.
+      JSON.stringify({ event: "reviewer", stage1: "block" }),
+      "{ not json",
+    ].join("\n");
+    await writeFile(path, `${shadow}\n`);
+    const first = await execFileAsync(process.execPath, [
+      join("scripts", "guard-report.mjs"),
+      path,
+    ]);
+    assert.match(first.stdout, /Reviewer counters:/);
+    assert.match(first.stdout, /reviewed +6/);
+    assert.match(first.stdout, /wouldBlock +2/);
+    assert.match(first.stdout, /noVerdict +1/);
+    assert.match(first.stdout, /cacheHits +4/);
+    assert.match(first.stdout, /blocked +1/);
+    assert.match(first.stdout, /reviewPasses +3/);
+    assert.match(first.stdout, /escalations +1/);
+    // A total cannot answer the per-task criteria, so the report carries the spread it can prove.
+    assert.match(first.stdout, /Tasks, where a total is not enough:/);
+    assert.match(first.stdout, /tasks +2/);
+    assert.match(first.stdout, /with a refused change +1/);
+    assert.match(first.stdout, /with a review that would refuse +1/);
+    assert.match(first.stdout, /with a review +1/);
+    assert.match(first.stdout, /changes in the busiest task +5/);
+    // The rule a retirement decision reads: the tasks it fired in, and those the reviewer also flagged.
+    assert.match(first.stdout, /Rules by reviewer overlap/);
+    assert.match(first.stdout, /read-unreadable +1 \/ 1/);
+    assert.match(first.stdout, /force-push +1 \/ 1/);
+    assert.match(first.stdout, /Background completions by status:/);
+    assert.match(first.stdout, /answered +2/);
+    assert.match(first.stdout, /failed +1/);
+    assert.match(first.stdout, /ignored +1/);
+    assert.match(first.stdout, /unreadable +1/);
+    assert.match(first.stdout, /notice-failed +1/);
+    assert.match(first.stdout, /Skipped 1 unreadable line\(s\)/);
+    assert.doesNotMatch(first.stdout, /undefined/);
+    // The same log gives the same summary, and reading it wrote nothing.
+    const second = await execFileAsync(process.execPath, [
+      join("scripts", "guard-report.mjs"),
+      path,
+    ]);
+    assert.equal(second.stdout, first.stdout);
+    assert.equal(await readFile(path, "utf8"), `${shadow}\n`);
+  });
+});
+
 test("a line the reader cannot judge is covered once, for that exact line", async () => {
   await withHarness(async (harness) => {
     await harness.level("guard");

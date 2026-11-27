@@ -104,7 +104,8 @@ Advisor off it has no effect. `off` leaves the written rules alone, `standard` a
 tool results and refuses nothing, and `strict` holds every change of a task once several were made
 with no consultation, until an Advisor answers or the operator changes the level and sends a new
 prompt, or cancels the task. `guard` adds its own deterministic rules in front of that count, listed
-under [guard rules](/configuration/#guard-rules), and calls no model in this version.
+under [guard rules](/configuration/#guard-rules). Those rules call no model. The optional reviewer is
+the one step of `guard` that does, and only when a model is chosen for it.
 [Configuration](/configuration/#advisor-nudge-level) describes the levels, the precedence and the
 file.
 
@@ -324,9 +325,10 @@ in-flight filesystem operation may finish later, but starts no further operation
 predecessor, bounded to the last 4 MiB of each, and reports allowed launches per role plus a refusal
 count. The tail can cut a line, which is skipped, so the report may undercount and never invents a
 record; a missing or unreadable log reports `launches=none recorded`. Reading it changes no file and
-touches no launch. The guard report script in the repository is the other reader: it summarises the `gate` records of
-a log file and its rotated predecessor — tasks by end reason and the counters, `ruleHits` included —
-and prints nothing else from the log.
+touches no launch. The guard report script in the repository is the other reader: it summarises the `gate` and
+`completion` records of a log file and its rotated predecessor (tasks by end reason, the counters,
+`ruleHits`, the reviewer counters and the closed status of each completion) and prints nothing else
+from the log.
 
 A `reviewer` record is written per review the `guard` reviewer runs or skips: `turn` (the assistant
 message it ran in), `tool` (the tool name, reduced to an identifier token), `stage1` (`block`,
@@ -347,6 +349,27 @@ pair, and one `ALLOW` covers every later call to that path in the task. The work
 failure lane reads the two strings only: it places drive-relative paths, another drive, network
 shares and home shortcuts as outside, and a link inside the workspace that resolves outside still
 reads as inside, because no hook in this extension touches the disk.
+
+#### The nested call a consultation starts {#guard-reviewer-child}
+
+`pi-subagents` makes one nested `subagent_launch` call before it starts each workflow child. The
+fields observed in `0.89.1` are `workflowRunId`, `key`, `agent`, `task`, `cwd`, `model`, `async`,
+`worktree`, `resume`, `commands` and `output`; a thinking level is a suffix of `model`, not a field of
+its own, and `commands` appears only when it would carry something, because that version writes it
+only for a non-empty list. `guard` reads that call only to tell a child of a consultation from a
+change. It accepts the six fields a verified child carries (`workflowRunId`, `key`, `agent`, `task`,
+`model`, `async`), plus this session's own `cwd`. An empty `commands` list is accepted too, but that
+is this code allowing for a shape the host does not send rather than one it observed. Anything else
+is a change, so a version of `pi-subagents` that adds a field, or a child with a worktree, a resume,
+commands, an output path or another directory, stays a change instead of being trusted.
+
+The exempt child is bound to the Advisor slot the launch verified, by the packaged profile name, that
+slot's own model and the thinking level the launch asked for, one child per slot and level, and a
+repeated launch finds no entry left. A child that inherits the call's own top-level model is bound by
+the model the launch check resolved for it, so an admitted consultation keeps all of its children. A
+background run is named with an id of its own rather than the call's, which is why the slot and not
+the id decides there. The binding lives until the task ends, the branch moves or the session closes,
+and lifting the hold is never part of it: only the host's own report of a finished run does that.
 
 No network telemetry is sent; model identifiers can still be sensitive.
 

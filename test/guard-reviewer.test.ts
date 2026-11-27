@@ -24,6 +24,7 @@ import {
   type ReviewerCallHead,
   type ReviewerRecord,
 } from "../src/guard-reviewer.ts";
+import { ADVISOR_AGENT_NAME } from "../src/advisor-executor.ts";
 import { classifyToolCall } from "../src/state-change.ts";
 import { getAdvisorLevelPath } from "../src/advisor-level.ts";
 import { getEventLogPath } from "../src/advisor-log.ts";
@@ -122,9 +123,9 @@ function reviewerFor(options: { replies: readonly Reply[]; record: (r: ReviewerR
   return { reviewerInstance, registry, calls };
 }
 
-async function until(condition: () => boolean, waitMs = 5_000): Promise<void> {
+async function until(condition: () => boolean | Promise<boolean>, waitMs = 5_000): Promise<void> {
   const deadline = Date.now() + waitMs;
-  while (!condition()) {
+  while (!(await condition())) {
     if (Date.now() > deadline) throw new Error("the expected state never arrived");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -596,8 +597,101 @@ async function withAgentDirectory(callback: (directory: string) => Promise<void>
 
 const BUILTIN_TOOLS = ["read", "find", "grep", "ls", "edit", "write", "bash"];
 const EXTENSION_TOOLS = ["subagent", "consult_advisor"];
+const SESSION_FILE = "/sessions/synthetic.jsonl";
+const COMPLETE_EVENT = "subagent:async-complete";
 
-function createHarness(directory: string, options: { replies: readonly Reply[] }) {
+type Listener = (payload: unknown) => void;
+
+/**
+ * A standing-in `pi.events`: it answers the bridge's `ping` and says when something listens, which is
+ * how the completion of a background run is delivered to the session under test.
+ */
+function fakeBus(sessionId: string) {
+  const listeners = new Map<string, Set<Listener>>();
+  const waiting = new Map<string, Array<() => void>>();
+  const announce = (event: string): void => {
+    const pending = waiting.get(event);
+    if (pending === undefined) return;
+    waiting.delete(event);
+    for (const resolve of pending) resolve();
+  };
+  const bus = {
+    on(event: string, listener: Listener) {
+      const set = listeners.get(event) ?? new Set<Listener>();
+      set.add(listener);
+      listeners.set(event, set);
+      announce(event);
+      return () => {
+        set.delete(listener);
+      };
+    },
+    emit(event: string, payload: unknown) {
+      if (event === "subagents:rpc:v1:request") {
+        const request = payload as { requestId?: string };
+        if (typeof request.requestId !== "string") return;
+        setImmediate(() =>
+          bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+            version: 1,
+            requestId: request.requestId,
+            success: true,
+            data: {
+              version: 1,
+              events: { asyncComplete: COMPLETE_EVENT },
+              session: { sessionId },
+            },
+          }),
+        );
+        return;
+      }
+      for (const listener of [...(listeners.get(event) ?? [])]) listener(payload);
+    },
+    /**
+     * Resolves once something listens for `event`, which is how a test knows admission ended. The
+     * admission is a question to a bridge, so it can also never come back: the wait has a deadline
+     * and rejects, instead of hanging the suite with no message.
+     */
+    listening(event: string, timeoutMs = 5_000): Promise<void> {
+      if ((listeners.get(event)?.size ?? 0) > 0) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`Nothing listened for ${event} within ${timeoutMs} ms.`)),
+          timeoutMs,
+        );
+        const pending = waiting.get(event) ?? [];
+        pending.push(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+        waiting.set(event, pending);
+      });
+    },
+  };
+  return bus;
+}
+
+/** A completion payload in the shape the host writes when one background run ends. */
+function completion(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    runId: "run-1",
+    sessionId: SESSION_FILE,
+    state: "complete",
+    success: true,
+    results: [
+      {
+        agent: ADVISOR_AGENT_NAME,
+        model: "example/advisor",
+        output: "an answer",
+        outputState: "present",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function createHarness(
+  directory: string,
+  options: { replies: readonly Reply[]; activeTools?: readonly string[] },
+) {
   const handlers = new Map<
     string,
     (event: Record<string, unknown>, ctx: ExtensionContext) => unknown
@@ -606,6 +700,7 @@ function createHarness(directory: string, options: { replies: readonly Reply[] }
   const branch: Array<Record<string, unknown>> = [];
   let branchBroken = false;
   const { registry, calls } = stubRegistry(options.replies);
+  const bus = fakeBus("synthetic-session");
   const pi = {
     on: (
       name: string,
@@ -616,11 +711,12 @@ function createHarness(directory: string, options: { replies: readonly Reply[] }
       ...BUILTIN_TOOLS.map((name) => ({ name, sourceInfo: { source: "builtin" } })),
       ...EXTENSION_TOOLS.map((name) => ({ name, sourceInfo: { source: "extension" } })),
     ],
-    getActiveTools: () => ["consult_advisor"],
+    getActiveTools: () => [...(options.activeTools ?? ["consult_advisor"])],
     registerCommand: () => undefined,
     registerShortcut: () => undefined,
     appendEntry: (customType: string, data?: unknown) =>
       branch.push({ type: "custom", customType, data }),
+    events: bus,
   };
   const theme = {
     fg: (_color: string, text: string) => text,
@@ -641,6 +737,7 @@ function createHarness(directory: string, options: { replies: readonly Reply[] }
       },
       getHeader: () => ({}),
       getSessionId: () => "synthetic-session",
+      getSessionFile: () => SESSION_FILE,
     },
     modelRegistry: {
       find: (provider: string, id: string) =>
@@ -665,6 +762,8 @@ function createHarness(directory: string, options: { replies: readonly Reply[] }
   };
   const start = async (): Promise<void> => {
     await handler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+    // The completion channel is admitted in the background: wait until it listens.
+    await bus.listening(COMPLETE_EVENT);
   };
   const prompt = async (text = "Refactor the loader", source = "interactive"): Promise<void> => {
     branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text }] } });
@@ -715,6 +814,26 @@ function createHarness(directory: string, options: { replies: readonly Reply[] }
     });
     return result;
   };
+  /** The result the host reports for the call that just ran, which is what a background run id is. */
+  const toolResult = async (
+    toolName: string,
+    toolCallId: string,
+    input: Record<string, unknown>,
+    details?: unknown,
+  ): Promise<void> => {
+    await handler("tool_result")(
+      {
+        type: "tool_result",
+        toolCallId,
+        toolName,
+        input,
+        content: [{ type: "text", text: "TOOL-OUTPUT-MARKER" }],
+        isError: false,
+        details,
+      },
+      ctx,
+    );
+  };
   const settled = async (): Promise<void> => {
     await handler("agent_settled")({ type: "agent_settled" }, ctx);
   };
@@ -730,11 +849,14 @@ function createHarness(directory: string, options: { replies: readonly Reply[] }
   };
   return {
     branch,
+    bus,
     notifications,
     calls,
     start,
     prompt,
     toolCall,
+    toolResult,
+    lastCallId: () => `call-${callId}`,
     settled,
     shutdown,
     tree,
@@ -743,18 +865,28 @@ function createHarness(directory: string, options: { replies: readonly Reply[] }
 }
 
 async function withHarness(
-  options: { replies: readonly Reply[]; guard: GuardMode; level?: string; child?: boolean },
+  options: {
+    replies: readonly Reply[];
+    guard: GuardMode;
+    level?: string;
+    child?: boolean;
+    config?: GlobalDefaults;
+    activeTools?: readonly string[];
+  },
   callback: (harness: ReturnType<typeof createHarness>) => Promise<void>,
 ): Promise<void> {
   await withAgentDirectory(async (directory) => {
-    await writeConfig(getGlobalConfigPath(directory), defaults);
+    await writeConfig(getGlobalConfigPath(directory), options.config ?? defaults);
     await writeFile(
       getAdvisorLevelPath(getGlobalConfigPath(directory)),
       `${JSON.stringify({ schemaVersion: 1, level: options.level ?? "guard" })}\n`,
     );
     await writeGuardMode(options.guard, getGlobalConfigPath(directory));
     if (options.child === true) process.env.PI_SUBAGENT_CHILD = "1";
-    const harness = createHarness(directory, { replies: options.replies });
+    const harness = createHarness(directory, {
+      replies: options.replies,
+      ...(options.activeTools === undefined ? {} : { activeTools: options.activeTools }),
+    });
     await harness.start();
     try {
       await callback(harness);
@@ -764,7 +896,7 @@ async function withHarness(
   });
 }
 
-async function reviewerRecords(waitMs = 5_000): Promise<Array<Record<string, unknown>>> {
+async function logRecords(event: string, waitMs = 5_000): Promise<Array<Record<string, unknown>>> {
   const deadline = Date.now() + waitMs;
   for (;;) {
     const text = await readFile(getEventLogPath(getGlobalConfigPath()), "utf8").catch(() => "");
@@ -772,11 +904,15 @@ async function reviewerRecords(waitMs = 5_000): Promise<Array<Record<string, unk
       .split("\n")
       .filter((line) => line.trim() !== "")
       .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((entry) => entry.event === "reviewer");
+      .filter((entry) => entry.event === event);
     if (records.length > 0 || Date.now() > deadline) return records;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+/** The records of the session under test, by the event they were written under. */
+const reviewerRecords = (waitMs = 5_000) => logRecords("reviewer", waitMs);
+const gateRecords = (waitMs = 5_000) => logRecords("gate", waitMs);
 
 test("observing never refuses and never waits for the review", async () => {
   await withHarness(
@@ -1546,4 +1682,223 @@ test("with the breaker open, a verdict this task already holds still applies", a
   const again = await instance.enforce({ ...shellCall, registry });
   assert.deepEqual(again, { action: "pass", lane: "pass" });
   assert.equal(instance.report().cacheHits, 1);
+});
+
+/** The configuration the policy asks for with three Advisors: one parallel call names all of them. */
+const THREE_ADVISORS: GlobalDefaults = { ...defaults, advisors: [advisor, advisor, advisor] };
+
+test("a background consultation child is reviewed only when the launch did not verify it", async () => {
+  await withHarness(
+    {
+      replies: [{ text: "BLOCK" }, { text: "x\nCATEGORY: outside-the-request" }],
+      guard: OBSERVE("example/reviewer"),
+      config: { ...THREE_ADVISORS, advisorLaunch: "role" },
+      activeTools: ["subagent", "consult_advisor"],
+    },
+    async (harness) => {
+      await harness.prompt("Consult the Advisors");
+      // The launch check writes the exact model each child runs, level included, and the host builds
+      // the nested call from that corrected request: the tasks below carry it after the call.
+      const tasks = [1, 2, 3].map((slot) => ({
+        agent: ADVISOR_AGENT_NAME,
+        model: "example/advisor",
+        task: `Advisor ${slot}: review the change.`,
+      }));
+      assert.equal(
+        await harness.toolCall("subagent", { workflow: "parallel", async: true, args: { tasks } }),
+        undefined,
+      );
+      // The host names a background run with an id of its own, so its children carry that id.
+      const child = {
+        workflowRunId: "bg-run-1",
+        key: "task-1",
+        agent: ADVISOR_AGENT_NAME,
+        model: tasks[0]!.model,
+        async: true,
+      };
+      assert.equal(await harness.toolCall("subagent_launch", child), undefined);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(harness.calls.length, 0, "a verified child pays for no review");
+      assert.equal((await reviewerRecords(0)).length, 0, "and writes none");
+      // A child the launch never verified is a change like any other, and observing records it.
+      assert.equal(
+        await harness.toolCall("subagent_launch", {
+          ...child,
+          key: "task-2",
+          agent: "worker",
+          model: "example/small",
+        }),
+        undefined,
+      );
+      await until(async () => (await reviewerRecords(0)).length === 1);
+      assert.equal(harness.calls.length, 2);
+      assert.equal((await reviewerRecords(0))[0]?.tool, "subagent_launch");
+    },
+  );
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The whole pipeline in one session: rules, the switch, the reviewer and a background answer
+ * ---------------------------------------------------------------------------------------------- */
+
+const ROLE_LAUNCH = { ...defaults, advisorLaunch: "role" as const };
+const ADVISOR_LAUNCH = { agent: ADVISOR_AGENT_NAME, model: "example/advisor", task: "Is this ok?" };
+
+/** Register one background consultation the way the host hands it back, then report it answered. */
+async function launchBackgroundRun(
+  harness: ReturnType<typeof createHarness>,
+  runId: string,
+): Promise<void> {
+  assert.equal(
+    await harness.toolCall("subagent", { ...ADVISOR_LAUNCH, async: true, task: runId }),
+    undefined,
+    "a background consultation is never refused for being detached",
+  );
+  const call = harness.lastCallId();
+  await harness.toolResult(
+    "subagent",
+    call,
+    { ...ADVISOR_LAUNCH, async: true, task: runId },
+    {
+      mode: "single",
+      runId,
+      asyncId: runId,
+      toolCallId: call,
+      results: [],
+    },
+  );
+}
+
+test("the rules, the consult-first hold, the reviewer and a background answer share one session", async () => {
+  await withHarness(
+    {
+      replies: [
+        { text: "BLOCK" },
+        { text: "x\nCATEGORY: cross-trust-boundary" },
+        { text: "BLOCK" },
+        { text: "x\nCATEGORY: outside-the-request" },
+        { text: "BLOCK" },
+        { text: "x\nCATEGORY: degrade-security" },
+      ],
+      guard: {
+        consultBeforeFirstChange: true,
+        reviewer: { model: "example/reviewer", mode: "observe" },
+      },
+      config: ROLE_LAUNCH,
+      activeTools: ["subagent", "consult_advisor"],
+    },
+    async (harness) => {
+      await harness.prompt("Refactor the loader");
+      // A hard rule decides before the switch, so it is refused while the task waits for its first
+      // consultation, and it pays for no model call of either kind.
+      const forced = await harness.toolCall("bash", { command: "git push --force origin main" });
+      assert.equal(forced?.block, true);
+      assert.match(forced?.reason ?? "", /Guard rule: force push\./);
+      // The switch holds the first change, and its refusal names the one way out.
+      const held = await harness.toolCall("edit", EDIT);
+      assert.equal(held?.block, true);
+      assert.match(held?.reason ?? "", /Consult all Advisors in one parallel call/);
+      // Reading is never affected, and nothing is paid for before the first change.
+      assert.equal(await harness.toolCall("read", { path: "src/loader.ts" }), undefined);
+      assert.equal(harness.calls.length, 0);
+      // The way out itself is not a change: launching the Advisors is reviewed by nobody.
+      await launchBackgroundRun(harness, "run-1");
+      assert.equal(harness.calls.length, 0, "a consultation launch costs no review");
+      assert.equal((await reviewerRecords(0)).length, 0, "and writes none");
+      // The host reports a run this task launched, and only its report opens the hold.
+      harness.bus.emit(COMPLETE_EVENT, completion({ runId: "run-1" }));
+      // A launch that is not a consultation is a change, so observing records it.
+      assert.equal(
+        await harness.toolCall("subagent", { agent: "worker", model: "example/small", task: "x" }),
+        undefined,
+      );
+      await until(async () => (await reviewerRecords(0)).length === 1);
+      assert.equal(harness.calls.length, 2, "a block pays for one more call");
+      // The change of this task runs, and the reviewer observes it without holding it.
+      assert.equal(await harness.toolCall("edit", EDIT), undefined);
+      await until(async () => (await reviewerRecords(0)).length === 2);
+      const observed = (await reviewerRecords(0))[1]!;
+      assert.equal(observed.mode, "observe");
+      assert.equal(observed.lane, "observe");
+      assert.equal(observed.stage2, "outside-the-request");
+      // The same tool and target are one pair, so the identical retry costs nothing.
+      assert.equal(await harness.toolCall("edit", EDIT), undefined);
+      // A pair answered from memory leaves its own record and pays for no call.
+      await until(async () => (await reviewerRecords(0)).length === 3);
+      assert.equal(harness.calls.length, 4, "a cached verdict is not a call");
+      assert.equal((await reviewerRecords(0))[2]?.status, "cached");
+      await harness.settled();
+      await until(async () => (await gateRecords(0)).length === 1);
+      const [observedTask] = await gateRecords(0);
+      assert.equal(observedTask?.reviewed, 2, "the launch and the edit started a request");
+      assert.equal(
+        observedTask?.wouldBlock,
+        3,
+        "both answered a block, and the retry answered one from memory",
+      );
+      assert.equal(observedTask?.cacheHits, 1, "the identical retry was answered from memory");
+      assert.equal(observedTask?.blocked, 0, "observing refuses nothing");
+      // The user switches to enforce for the next task: the same pipeline now refuses that call.
+      await writeGuardMode(
+        {
+          consultBeforeFirstChange: false,
+          reviewer: { model: "example/reviewer", mode: "enforce" },
+        },
+        getGlobalConfigPath(),
+      );
+      await harness.prompt("Change the other file");
+      // With the mode on `enforce`, the consultation still runs: no paid review, no refusal, no
+      // exit that names a call the reviewer itself would have stopped.
+      await launchBackgroundRun(harness, "run-2");
+      assert.equal(harness.calls.length, 4, "an enforced consultation launch costs no review");
+      assert.equal((await reviewerRecords(0)).length, 3, "and writes none");
+      const refused = await harness.toolCall("edit", { path: "src/other.ts", edits: [] });
+      assert.equal(refused?.block, true);
+      assert.match(refused?.reason ?? "", /Guard reviewer: degrade-security\./);
+      assert.match(refused?.reason ?? "", /Consult all Advisors in one parallel call/);
+      // A read still runs without a review, and closing the task leaves the counters of both.
+      assert.equal(await harness.toolCall("read", { path: "src/other.ts" }), undefined);
+      await harness.settled();
+      await until(async () => (await gateRecords(0)).length === 2);
+      const enforcedTask = (await gateRecords(0))[1];
+      assert.equal(enforcedTask?.reviewed, 1, "the enforced task paid for one review");
+      assert.equal(enforcedTask?.wouldBlock, 1, "which answered a block");
+      assert.equal(enforcedTask?.blocked, 1, "and refused its call");
+      assert.equal(enforcedTask?.cacheHits, 0, "in enforce a refusal also spends the call");
+      assert.equal(enforcedTask?.unreviewed, 0, "an answer arrived, so no lane was needed");
+    },
+  );
+});
+
+test("a subagent child stays inert across the rules, the switch, the reviewer and a completion", async () => {
+  await withHarness(
+    {
+      replies: [{ text: "BLOCK" }, { text: "x\nCATEGORY: outside-the-request" }],
+      guard: {
+        consultBeforeFirstChange: true,
+        reviewer: { model: "example/reviewer", mode: "enforce" },
+      },
+      config: ROLE_LAUNCH,
+      activeTools: ["subagent", "consult_advisor"],
+      child: true,
+    },
+    async (harness) => {
+      await harness.prompt("Refactor the loader");
+      // No user to ask and no Advisor to answer: a child neither holds nor reviews nor refuses.
+      assert.equal(await harness.toolCall("edit", EDIT), undefined);
+      assert.equal(
+        await harness.toolCall("bash", { command: "git push --force origin main" }),
+        undefined,
+      );
+      await launchBackgroundRun(harness, "run-1");
+      harness.bus.emit(COMPLETE_EVENT, completion({ runId: "run-1" }));
+      assert.equal(await harness.toolCall("edit", { path: "src/other.ts", edits: [] }), undefined);
+      assert.equal(harness.calls.length, 0, "a child pays for no review");
+      await harness.settled();
+      // Give the writer the same window the other cases use before proving nothing was written.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal((await gateRecords(0)).length, 0, "a child opens no gate to report");
+      assert.equal((await reviewerRecords(0)).length, 0, "and writes no review");
+    },
+  );
 });

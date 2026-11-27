@@ -620,7 +620,8 @@ A prompt that starts with `??` is the one exception to "never held": it holds th
 at any level. At `off` and `standard` the hold ends with the first answered consultation and no
 count starts afterwards. Every Advisor stays available at every level and can be consulted at any
 time. `guard` adds a closed set of its own decisions in front of the count, described under
-[guard rules](#guard-rules); it calls no model in this version. The count is per task and starts over
+[guard rules](#guard-rules), and, when you choose a model for it, the extension's own model call
+after them (see [the guard reviewer](#guard-reviewer-request)). The count is per task and starts over
 when a consultation answers. The [checkpoint](#advisor-checkpoint) section describes what is held and
 what opens it.
 
@@ -674,13 +675,19 @@ Switching to `enforce` states the same once, in its own words, and names the mod
 > else waits for an Advisor answer. Some blocks will be wrong. You can return to observe at any time.
 > Enter keeps `<provider/id>` in enforce, and Esc or Ctrl+C keeps the previous mode.
 
-The reviewer never lifts a rule only you can allow, never changes a permission of the host and never
-runs in a subagent child.
+The reviewer never lifts a rule only you can allow, never lifts a hold of the count, never changes a
+permission of the host and never runs in a subagent child.
 
 ### What a review sends and what it costs {#guard-reviewer-request}
 
 A review is the last step of `guard`, behind the rules and the count, and only a call that changes
-state reaches it. It reads three things, all of them as one JSON object that the fixed prompt declares
+state reaches it. A `subagent` call that launches only Advisors is a consultation rather than a change,
+so no rule, no count and no review touches it, and the way out is never what delays or refuses the
+task. The host starts each child of a parallel call as its own `subagent_launch` call, and those
+children are part of the same consultation: a foreground call names them with its own id, and a
+background run, which carries an id of its own, is bound by the Advisor slots the call verified, one
+child per slot. Only the fields such a child carries are accepted, and
+[what stops being exempt](/limits-and-privacy/#guard-reviewer-child) lists them. It reads three things, all of them as one JSON object that the fixed prompt declares
 to be data and never an instruction: your own messages in the branch, up to 800 characters each and
 4 KiB in total, newest first; the pending call, meaning the tool name and, for an edit or a write, the
 path and the head of the new text up to 1 KiB, or, for a shell call, the head of the line up to 1 KiB;
@@ -732,6 +739,34 @@ link inside the working directory that resolves outside still reads as inside. N
 the rules and the count decide first, a reviewer block is a judgement about intent that will
 sometimes be wrong, and the reviewer never lifts a rule only you can allow, never changes a host
 permission and never runs in a subagent child.
+
+### Calibration and removal criteria {#guard-reviewer-calibration}
+
+These criteria were written before the first shadow measurement, and every number in them is a
+**proposal** until that shadow replaces it. `scripts/guard-report.mjs` reads the log and prints, with
+no content of any call: the tasks by end reason, the task counters, `ruleHits`, the reviewer counters
+(`reviewed`, `wouldBlock`, `noVerdict`, `cacheHits`, `blocked`, `reviewPasses`, `unreviewed`,
+`unavailable`, `escalations`), how many tasks carry a refused change or a review that would have
+refused one, and, for each rule, how many of the tasks it fired in also saw a reviewer block.
+
+Three criteria read those figures directly: the share of absent verdicts is `noVerdict` against
+`reviewed`, the share of blocked changes is `blocked` against the change counters, and the spread
+the "one task in five" limit needs is the count of tasks with a refused change. The retirement of a
+`SOFT` rule reads the per-rule overlap. What the report cannot say is whether a given block was
+wrong or right, because the log carries no call and no text: that judgement is read in the per-line
+`reviewer` records, where a mode, a lane and a closed status sit next to the salted digest of the
+target, one line per review the task ran or skipped.
+
+- The shadow runs for at least 50 tasks or two weeks, whichever comes first.
+- The caps and the thresholds are fixed from the observed distribution, never from the table above.
+- A `SOFT` rule that produces no block the reviewer does not also produce is retired, and its case
+  stays with the reviewer. A very long or encoded command is never retired, because the cap blinds
+  the reviewer exactly there.
+- The `HARD` set and the count gate are not retired with data.
+- In `enforce`, false blocks above 2 % of the changes, or above one task in five, return the mode to
+  `observe` before any other friction is added.
+- Absent verdicts above 5 % of the calls mean a different model or lower caps, never a lower
+  blocking threshold.
 
 With Advisor off the level has no effect. It is resolved from a session override first, then from the
 entry for the current main model, then from the global level, then from `standard`, and a task keeps
@@ -827,11 +862,14 @@ result of a single or `tasks` launch, or the completion the host reports when a 
 A foreground result is read from the details of the host's `subagent` tool: a single or `tasks` launch
 whose every child is a configured Advisor, with a child that ended cleanly, was not cut short and
 left output of its own. A launch that names `workflow: "parallel"` is a consultation too, and the
-children the host starts for it belong to the same call when it runs in the foreground; a workflow
-script that chooses its own children is not read, so it counts as a change like any other unknown
-call. In the background the host reports a different parent id for each child, so those children
-count as changes like any other launch and can reach the hold in the middle of the call. A single
-foreground Advisor launch is enough to answer. Those details were read against `pi-subagents`
+children the host starts for it belong to the same call: in the foreground the call's own id names
+them, and a background run, which carries an id of its own, is bound by the Advisor slots the launch
+verified, one child per slot and thinking level. Such a child is no change at all, so no rule holds
+it, the count skips it and the reviewer never sees it, while a child that
+[fails the field list](/limits-and-privacy/#guard-reviewer-child) stays a change and can reach the
+hold in the middle of the call. A workflow script that chooses its own children is not read, so it
+counts as a change like any other unknown call. A single foreground Advisor launch is enough to
+answer. Those details were read against `pi-subagents`
 `0.89.1`. A result in a shape this version does not recognize opens nothing and keeps the hold.
 
 A background launch is not refused while changes are held. It returns a run id, and the checkpoint
@@ -904,8 +942,10 @@ and an option outside that list is not recognized.
 ## Guard rules {#guard-rules}
 
 `guard` decides in this order: its own deterministic rules, then the [checkpoint](#advisor-checkpoint)
-count. Both are free and work with nothing else configured, and this version calls no model. A rule
-reads the same call the count reads, never refuses a read, and comes in one of three closed sets.
+count. Neither calls a model, and both work with nothing else configured. The
+[reviewer](#guard-reviewer-request) is the one step of `guard` that does call one, and only when you
+choose a model for it. A rule reads the same call the count reads, never refuses a read, and comes in
+one of three closed sets.
 
 **Only the user can allow these.** A consultation lifts nothing here: the way out is the user, who
 can make the call, change the level with `/delegate`, or cancel the task.
