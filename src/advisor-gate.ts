@@ -85,12 +85,17 @@ const AFTER = "After the consultation answers, make this change again.";
  * The path each launch mode has. Tool launch depends on who writes the brief, because a call with no
  * question is refused when the agent writes it. Role launch names the same background launch the
  * policy asks for: the host reports the answer when the detached run ends, and that report is what
- * opens the checkpoint. Both follow the one sentence that says how this configuration consults.
+ * opens the checkpoint. A session whose bridge admitted no completion channel hears no such report,
+ * so there the one instruction names the foreground launch instead, which is the only form whose
+ * answer this session can read. Both follow the one sentence that says how this configuration
+ * consults.
  */
 const CONSULT_PATH = {
   tool: " It needs no arguments; the host supplies the context.",
   toolManual: " Pass a question, and a brief if this is the first consultation of the task.",
   role: " Use the host subagent tool with each exact agent profile and model the delegation policy lists, a short self-contained brief and a supported thinking level chosen per run, in the background. The checkpoint opens when the host reports the answer of that run.",
+  roleForeground:
+    " Use the host subagent tool with each exact agent profile and model the delegation policy lists, a short self-contained brief and a supported thinking level chosen per run, in the foreground, with async: false. This session hears no completion for a background run, so the checkpoint opens on the answer that call itself returns.",
 } as const;
 
 /**
@@ -224,14 +229,20 @@ export function wayOutBrokenClause(): string {
 /**
  * The one instruction that names how this configuration consults. Every refusal of every level uses
  * it, so the ways out a model is offered cannot drift apart between the count and a rule.
+ *
+ * `foreground` is the session's own answer, chosen by this extension and never remembered by the
+ * model: a session that hears no background completion asks for the foreground launch. It changes
+ * nothing in tool launch, whose answer arrives inside its own call.
  */
 export function consultInstruction(
   launcher: GateLauncher,
   manualContext = false,
   advisors: readonly string[] = [],
+  foreground = false,
 ): string {
   const toolPath = manualContext ? CONSULT_PATH.toolManual : CONSULT_PATH.tool;
-  return `${consultSentence(launcher, advisors)}${launcher === "role" ? CONSULT_PATH.role : toolPath}`;
+  const rolePath = foreground ? CONSULT_PATH.roleForeground : CONSULT_PATH.role;
+  return `${consultSentence(launcher, advisors)}${launcher === "role" ? rolePath : toolPath}`;
 }
 
 /**
@@ -239,14 +250,20 @@ export function consultInstruction(
  * `advisors` are the profile names the instruction states in `role` launch.
  * `wayOutBroken` appends the one clause that tells the model the hold now needs a person; without it
  * the text is byte-identical to the refusal this gate has always sent.
+ * `foreground` is the session's own reading, passed through to the instruction.
  */
 export function gateMessage(
   launcher: GateLauncher,
   manualContext = false,
   wayOutBroken = false,
   advisors: readonly string[] = [],
+  foreground = false,
 ): string {
-  const message = [...PREFIX, consultInstruction(launcher, manualContext, advisors), AFTER];
+  const message = [
+    ...PREFIX,
+    consultInstruction(launcher, manualContext, advisors, foreground),
+    AFTER,
+  ];
   if (wayOutBroken) message.push(WAY_OUT_BROKEN);
   return message.join("\n");
 }
@@ -329,6 +346,8 @@ export class AdvisorGate {
     manualContext?: boolean;
     /** The profile names the refusal states in `role` launch: what a consultation launches. */
     advisors?: readonly string[];
+    /** The session hears no background completion, so the refusal asks for the foreground launch. */
+    foreground?: boolean;
   }): GateDecision {
     if (!this.open || !input.changes) return { action: "pass", reason: "quiet" };
     // A `??` task at a level that holds nothing by count is free once its consultation arrived.
@@ -345,6 +364,7 @@ export class AdvisorGate {
           input.manualContext,
           this.wayOutBroken,
           input.advisors ?? [],
+          input.foreground ?? false,
         ),
       };
     }

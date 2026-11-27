@@ -74,6 +74,12 @@ export const REVIEWER_RECENT_TARGET_CHARS = 200;
 export const REVIEWER_CACHE_LIMIT = 64;
 /** Calls one answered Advisor consultation covers for the same tool and target. */
 export const REVIEWER_PASS_CALLS = 3;
+/**
+ * Pairs one task remembers as refused, and pairs an answer covered, bounded like the cache above.
+ * Both evict oldest first, so a task with more distinct targets re-refuses or re-reviews an old one
+ * instead of growing this state with every call it makes.
+ */
+export const REVIEWER_PAIR_LIMIT = 64;
 /** Confirmed blocks in a row after which every change of the task waits for the user. */
 export const REVIEWER_BLOCK_STREAK = 3;
 
@@ -475,6 +481,13 @@ export const REVIEWER_UNAVAILABLE_TEXT =
   "Not an error: this call was not run. Guard reviewer unavailable: this change could not be reviewed, so it waits for a consultation that answers.";
 
 /**
+ * The same refusal in a session that has no consultation path at all: nothing here waits for one, so
+ * the reason must not name what the exit cannot offer.
+ */
+export const REVIEWER_UNAVAILABLE_NO_PATH_TEXT =
+  "Not an error: this call was not run. Guard reviewer unavailable: this change could not be reviewed, and this session has no consultation that could open it.";
+
+/**
  * The refusal once a task made three refused changes in a row. It names the person as the only exit,
  * because that is the one thing the model cannot satisfy or forge.
  */
@@ -634,6 +647,13 @@ export class GuardReviewer {
   // changes in a row it refused, and whether the task is now waiting for the user.
   private readonly blockedPairs = new Set<string>();
   private readonly passes = new Map<string, number>();
+  /** A pair this task refused, remembered within the cap that keeps this state bounded. */
+  private rememberRefused(key: string): void {
+    this.blockedPairs.add(key);
+    if (this.blockedPairs.size <= REVIEWER_PAIR_LIMIT) return;
+    const oldest = this.blockedPairs.values().next().value;
+    if (oldest !== undefined) this.blockedPairs.delete(oldest);
+  }
   private blockStreak = 0;
   private escalated = false;
   private blocked = 0;
@@ -733,7 +753,12 @@ export class GuardReviewer {
    * for the user, and a hard rule waits for nobody else.
    */
   noteAnswer(): void {
-    for (const key of this.blockedPairs) this.passes.set(key, REVIEWER_PASS_CALLS);
+    for (const key of this.blockedPairs) {
+      this.passes.set(key, REVIEWER_PASS_CALLS);
+      if (this.passes.size <= REVIEWER_PAIR_LIMIT) continue;
+      const oldest = this.passes.keys().next().value;
+      if (oldest !== undefined) this.passes.delete(oldest);
+    }
     this.blockedPairs.clear();
   }
 
@@ -1014,7 +1039,7 @@ export class GuardReviewer {
       return { action: "pass", lane: "pass" };
     }
     const category = outcome.verdict.category;
-    this.blockedPairs.add(key);
+    this.rememberRefused(key);
     this.blocked += 1;
     this.blockStreak += 1;
     if (this.blockStreak >= REVIEWER_BLOCK_STREAK && !this.escalated) {
@@ -1038,7 +1063,7 @@ export class GuardReviewer {
       return { action: "pass", lane: "unreviewed" };
     }
     // A pair refused for want of a verdict waits for a consultation, exactly like a block does.
-    this.blockedPairs.add(key);
+    this.rememberRefused(key);
     this.unavailableCalls += 1;
     return { action: "refuse", reason: "unavailable" };
   }

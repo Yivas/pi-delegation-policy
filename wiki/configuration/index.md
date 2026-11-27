@@ -334,9 +334,12 @@ checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/n
 working exactly as before, and the schema default is `tool`:
 
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
-  models and a thinking level it chooses per run. A background launch is the only form the policy
-  asks for, and it is never refused for being detached: it returns a run id, and the host reports
-  the answer when the run ends. The extension observes matching attempts but does not launch them.
+  models and a thinking level it chooses per run. A background launch is the form the policy asks
+  for, and it is never refused for being detached: it returns a run id, and the host reports the
+  answer when the run ends. The one exception is a session whose bridge admits no completion
+  channel: there the text asks for the foreground launch, `async: false`, tells you once and leaves
+  one record of it, because no background answer can be heard in that session. The extension
+  observes matching attempts but does not launch them.
 - `tool`: the always-registered `consult_advisor({ question?, brief?, evidence? })` launches one
   child per valid advisor in parallel through the public `pi-subagents` delegation API. It requires
   stable SemVer `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every
@@ -690,10 +693,15 @@ child per slot and thinking level. Only the fields such a child carries are acce
 [what stops being exempt](/limits-and-privacy/#guard-reviewer-child) lists them. It reads three things, all of them as one JSON object that the fixed prompt declares
 to be data and never an instruction: your own messages in the branch, up to 800 characters each and
 4 KiB in total, newest first; the pending call, meaning the tool name and, for an edit or a write, the
-path and the head of the new text up to 1 KiB, or, for a shell call, the head of the line up to 1 KiB;
+path and the head of the new text up to 1024 characters, or, for a shell call, the head of the line
+up to 1024 characters;
 and the heads of the last 12 calls, a tool and a path or a command head, with no result. It never
 receives tool output, the agent's own text, or the project's instruction files, which is what a
 reviewer can be talked through, and the request offers no tool and no tool choice.
+
+A `subagent` delegation is reviewed by its tool name only: the request names the tool and no task,
+model or child, so an `enforce` block on one is a judgement about a call the reviewer was never shown
+the content of.
 
 Two stages. The first answers one token, `BLOCK` or `ALLOW`, and is asked to err on the side of
 blocking. Only a block asks a second stage for careful reasoning that ends in one line,
@@ -880,7 +888,9 @@ children has to be a configured Advisor profile with that slot's model, output p
 The tool call that launched it and the run id are both read as host identifiers, the report of one
 run decides it once, and a report that proves nothing changes nothing. Nothing parses the text of a
 notice or of a message, so a message the agent writes cannot open a hold. A bridge that does not
-advertise the event leaves the hold standing: only the host's report opens it. A host that rewrites an
+advertise the event admits no completion channel: the operator is told once, the session's record says
+so, and the text of that session asks for the foreground launch with `async: false`, whose own result
+is a report the hold already reads. A host that rewrites an
 explicit `async: false` into a background launch, such as `pi-subagents` with `forceTopLevelAsync`,
 leaves that launch unanswered and unreported here: its receipt carries no children, and no run is
 registered for it because only a background launch registers one. So while that option is set, a

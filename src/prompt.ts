@@ -223,18 +223,37 @@ function toolConsultationPolicy(contextMode: AdvisorContextMode | undefined): st
 }
 
 /**
+ * What a `role` consultation names: the background launch whose answer the host reports when the run
+ * ends, and its foreground twin for a session whose bridge hears no such report.
+ */
+function roleConsultationPolicy(
+  advisors: readonly string[],
+  profileStated: boolean,
+  foreground: boolean,
+): string {
+  const profile = profileStated
+    ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —"
+    : 'using agent "pi-delegation-policy.advisor" exactly — never a host agent or alias named "advisor" or "oracle" —';
+  if (foreground)
+    return `${consultSentence("role", advisors)} Launch them with the host's subagent tool ${profile} with its exact model and a supported thinking level from its role line, never an ambient default, in the foreground, with async: false: this session hears no completion for a background run, so the answer has to arrive inside that call, and that answer is the report this policy waits for. Continuity ends for this session: each consultation is a launch of its own, and a run id from an earlier task is not something you can resume or read here. Keep model, profile and permissions as they are, and never pass an output path.`;
+  return `${consultSentence("role", advisors)} Launch them with the host's subagent tool ${profile} with its exact model and a supported thinking level from its role line, never an ambient default, in the background: a detached launch returns a run id and the host reports the answer when the run ends, which is the report this policy waits for. Keep each returned run id and continue a thread with the same tool's resume action, passing that id, the new question and evidence, and output with outputMode file-only; read that file for the answer and never change model, profile or permissions on a resume.`;
+}
+
+/**
  * The consultation contract is shared by both axes: the Advisor never implements or runs
  * tool-dependent checks, its model and profile are exact, thinking is supported and never an
  * ambient default, it launches in the background, because the host reports the answer when the run ends,
  * and its answers are consumed before the decision that depends on them. `profileStated` is true while
  * a listed Advisor runs a profile other than the plain packaged one, so the sentence cannot name one
- * profile while a role line names another.
+ * profile while a role line names another. `foreground` says this session hears no background
+ * completion, which only a `role` sentence can state.
  */
 function advisorPolicy(
   launch: AdvisorLaunch,
   advisors: readonly string[],
   contextMode: AdvisorContextMode | undefined,
   profileStated = false,
+  foreground = false,
 ): string {
   return `Consulting is part of this policy, not delegated execution; the Advisor never implements or runs tool-dependent checks, and direct-work guidance does not rule it out.
 - If you are about to make the first change of a task that involves a decision (which approach, what the root cause is, how far the change should reach), consult first.
@@ -245,7 +264,7 @@ function advisorPolicy(
 ${
   launch === "tool"
     ? toolConsultationPolicy(contextMode)
-    : `${consultSentence("role", advisors)} Launch them with the host's subagent tool ${profileStated ? "using the exact packaged agent profile specified in each Advisor role line; never substitute the ordinary Advisor profile for a provider-dependent one —" : 'using agent "pi-delegation-policy.advisor" exactly — never a host agent or alias named "advisor" or "oracle" —'} with its exact model and a supported thinking level from its role line, never an ambient default, in the background: a detached launch returns a run id and the host reports the answer when the run ends, which is the report this policy waits for. Keep each returned run id and continue a thread with the same tool's resume action, passing that id, the new question and evidence, and output with outputMode file-only; read that file for the answer and never change model, profile or permissions on a resume.`
+    : roleConsultationPolicy(advisors, profileStated, foreground)
 }
 
 ${launch === "role" ? ADVISOR_CONTEXT_GUIDANCE : ""}
@@ -480,7 +499,10 @@ function roleRules(enabled: readonly ModelRole[], writing: boolean): string {
   return rules.join("\n");
 }
 
-export function buildDelegationPolicy(state: RuntimeState): string | undefined {
+export function buildDelegationPolicy(
+  state: RuntimeState,
+  options: { foregroundConsult?: boolean } = {},
+): string | undefined {
   const { effective } = state;
   const advisorEnabled = isAdvisorEnabled(effective) && !hasAdvisorError(state);
   const advisors = advisorEnabled ? validAdvisors(state) : [];
@@ -493,6 +515,7 @@ export function buildDelegationPolicy(state: RuntimeState): string | undefined {
         advisors.some(
           ({ setting, index }) => advisorAgentNameFor(state, setting, index) !== ADVISOR_AGENT_NAME,
         ),
+        options.foregroundConsult === true,
       )}`
     : "";
   const flagsLine = advisorEnabled ? advisorFlagsLine(state) : "";

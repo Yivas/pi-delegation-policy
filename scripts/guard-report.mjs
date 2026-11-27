@@ -21,7 +21,14 @@ import { join } from "node:path";
 
 const LOG_NAME = "delegation-policy.events.jsonl";
 const END_REASONS = ["settled", "branch-change", "shutdown"];
-const COMPLETION_STATUSES = ["answered", "failed", "ignored", "unreadable", "notice-failed"];
+const COMPLETION_STATUSES = [
+  "answered",
+  "failed",
+  "ignored",
+  "unreadable",
+  "notice-failed",
+  "channel-missing",
+];
 /** The task's own accounting, read from every `gate` record. */
 const SUM_FIELDS = ["changes", "totalChanges", "holds", "answers", "failures", "passes", "notes"];
 /** What the optional `guard` reviewer did in that task, all of them integers in the same record. */

@@ -9,8 +9,8 @@
   pending change and its answer is recorded; the call runs either way, at once, because observing
   never waits for the opinion. What it receives is one JSON object the fixed prompt declares to be
   data: your own messages in the branch (800 characters each, 4 KiB in total), the pending call (its
-  path and the head of the new text, or the head of the command, up to 1 KiB) and the heads of the
-  last 12 calls. It never receives tool output, the agent's own text or the project's instruction
+  path and the head of the new text, or the head of the command, up to 1024 characters) and the heads
+  of the last 12 calls. It never receives tool output, the agent's own text or the project's instruction
   files, and the request offers it no tool. Two stages: one token that errs towards blocking, then,
   only after a block, careful reasoning that ends in a category of a closed set
   (`destroy-or-exfiltrate`, `degrade-security`, `cross-trust-boundary`, `bypass-review`,
@@ -38,7 +38,11 @@
   keyed on the tool and the target and never on the content. The reviewer record carries a `lane`
   (`observe`, `pass`,
   `unreviewed`, `refuse`) and the gate record adds `blocked`, `reviewPasses`, `unreviewed`, `unavailable`
-  and `escalations`.
+  and `escalations`. The exit its refusal names is the one every other refusal of the session states,
+  read the same busy-tolerant way: a `consult_advisor` group already in flight delays the next
+  consultation but never removes it, so one refusal never tells the model to consult and to give up in
+  the same breath. The pairs a task remembers as refused, and the ones an answered consultation
+  covered, are capped at 64 like its verdict cache, oldest first.
 - **Guard reviewer model** and **Guard reviewer mode**, two user-scope rows in `/delegate`, off by
   default. The first reuses the role model picker with a `None` entry, hides the main model and
   shows why a configured model cannot act (`no credential`, `not available`, `same as the main
@@ -77,7 +81,16 @@ model`). Choosing a model states once what travels to its provider, what never d
   text the model reads no longer
   asks for a foreground launch: the policy block, the checkpoint refusal and the `consult_advisor`
   redirect all ask for the background launch the policy prefers, and the refusal says the change runs
-  after the Advisor answers. Foreground launches keep working.
+  after the Advisor answers. Foreground launches keep working. One exception is chosen by the
+  extension and never left to the model: a session whose bridge admits no completion channel — it
+  says so, or it throws — hears no background answer at all, so that session tells the operator once,
+  leaves one `channel-missing` record, and its policy block, its refusals and the redirect ask for the
+  foreground launch with `async: false`, whose own result already opens the hold. A channel that is
+  merely slow to answer changes nothing until the bridge's own question times out, 15 s after the
+  session starts: then the session reads as one that admits nothing and asks for the foreground for
+  the rest of its life, because it never asks the bridge again. A host that rewrites that
+  `async: false` into a background run, which `forceTopLevelAsync` does, still answers nothing here:
+  its receipt carries no children, so no report is proven and the hold stays.
 - **The consultation instruction names one launch per mode.** The policy block, the `standard` note
   and every `strict`/`guard` refusal, the guard reviewer's block exit and the `consult_advisor`
   redirect state `Consult all Advisors in one parallel call: <the configured Advisor profiles>.` for

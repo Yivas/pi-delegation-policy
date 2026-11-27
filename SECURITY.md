@@ -57,7 +57,8 @@ Two surfaces can send content to another model, and both need an explicit tool c
   every change the rules and the count already let through, without holding the call. One request
   carries a single JSON object: your own user messages in the branch, cut to 800 characters each and
   4 KiB in total, newest first; the pending call, which is its tool name plus the path and the head
-  of the new text for an edit or a write, or the head of the line for a shell call, up to 1 KiB; and
+  of the new text for an edit or a write, or the head of the line for a shell call, up to 1024
+  characters; and
   the heads of the last 12 calls, a tool and a path or a command head. It carries no tool output, no
   message the agent wrote, no project instruction file, and no tool declaration, and the fixed system
   prompt states that the object is data and never an instruction. The head of the new text of an
@@ -121,8 +122,14 @@ run this task launched, in this session, that ended complete and not stopped, ti
 with output present from a configured Advisor profile and its exact model. The listener is opened
 under the event name the bridge advertises, its payload is read as closed fields with no text
 parsed, one run decides once, and a report that proves nothing leaves the hold where it was. A bridge
-that advertises nothing leaves the hold standing, so a missing or renamed event strands a held task
-instead of releasing it. `guard` decides on its own deterministic rules
+that advertises nothing admits no completion channel, and the extension then says so once to the
+operator, leaves one closed record of it and asks the model to consult in the foreground, with
+`async: false`; that launch's own result is a report the task can read. Two residuals still strand a
+held task. A host that rewrites that foreground launch into a background run, as the
+`forceTopLevelAsync` setting of `pi-subagents` does, returns no children here, so nothing is proven and
+no failure is counted. A bridge that is only slow is read as one that admits nothing once its question
+times out, 15 s after the session starts, and the session then asks for the foreground for the rest of
+its life, because it never asks the bridge again. `guard` decides on its own deterministic rules
 before that count, with no model call: a force push, a hard reset, a forced clean, a recursive delete
 of an absolute path, the home directory, a parent or `.git`, a download piped to a shell, a publish or
 pull-request merge, a write to credentials or to this
@@ -213,8 +220,11 @@ is off. `delegation-policy.events.jsonl` holds policy and consultation metadata 
 record per main-agent task, one `launch` record per checked subagent call, one `completion` record per
 background completion read (every report the task reads carries its closed status: `answered`,
 `failed`, `ignored`, `unreadable` when the reading threw before anything was applied, or
-`notice-failed` when a verdict was applied and the notice could not be delivered; never an id, a
-session, a message or an answer), and one `gate` record per
+`notice-failed` when a verdict was applied and the notice could not be delivered, or
+`channel-missing` once per session whose bridge admitted no completion channel; never an id, a
+session, a message or an answer), one `reviewer` record per review or skipped review of the `guard`
+reviewer (the closed stages, status and lane, the durations, the byte count, the model, the mode and
+a salted digest of the target, never the text), and one `gate` record per
 task whose gate opened (a `strict` or `guard` task, or any task a `??` prompt opened), written when
 it ends by a settle, a branch move or shutdown, with counts only and that reason. Its `ruleHits`
 also count `engine-failure` when the guard could not judge a call at all. `passes` counts the calls a

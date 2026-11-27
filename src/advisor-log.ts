@@ -106,10 +106,12 @@ function ruleHitsRecord(
 /**
  * The closed verdicts a background completion leaves in the record; never a message or an id.
  * `unreadable` is a reading that threw before anything was applied, and `notice-failed` a verdict
- * that was applied while the operator notice could not be delivered.
+ * that was applied while the operator notice could not be delivered. `channel-missing` is not a
+ * report at all: it says once per session that the bridge admitted no channel, so no report can
+ * arrive and the text of that session asks for a foreground launch.
  */
 export type CompletionRecordStatus =
-  "answered" | "failed" | "ignored" | "unreadable" | "notice-failed";
+  "answered" | "failed" | "ignored" | "unreadable" | "notice-failed" | "channel-missing";
 
 export type LaunchOutcome = "allowed" | "refused";
 export type LaunchRecord = {
@@ -219,10 +221,14 @@ export class AdvisorLog {
    * One record per background completion this extension read, with the closed status of its verdict
    * and nothing of the event: no id, no session, no message, no answer. Every outcome is recorded, so
    * the trail says whether a report opened a held task, counted a failure or proved nothing.
+   *
+   * It answers whether the writer took the record: a caller that may leave one has to know that it
+   * happened, and a record written while no policy block is active is dropped rather than half made.
    */
-  completion(status: CompletionRecordStatus): void {
-    if (!this.lastHash) return;
+  completion(status: CompletionRecordStatus): boolean {
+    if (!this.lastHash) return false;
     this.enqueue({ event: "completion", version: VERSION, policyHash: this.lastHash, status });
+    return true;
   }
 
   /** One record per subagent call the guard checked: its outcome, a closed code and role codes. */

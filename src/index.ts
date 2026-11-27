@@ -77,6 +77,7 @@ import { GuardRules, type GuardDecision, type GuardRuleReport } from "./guard-ru
 import {
   GuardReviewer,
   REVIEWER_ESCALATED_TEXT,
+  REVIEWER_UNAVAILABLE_NO_PATH_TEXT,
   REVIEWER_UNAVAILABLE_TEXT,
   failureLane,
   reviewerBlockText,
@@ -1062,9 +1063,25 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     // attaches nothing, and the answer that arrives later is not this session's.
     let completionEpoch = 0;
     /**
+     * Whether the bridge refused the completion channel this session, which is not the same as one it
+     * has not answered yet. Its only reader is the text a model gets: a background answer reaches no
+     * listener here, so a `role` consultation is asked for in the foreground instead, and the operator
+     * is told once. The reading lives in this extension instead of in an instruction the model has to
+     * remember.
+     */
+    let completionMissing = false;
+    /**
+     * The operator notice and the closed record of that reading, each written once per session: the
+     * session that starts next reads its own bridge and is told for itself, so both are reset with
+     * the reading they describe.
+     */
+    let completionNoticeSent = false;
+    let completionRecorded = false;
+    /**
      * Listen for the completion the host advertises. The name comes from the bridge itself, never from
      * a constant here, and a bridge that does not advertise one leaves the listener off: the
-     * checkpoint then stands until a consultation the host reports inside a call answers.
+     * checkpoint then stands until a consultation the host reports inside a call answers, which is the
+     * launch the text of that session asks for.
      *
      * It is not awaited on purpose. A host without the bridge never answers, and the question has its
      * own timeout; a session whose first prompt comes later still hears every run it starts.
@@ -1077,16 +1094,27 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // an older client can outlive this one.
       completionClient?.abortPending();
       completionClient = undefined;
+      completionMissing = false;
+      completionNoticeSent = false;
+      completionRecorded = false;
       const sessionId = currentSessionId(ctx);
       if (sessionId === undefined) return;
       try {
         const client = resumeClient(pi.events);
         completionClient = client;
-        if (!(await client.admitCompletion(sessionId))) return;
+        if (!(await client.admitCompletion(sessionId))) {
+          // Abandoning the previous admission resolves its question, so its continuation can run
+          // after this session already reset the reading: a stale answer never speaks for this one.
+          if (epoch !== completionEpoch) return;
+          completionMissing = true;
+          return;
+        }
         if (epoch !== completionEpoch) return;
         unsubscribeCompletions = client.onAsyncComplete((payload) => applyCompletion(ctx, payload));
       } catch {
         // A bridge that cannot be asked advertises nothing: no listener, and no forged answer.
+        if (epoch !== completionEpoch) return;
+        completionMissing = true;
       }
     };
     // Notes this task was shown, recorded when it closes and never with their text.
@@ -1693,14 +1721,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         const prefix =
           decision.reason === "blocked"
             ? reviewerBlockText(decision.category)
-            : REVIEWER_UNAVAILABLE_TEXT;
-        const launcher = latestRuntime?.effective.advisorLaunch ?? "tool";
-        const manual = latestRuntime?.advisorContextMode === "manual";
-        const exit = consultationAvailable(latestRuntime)
-          ? [consultInstruction(launcher, manual, consultAdvisorNames(latestRuntime))]
-          : ["Ask the user how to continue and stop."];
-        if (advisorGate.wayOutIsBroken) exit.push(wayOutBrokenClause());
-        return { block: true, reason: [prefix, ...exit].join("\n") };
+            : reviewerUnavailableText();
+        return { block: true, reason: [prefix, ...reviewerExit()].join("\n") };
       } catch {
         // A reviewer this extension could not even ask is a closed status, not silence: the shadow
         // has to tell a broken reviewer from one that was never configured. The failure message is
@@ -1715,7 +1737,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           ? undefined
           : {
               block: true,
-              reason: `${REVIEWER_UNAVAILABLE_TEXT}\nAsk the user how to continue and stop.`,
+              reason: [reviewerUnavailableText(), ...reviewerExit()].join("\n"),
             };
       }
     };
@@ -1815,9 +1837,43 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     /** The profile names a `role` refusal states, read from the configuration the task runs. */
     const consultAdvisorNames = (state: RuntimeState | undefined): string[] =>
       state === undefined ? [] : advisorConsultNames(state);
-    /** Whether one more consultation can start right now; a busy executor only delays the next one. */
-    const consultationAvailable = (state: RuntimeState | undefined): boolean =>
-      consultationPath(state) && !advisorExecutor.busy;
+    /**
+     * Whether the text a model gets has to ask for a foreground consultation. A background answer
+     * only reaches a task through the completion channel, and a session whose bridge admitted none
+     * hears nothing: the instruction names the launch whose answer arrives inside the call instead.
+     * Tool launch answers inside its own call either way, so no channel is needed there.
+     */
+    const consultInForeground = (state: RuntimeState | undefined): boolean =>
+      completionMissing && state?.effective.advisorLaunch === "role";
+    /**
+     * The reason a reviewer that produced no verdict states. It says what the change waits for, so
+     * it reads the same path the exit does: a session with no consultation path waits for no
+     * consultation, and claiming otherwise would contradict the line that follows.
+     */
+    const reviewerUnavailableText = (): string =>
+      consultationPath(latestRuntime)
+        ? REVIEWER_UNAVAILABLE_TEXT
+        : REVIEWER_UNAVAILABLE_NO_PATH_TEXT;
+    /**
+     * The exit a reviewer refusal names: the same instruction every other refusal of this session
+     * states, which a busy executor does not remove, or the person when this session has no
+     * consultation path at all. Both places a reviewer can refuse read it, so one refusal never
+     * names two different exits.
+     */
+    const reviewerExit = (): string[] => {
+      const lines = consultationPath(latestRuntime)
+        ? [
+            consultInstruction(
+              latestRuntime?.effective.advisorLaunch ?? "tool",
+              latestRuntime?.advisorContextMode === "manual",
+              consultAdvisorNames(latestRuntime),
+              consultInForeground(latestRuntime),
+            ),
+          ]
+        : ["Ask the user how to continue and stop."];
+      if (advisorGate.wayOutIsBroken) lines.push(wayOutBrokenClause());
+      return lines;
+    };
     /**
      * The reminder for this request, when the extension may add it: the reminder is on, a valid
      * Advisor is active, the task is live and the configured launch mode has its launcher among the
@@ -1904,8 +1960,44 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         return latestRuntime;
       }
     };
-    const renderPolicy = (state: RuntimeState): string | undefined => {
-      const policy = buildDelegationPolicy(state);
+    /**
+     * The checkpoint this session could lose, which is what the notice is about: a level that holds
+     * nothing, or a session with no consultation path, never denies a change, so warning it would
+     * describe a checkpoint that cannot open.
+     */
+    const sessionHoldsChanges = (state: RuntimeState): boolean => {
+      if (!consultationPath(state)) return false;
+      const level = taskAdvisorLevel(state);
+      // A prompt that starts with `??` holds its task at any level, so the gate's own reading counts.
+      return level === "strict" || level === "guard" || advisorGate.held;
+    };
+    /**
+     * Tell the operator once, and leave one closed record, that this session hears no background
+     * completion. It runs where the state that decides the text is at hand, and a session without a
+     * person in it says nothing: a child writes no notice and no record of its own.
+     *
+     * The record is remembered as written only when the writer took it, because a session whose
+     * policy block is not active yet writes nothing and still has to be able to leave it later.
+     */
+    const noteMissingCompletionChannel = (ctx: ExtensionContext, state: RuntimeState): void => {
+      if (isSubagentChildProcess()) return;
+      if (!completionNoticeSent && sessionHoldsChanges(state)) {
+        completionNoticeSent = true;
+        try {
+          ctx.ui.notify(
+            "Background Advisor consultations cannot release the checkpoint in this session, so they are asked for in the foreground.",
+            "warning",
+          );
+        } catch {
+          // A notice the host refuses is lost to the operator, never to the request that carries it.
+        }
+      }
+      if (completionRecorded) return;
+      completionRecorded = advisorLog.completion("channel-missing");
+    };
+    const renderPolicy = (ctx: ExtensionContext, state: RuntimeState): string | undefined => {
+      const foreground = consultInForeground(state);
+      const policy = buildDelegationPolicy(state, { foregroundConsult: foreground });
       advisorLog.policy(policy, {
         intensity: state.effective.intensity,
         advisorMode: state.effective.advisorMode,
@@ -1913,6 +2005,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         context: "fresh",
         advisors: validAdvisors(state).length,
       });
+      // The record needs the policy hash the call above settles, which is why this reading is
+      // written here and not where the bridge refused.
+      if (foreground) noteMissingCompletionChannel(ctx, state);
       return policy;
     };
     /**
@@ -2015,9 +2110,13 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another launcher: no CLI, no other agent, and no stand-in for the host subagent tool.',
             );
           // A launch in the background is the launch this policy asks for, held task or not: the
-          // host reports the answer when the run ends.
+          // host reports the answer when the run ends. A session that hears no such report is the
+          // one exception, and the policy block it read already asks for the foreground launch.
+          const form = consultInForeground(latestRuntime)
+            ? "in the foreground with async: false, because this session hears no completion for a background run"
+            : "in the background";
           return notRun(
-            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". ${consultSentence("role", advisorConsultNames(state))} Launch them with the host subagent tool "${subagentTool}", using each exact agent profile and model below, in the background, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run.\n${advisorRoleLines(state)}`,
+            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". ${consultSentence("role", advisorConsultNames(state))} Launch them with the host subagent tool "${subagentTool}", using each exact agent profile and model below, ${form}, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run.\n${advisorRoleLines(state)}`,
           );
         }
         if (advisorExecutor.busy) return notRun(advisorContinuityText("busy"));
@@ -2837,7 +2936,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       advisorReminder.beginRequest();
       if (!isSubagentChildProcess() && observation)
         observation.assistantTexts = lastAssistantTexts(event.messages, observation.userRequest);
-      const policy = renderPolicy(state);
+      const policy = renderPolicy(ctx, state);
       const systemMessage = event.messages[0];
       if (
         !systemMessage ||
@@ -2975,7 +3074,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     pi.on("before_provider_request", async (event, ctx) => {
       const state = await refreshProviderRuntime(ctx);
       if (!state) return event.payload;
-      return updateProviderPolicy(event.payload, renderPolicy(state));
+      return updateProviderPolicy(event.payload, renderPolicy(ctx, state));
     });
     pi.on("agent_end", async (event) => {
       // The event carries the messages of this low-level run; a run that reports none has no
@@ -3042,6 +3141,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
                 advisors: advisorNames,
                 available: consultationPath(latestRuntime),
                 wayOutBroken: advisorGate.wayOutIsBroken,
+                foreground: consultInForeground(latestRuntime),
               })
             : undefined;
       } catch {
@@ -3061,6 +3161,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               launcher,
               manualContext,
               advisors: advisorNames,
+              foreground: consultInForeground(latestRuntime),
             })
           : undefined;
       const gateRefused = ruleRefused || decision?.action === "block";
@@ -3098,9 +3199,6 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // entry it leaves is inert: a refused launch starts no child, so nothing can claim the id, and
       // the map is cleared when the task ends.
       if (launchKind !== undefined) consultationCalls.set(event.toolCallId, launchKind);
-      // A consultation that runs in the background names the run, not the call, so the slots it
-      // verified are remembered for the children the host starts for it.
-      if (launchKind === "background") noteConsultationSlots(event.input);
       if (check) {
         // A control or management action launches nothing, so it records no `launch` event.
         if (check.launch)
@@ -3116,6 +3214,11 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         // the tool result carries the note that says what actually ran.
         if (check.note) rememberCorrection(event.toolCallId, check.note);
       }
+      // A consultation that runs in the background names the run, not the call, so the slots it
+      // verified are remembered for the children the host starts for it. Only a call the launch
+      // check admitted reaches this line: a refused launch starts no child, so a slot it left here
+      // would exempt one change of a consultation that never happened.
+      if (launchKind === "background") noteConsultationSlots(event.input);
       // A control action names a target instead of launching, so it records no `consultation`
       // either, even when that target is an Advisor.
       if (

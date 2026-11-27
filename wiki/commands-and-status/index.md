@@ -118,6 +118,12 @@ is set. A model whose provider an extension supplies asks for its provider exten
 the row shows `· <package> <version>` once admitted. Advisor thinking has no row: role launch lets the main agent choose it per run, and tool
 launch picks it automatically.
 
+Three `guard` rows follow them: **Guard consult first** (`on` or `off`, user scope only), **Guard
+reviewer model** (the optional second opinion, `None` until you choose one) and **Guard reviewer
+mode** (`observe` or `enforce`, and it refuses to leave `observe` before a model is chosen). The
+[Advisor nudge configuration](/configuration/#advisor-nudge-level) lists what each row says and when
+a mode can act.
+
 The panel keeps one explicit draft:
 
 - **Apply changes** or `A` writes the draft to the current branch.

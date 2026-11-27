@@ -139,12 +139,16 @@ const UNREADABLE_CALL_AFTER =
 const FAILED_AFTER =
   "The guard failed while judging this call, so it was not run. No consultation lifts this one: report the failure to the user and stop.";
 
-/** What a refusal may state: the launcher, who writes the brief, the Advisor profiles and the run. */
+/**
+ * What a refusal may state: the launcher, who writes the brief, the Advisor profiles and the run.
+ * `foreground` is the session's own reading, and it only changes how a `role` consultation is named.
+ */
 type GuardRefusalOptions = {
   launcher: GateLauncher;
   manualContext?: boolean;
   advisors?: readonly string[];
   wayOutBroken?: boolean;
+  foreground?: boolean;
 };
 
 /**
@@ -157,7 +161,12 @@ export function guardMessage(match: GuardMatch, options: GuardRefusalOptions): s
   if (match.kind === "hard") return [prefix, HARD_AFTER].join("\n");
   const message = [
     prefix,
-    consultInstruction(options.launcher, options.manualContext ?? false, options.advisors ?? []),
+    consultInstruction(
+      options.launcher,
+      options.manualContext ?? false,
+      options.advisors ?? [],
+      options.foreground ?? false,
+    ),
     match.unreadable === true
       ? match.noLine === true
         ? UNREADABLE_CALL_AFTER

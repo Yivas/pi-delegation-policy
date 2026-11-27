@@ -302,8 +302,10 @@ the exact `provider/id` key or `null`, and `advisorLevel`. A `consultation` reco
 `mainModel`, `advisorLevel`, `noArgs`, which is true when the model passed no question, brief or
 evidence, and `contextBytes`, which is `0` in manual mode. One `completion` record is written for every report a held task reads from the completion channel the
 bridge advertises, with a closed status and nothing else: `answered`, `failed`, `ignored`,
-`unreadable` when the reading threw before anything was applied, or `notice-failed` when the verdict
-was applied while the operator notice could not be delivered. One `gate` record is written per task whose
+`unreadable` when the reading threw before anything was applied, `notice-failed` when the verdict
+was applied while the operator notice could not be delivered, or `channel-missing` once per session
+whose bridge admitted no completion channel, which is why that session is told to consult in the
+foreground. One `gate` record is written per task whose
 gate opened, which is a `strict` or `guard` task or any task a `??` prompt opened, including a task
 that ended by a branch move or by shutdown: `endReason` (`settled`, `branch-change` or `shutdown`),
 `changes` (counted since the last answered consultation), `totalChanges`,

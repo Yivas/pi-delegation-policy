@@ -235,6 +235,9 @@ async function within<Value>(
 function fakeBus(sessionId: string) {
   const listeners = new Map<string, Set<Listener>>();
   const waiting = new Map<string, Array<() => void>>();
+  /** How many requests the bridge answered, and who waits for the next answer to be applied. */
+  let answered = 0;
+  const waitingAnswered: Array<() => void> = [];
   const announce = (event: string): void => {
     const pending = waiting.get(event);
     if (pending === undefined) return;
@@ -255,7 +258,7 @@ function fakeBus(sessionId: string) {
       if (event === "subagents:rpc:v1:request") {
         const request = payload as { requestId?: string; version?: number };
         if (typeof request.requestId !== "string") return;
-        setImmediate(() =>
+        setImmediate(() => {
           bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
             version: 1,
             requestId: request.requestId,
@@ -265,8 +268,13 @@ function fakeBus(sessionId: string) {
               events: { asyncComplete: COMPLETE_EVENT },
               session: { sessionId },
             },
-          }),
-        );
+          });
+          // Announced one turn later, so whoever waited sees the answer already applied.
+          setImmediate(() => {
+            answered += 1;
+            for (const resolve of waitingAnswered.splice(0)) resolve();
+          });
+        });
         return;
       }
       for (const listener of [...(listeners.get(event) ?? [])]) listener(payload);
@@ -274,6 +282,13 @@ function fakeBus(sessionId: string) {
     /** How many listeners `event` has, which is how a test reads the channel's lifecycle. */
     count(event: string): number {
       return listeners.get(event)?.size ?? 0;
+    },
+    /** Resolves once the bridge answered a request and its answer has been applied. */
+    answeredRequest(): Promise<void> {
+      if (answered > 0) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        waitingAnswered.push(resolve);
+      });
     },
     /** Resolves once something listens for `event`, which is how a test knows admission ended. */
     listening(event: string): Promise<void> {
@@ -307,7 +322,10 @@ async function withAgentDirectory(callback: (directory: string) => Promise<void>
   }
 }
 
-function createHarness(options: { activeTools?: string[] } = {}) {
+/** `bridge: "foreign"` answers with another session, which is an admission this session is refused. */
+function createHarness(
+  options: { activeTools?: string[]; bridge?: "advertised" | "foreign" } = {},
+) {
   const handlers = new Map<
     string,
     (event: Record<string, unknown>, ctx: ExtensionContext) => unknown
@@ -328,7 +346,7 @@ function createHarness(options: { activeTools?: string[] } = {}) {
   const notifications: Array<{ message: string; type: string }> = [];
   let notifyThrows = false;
   const branch: Array<Record<string, unknown>> = [];
-  const bus = fakeBus(SESSIONS[0]);
+  const bus = fakeBus(options.bridge === "foreign" ? "another-session" : SESSIONS[0]);
   const pi = {
     on: (
       name: string,
@@ -494,8 +512,10 @@ function createHarness(options: { activeTools?: string[] } = {}) {
       "session_start",
       handler("session_start")({ type: "session_start", reason: "startup" }, ctx),
     );
-    // The completion channel is admitted in the background: wait until it listens.
-    await within("the completion listener", bus.listening(COMPLETE_EVENT));
+    // The completion channel is admitted in the background: wait until it listens, or until the
+    // bridge refused it, because then no listener is coming.
+    if (options.bridge === "foreign") await within("the admission", bus.answeredRequest());
+    else await within("the completion listener", bus.listening(COMPLETE_EVENT));
   };
   return {
     ctx,
@@ -694,6 +714,72 @@ test("no text the model reads asks for the foreground or for async: false", asyn
     },
     { activeTools: ["consult_advisor"] },
   );
+});
+
+test("a session that hears no completion channel asks for the foreground launch", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeConfig(getGlobalConfigPath(directory), defaults);
+    await writeFile(
+      getAdvisorLevelPath(getGlobalConfigPath(directory)),
+      `${JSON.stringify({ schemaVersion: 1, level: "strict" })}
+`,
+    );
+    const harness = createHarness({ bridge: "foreign" });
+    await harness.start();
+    const notice = (): number =>
+      harness.notifications.filter((entry) =>
+        /cannot release the checkpoint in this session/.test(entry.message),
+      ).length;
+    try {
+      await harness.prompt();
+      // One plain line for the operator, and no listener for an answer that can never arrive.
+      assert.equal(notice(), 1);
+      assert.equal(harness.bus.count(COMPLETE_EVENT), 0);
+      // The refusal asks for the launch whose answer this session can read, and never the other one.
+      const refused = await harness.toolCall("edit", EDIT);
+      assert.equal(refused?.block, true);
+      assert.match(refused?.reason ?? "", /in the foreground/);
+      assert.match(refused?.reason ?? "", /async: false/);
+      assert.doesNotMatch(refused?.reason ?? "", /in the background/);
+      // The policy block asks for the same launch, so the text a model reads cannot drift from it.
+      const block = await harness.request("?? again change the loader");
+      const rendered = (block?.messages ?? [])
+        .flatMap((message) =>
+          Array.isArray(message.content)
+            ? message.content.map((part) => JSON.stringify(part))
+            : [String(message.content ?? "")],
+        )
+        .join("\n");
+      assert.match(rendered, /in the foreground, with async: false/);
+      assert.doesNotMatch(rendered, /in the background: a detached launch returns a run id/);
+      // The redirect `consult_advisor` returns in `role` launch names the same form.
+      const redirect = await harness.runTool("consult_advisor");
+      assert.match(redirect, /in the foreground with async: false/);
+      assert.doesNotMatch(redirect, /in the background, as the delegation policy describes/);
+      // The later request repeats no notice either.
+      assert.equal(notice(), 1);
+      // The foreground answer is a report this task reads, so it opens the hold.
+      const foreground = { ...ADVISOR_LAUNCH, async: false };
+      assert.equal(await harness.toolCall("subagent", foreground), undefined);
+      await harness.toolResult("subagent", harness.lastCallId(), foreground, {
+        mode: "single",
+        results: [
+          {
+            agent: ADVISOR_AGENT_NAME,
+            model: "example/advisor",
+            output: "an answer",
+            exitCode: 0,
+            finalOutput: "an answer",
+          },
+        ],
+      });
+      assert.equal(await harness.toolCall("edit", EDIT), undefined);
+    } finally {
+      await harness.shutdown();
+    }
+    const log = await readFile(getEventLogPath(getGlobalConfigPath(directory)), "utf8");
+    assert.equal(log.match(/"status":"channel-missing"/g)?.length, 1);
+  });
 });
 
 /* ------------------------------------------------------------------------------------------------

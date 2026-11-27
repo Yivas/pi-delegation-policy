@@ -33,6 +33,7 @@ import {
   type AdvisorThreadRecord,
 } from "../src/advisor-threads.ts";
 import { getLaunchCorrectionPath } from "../src/launch-correction-mode.ts";
+import { writeGuardMode } from "../src/guard-mode.ts";
 import { ADVISOR_LEVEL_ENTRY_TYPE, getAdvisorLevelPath } from "../src/advisor-level.ts";
 import type { AgentLaunchModules } from "../src/agent-launch.ts";
 import {
@@ -91,6 +92,31 @@ const models = [first, second].map((setting) => ({
   contextWindow: 100_000,
 }));
 const digest = "a".repeat(64);
+/** The reviewer's own model in this harness, and the script its two stages answer from. */
+const reviewModel = {
+  provider: "example",
+  id: "reviewer",
+  name: "reviewer",
+  reasoning: false,
+  contextWindow: 100_000,
+};
+type ReviewReply = Readonly<{ text?: string }>;
+function reviewStream(replies: readonly ReviewReply[]) {
+  const queue = [...replies];
+  return (model: { id: string }) => ({
+    result: () =>
+      Promise.resolve({
+        role: "assistant",
+        content: [{ type: "text", text: (queue.shift() ?? { text: "ALLOW" }).text ?? "ALLOW" }],
+        api: "any",
+        provider: "example",
+        model: model.id,
+        usage: {},
+        stopReason: "stop",
+        timestamp: 0,
+      }),
+  });
+}
 const events = {
   requestEvent: "REQUEST",
   startedEvent: "STARTED",
@@ -244,6 +270,8 @@ async function harness(
     journal?: AdvisorThreadJournal;
     directory?: string;
     sessionId?: string;
+    /** The reviewer's scripted answers, which is also what makes its model call possible here. */
+    reviewer?: readonly ReviewReply[];
   } = {},
 ) {
   const directory = options.directory ?? (await mkdtemp(join(tmpdir(), "advisor-tool-")));
@@ -289,6 +317,7 @@ async function harness(
         available.find((model) => model.provider === provider && model.id === id),
       getAvailable: () => available,
       hasConfiguredAuth: () => true,
+      ...(options.reviewer ? { streamSimple: reviewStream(options.reviewer) } : {}),
     },
     ui: {
       setStatus: (_key: string, text: string) => statuses.push(text),
@@ -3860,6 +3889,58 @@ async function strictRun(): Promise<Awaited<ReturnType<typeof harness>>> {
   await run.newTask();
   return run;
 }
+
+/**
+ * A `guard` task whose reviewer enforces, so a change that is not a consultation reaches it. The
+ * reviewer's two stages answer from a script, so a block is decided without a provider.
+ */
+async function guardReviewRun(): Promise<Awaited<ReturnType<typeof harness>>> {
+  const run = await harness(base, [...models, reviewModel], 10_000, {
+    mainProcess: true,
+    activeTools: ["subagent", "consult_advisor"],
+    reviewer: [
+      { text: "BLOCK" },
+      { text: "It leaves what the task asked for.\nCATEGORY: outside-the-request" },
+    ],
+  });
+  await writeFile(
+    getAdvisorLevelPath(run.path),
+    `${JSON.stringify({ schemaVersion: 1, level: "guard" })}\n`,
+  );
+  await writeGuardMode(
+    { consultBeforeFirstChange: false, reviewer: { model: "example/reviewer", mode: "enforce" } },
+    run.path,
+  );
+  await run.newTask();
+  return run;
+}
+
+test("a reviewer block while a consultation group is in flight names the consultation", async () => {
+  const run = await guardReviewRun();
+  try {
+    // One group in flight is the window a model could change state in, so the executor is busy.
+    const pending = run.call({});
+    const first = await Promise.race([
+      until(() => run.bus.requests.length === 2).then(() => "requested"),
+      pending.then((answer) => `answered: ${answer}`),
+    ]);
+    assert.equal(first, "requested");
+    assert.equal(run.executor.busy, true, "the group is in flight while the change is attempted");
+    const refused = await gatedEdit(run, "call-reviewer-busy", HELD_EDIT);
+    assert.equal(refused?.block, true);
+    assert.match(refused?.reason ?? "", /Guard reviewer: outside-the-request/);
+    // The exit is the consultation this session still has. A busy executor delays the next one, so
+    // the refusal must not send the model to the person as well.
+    assert.match(refused?.reason ?? "", /Call consult_advisor once; it asks all Advisors\./);
+    assert.doesNotMatch(refused?.reason ?? "", /Ask the user/);
+    assert.doesNotMatch(refused?.reason ?? "", /ask the user and stop/);
+    for (const request of run.bus.requests) run.bus.finish(request);
+    assert.match(await pending, /Consultation complete/);
+    assert.equal(run.executor.busy, false);
+  } finally {
+    await run.close();
+  }
+});
 
 test("a change the gate holds back travels in the next composed consultation", async () => {
   const run = await strictRun();

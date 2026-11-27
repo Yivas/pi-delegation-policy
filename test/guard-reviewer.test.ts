@@ -7,7 +7,9 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   GuardReviewer,
   REVIEWER_BLOCK_STREAK,
+  REVIEWER_ABSENT_STREAK,
   REVIEWER_CALLS_PER_SESSION,
+  REVIEWER_PAIR_LIMIT,
   REVIEWER_PASS_CALLS,
   failureLane,
   isInsideWorkspace,
@@ -1282,6 +1284,58 @@ test("a reviewer that cannot answer splits into its two lanes", async () => {
       reason: "unavailable",
     },
   );
+});
+
+test("a task bounds the pairs it refused and the ones an answer covered", async () => {
+  const records: ReviewerRecord[] = [];
+  const instance = new GuardReviewer({ record: (record) => records.push(record) });
+  // The breaker is tripped first, so none of the pairs below costs a model call: an open breaker
+  // sends every pair it has not judged to the failure lane, and that is where a refusal is kept.
+  const broken = stubRegistry([{ error: true }, { error: true }, { error: true }]);
+  for (let index = 0; index < REVIEWER_ABSENT_STREAK; index += 1) {
+    instance.noteTurn();
+    instance.observe({
+      ...request({ input: { path: `src/off-${index}.ts`, edits: [] } }),
+      facts: classifyToolCall("edit", { path: `src/off-${index}.ts`, edits: [] }),
+      registry: broken.registry,
+    });
+  }
+  await until(() => records.length === REVIEWER_ABSENT_STREAK);
+  // A shell call is the pair the failure lane refuses, so every one of them is remembered.
+  const shell = (index: number) =>
+    enforced({
+      toolName: "bash",
+      input: { command: `echo ${index}` },
+      facts: classifyToolCall("bash", { command: `echo ${index}` }),
+      registry: broken.registry,
+    });
+  for (let index = 0; index <= REVIEWER_PAIR_LIMIT; index += 1)
+    assert.deepEqual(
+      await instance.enforce(shell(index)),
+      { action: "refuse", reason: "unavailable" },
+      `refused pair ${index}`,
+    );
+  // One answer covers the pairs still remembered, and the oldest of them was evicted to make room.
+  instance.noteAnswer();
+  assert.deepEqual(await instance.enforce(shell(0)), { action: "refuse", reason: "unavailable" });
+  assert.deepEqual(await instance.enforce(shell(1)), { action: "pass", lane: "pass" });
+  assert.deepEqual(await instance.enforce(shell(REVIEWER_PAIR_LIMIT)), {
+    action: "pass",
+    lane: "pass",
+  });
+  // A second round fills the covered pairs past their own cap, so the first answer's pairs age out
+  // and the newest one is still covered.
+  for (let index = REVIEWER_PAIR_LIMIT + 1; index <= 2 * REVIEWER_PAIR_LIMIT + 1; index += 1)
+    assert.deepEqual(await instance.enforce(shell(index)), {
+      action: "refuse",
+      reason: "unavailable",
+    });
+  instance.noteAnswer();
+  assert.deepEqual(await instance.enforce(shell(1)), { action: "refuse", reason: "unavailable" });
+  assert.deepEqual(await instance.enforce(shell(2 * REVIEWER_PAIR_LIMIT + 1)), {
+    action: "pass",
+    lane: "pass",
+  });
 });
 
 test("a cap is a failure lane, not a refusal to run an edit", async () => {
