@@ -20,6 +20,7 @@ import { getAdvisorLevelPath } from "../src/advisor-level.ts";
 import { getGlobalConfigPath, writeConfig } from "../src/config.ts";
 import piDelegationPolicy from "../src/index.ts";
 import { CURRENT_SCHEMA_VERSION, type GlobalDefaults, type ModelRef } from "../src/types.ts";
+import { within } from "./within.ts";
 
 const small: ModelRef = { provider: "example", model: "small" };
 const medium: ModelRef = { provider: "example", model: "medium" };
@@ -205,31 +206,8 @@ test("the registry decides each launched run once and drops what it never launch
  * ---------------------------------------------------------------------------------------------- */
 
 const CHILD_MARKERS = ["PI_SUBAGENT_CHILD", "PI_SUBAGENT_RUNNER_PID"] as const;
-const STEP_TIMEOUT_MS = 2_000;
 
 type Listener = (payload: unknown) => void;
-
-/**
- * Await one step of the extension and fail the test instead of hanging when it never settles. The
- * timer is cleared here, so a step that settles leaves nothing behind.
- */
-async function within<Value>(
-  what: string,
-  work: Value | PromiseLike<Value>,
-): Promise<Awaited<Value>> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expiry = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${what} did not settle within ${STEP_TIMEOUT_MS} ms.`)),
-      STEP_TIMEOUT_MS,
-    );
-  });
-  try {
-    return await Promise.race([work, expiry]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /** A standing-in `pi.events`: it answers the bridge's `ping` and says when something listens. */
 function fakeBus(sessionId: string) {
@@ -284,8 +262,8 @@ function fakeBus(sessionId: string) {
       return listeners.get(event)?.size ?? 0;
     },
     /** Resolves once the bridge answered a request and its answer has been applied. */
-    answeredRequest(): Promise<void> {
-      if (answered > 0) return Promise.resolve();
+    answeredRequest(atLeast = 1): Promise<void> {
+      if (answered >= atLeast) return Promise.resolve();
       return new Promise<void>((resolve) => {
         waitingAnswered.push(resolve);
       });
@@ -507,14 +485,16 @@ function createHarness(
       handler("session_shutdown")({ type: "session_shutdown" }, ctx),
     );
   };
-  const start = async (): Promise<void> => {
+  /** Start a session, and wait for the admission of the one it starts (`admissions` counts them). */
+  const start = async (admissions = 1): Promise<void> => {
     await within(
       "session_start",
       handler("session_start")({ type: "session_start", reason: "startup" }, ctx),
     );
     // The completion channel is admitted in the background: wait until it listens, or until the
     // bridge refused it, because then no listener is coming.
-    if (options.bridge === "foreign") await within("the admission", bus.answeredRequest());
+    if (options.bridge === "foreign")
+      await within("the admission", bus.answeredRequest(admissions));
     else await within("the completion listener", bus.listening(COMPLETE_EVENT));
   };
   return {
@@ -779,6 +759,40 @@ test("a session that hears no completion channel asks for the foreground launch"
     }
     const log = await readFile(getEventLogPath(getGlobalConfigPath(directory)), "utf8");
     assert.equal(log.match(/"status":"channel-missing"/g)?.length, 1);
+  });
+});
+
+/**
+ * The notice and the record are once per session, not once per process: a second session on the same
+ * missing bridge reads the same channel the first one read, and nothing of that one speaks for it.
+ */
+test("a second session on a missing bridge gets its own notice and its own record", async () => {
+  await withAgentDirectory(async (directory) => {
+    await writeConfig(getGlobalConfigPath(directory), defaults);
+    await writeFile(
+      getAdvisorLevelPath(getGlobalConfigPath(directory)),
+      `${JSON.stringify({ schemaVersion: 1, level: "strict" })}
+`,
+    );
+    const harness = createHarness({ bridge: "foreign" });
+    const notice = (): number =>
+      harness.notifications.filter((entry) =>
+        /cannot release the checkpoint in this session/.test(entry.message),
+      ).length;
+    await harness.start();
+    try {
+      await harness.prompt();
+      assert.equal(notice(), 1, "the first session warns its operator once");
+      // The process starts a second session on the same bridge, which refuses it the same way: what
+      // the one before was told and wrote is not this session's reading.
+      await harness.start(2);
+      await harness.prompt();
+      assert.equal(notice(), 2, "the session that started has its own warning");
+    } finally {
+      await harness.shutdown();
+    }
+    const log = await readFile(getEventLogPath(getGlobalConfigPath(directory)), "utf8");
+    assert.equal(log.match(/"status":"channel-missing"/g)?.length, 2, "one record per session");
   });
 });
 

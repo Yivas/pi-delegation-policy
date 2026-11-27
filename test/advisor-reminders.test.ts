@@ -34,6 +34,7 @@ import { DelegatePanel, type DelegatePanelOptions } from "../src/delegate-panel.
 import piDelegationPolicy from "../src/index.ts";
 import { openDelegateEditor } from "../src/ui.ts";
 import { CURRENT_SCHEMA_VERSION, type GlobalDefaults, type ModelRef } from "../src/types.ts";
+import { within } from "./within.ts";
 
 const small: ModelRef = { provider: "example", model: "small" };
 const medium: ModelRef = { provider: "example", model: "medium" };
@@ -1350,6 +1351,40 @@ test("a background consultation child is bound to the thinking level the call as
     assert.equal(other?.reason, gateText("role"));
     // A refusal consumes nothing: the level the call asked for still passes.
     assert.equal(await harness.toolCall("subagent_launch", backgroundChild("task-1")), undefined);
+  });
+});
+
+/**
+ * The launch check can refuse a call that names every Advisor in the background, and a refused call
+ * starts no child at all: a slot left behind would exempt one change of a consultation that never
+ * happened, which is how the launch check got bypassed once already.
+ */
+test("a refused background consultation leaves no slot that exempts a child", async () => {
+  await withHarness({ config: THREE_ADVISORS }, async (harness) => {
+    await writeLevel({ level: "strict" });
+    await within("the prompt", harness.prompt());
+    for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
+      await within(`change ${index}`, harness.toolCall("edit", SMALL_EDIT));
+    assert.equal(
+      (await within("the held change", harness.toolCall("edit", SMALL_EDIT)))?.block,
+      true,
+      "the hold is reached",
+    );
+    // An Advisor is never branched from this conversation, so this parallel call is refused before
+    // anything launches. Its children would otherwise be the consultation's own slots.
+    const refused = await within(
+      "the refused launch",
+      harness.toolCall("subagent", { ...BACKGROUND_CONSULTATION, context: "fork" }),
+    );
+    assert.equal(refused?.block, true);
+    assert.match(refused?.reason ?? "", /remove context "fork" from this call/);
+    // The child of a slot that call never verified is a change, and the hold refuses it as one.
+    const child = await within(
+      "the child",
+      harness.toolCall("subagent_launch", backgroundChild("task-1")),
+    );
+    assert.equal(child?.block, true, "a refused launch left no slot behind");
+    assert.equal(child?.reason, gateText("role"));
   });
 });
 

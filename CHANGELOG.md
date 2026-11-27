@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.36.0 - 2026-11-27
 
 ### Added
 
@@ -83,14 +83,14 @@ model`). Choosing a model states once what travels to its provider, what never d
   redirect all ask for the background launch the policy prefers, and the refusal says the change runs
   after the Advisor answers. Foreground launches keep working. One exception is chosen by the
   extension and never left to the model: a session whose bridge admits no completion channel — it
-  says so, or it throws — hears no background answer at all, so that session tells the operator once,
-  leaves one `channel-missing` record, and its policy block, its refusals and the redirect ask for the
-  foreground launch with `async: false`, whose own result already opens the hold. A channel that is
-  merely slow to answer changes nothing until the bridge's own question times out, 15 s after the
-  session starts: then the session reads as one that admits nothing and asks for the foreground for
-  the rest of its life, because it never asks the bridge again. A host that rewrites that
-  `async: false` into a background run, which `forceTopLevelAsync` does, still answers nothing here:
-  its receipt carries no children, so no report is proven and the hold stays.
+  says so, or it throws — hears no background answer at all, so that session tells the operator once
+  when it can hold a change, leaves one `channel-missing` record, and its policy block, its refusals
+  and the redirect ask for the foreground launch with `async: false`, whose own result already opens
+  the hold. A channel that is merely slow to answer changes nothing until the bridge's own question
+  times out, 15 s after the session starts: then the session reads as one that admits nothing and
+  asks for the foreground for the rest of its life, because it never asks the bridge again. A host
+  that rewrites that `async: false` into a background run, which `forceTopLevelAsync` does, still
+  answers nothing here: its receipt carries no children, so no report is proven and the hold stays.
 - **The consultation instruction names one launch per mode.** The policy block, the `standard` note
   and every `strict`/`guard` refusal, the guard reviewer's block exit and the `consult_advisor`
   redirect state `Consult all Advisors in one parallel call: <the configured Advisor profiles>.` for

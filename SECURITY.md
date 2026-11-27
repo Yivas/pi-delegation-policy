@@ -123,8 +123,9 @@ with output present from a configured Advisor profile and its exact model. The l
 under the event name the bridge advertises, its payload is read as closed fields with no text
 parsed, one run decides once, and a report that proves nothing leaves the hold where it was. A bridge
 that advertises nothing admits no completion channel, and the extension then says so once to the
-operator, leaves one closed record of it and asks the model to consult in the foreground, with
-`async: false`; that launch's own result is a report the task can read. Two residuals still strand a
+operator of a session that can hold a change, leaves one closed record of it and asks the model to
+consult in the foreground, with `async: false`; that launch's own result is a report the task can
+read. Two residuals still strand a
 held task. A host that rewrites that foreground launch into a background run, as the
 `forceTopLevelAsync` setting of `pi-subagents` does, returns no children here, so nothing is proven and
 no failure is counted. A bridge that is only slow is read as one that admits nothing once its question
@@ -251,7 +252,7 @@ expected behavior, the observed behavior, and a minimal sanitized configuration.
 
 ## Supported versions
 
-Only the latest published version is supported. Version `0.35.0` supports Pi `0.87.1` or later
+Only the latest published version is supported. Version `0.36.0` supports Pi `0.87.1` or later
 (`>=0.87.1`). Version `0.14.1` supports Pi `0.84.3` or later.
 
 [persistence]: https://yivas.github.io/pi-delegation-policy/configuration/#persistence-and-compatibility

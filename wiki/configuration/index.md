@@ -888,9 +888,9 @@ children has to be a configured Advisor profile with that slot's model, output p
 The tool call that launched it and the run id are both read as host identifiers, the report of one
 run decides it once, and a report that proves nothing changes nothing. Nothing parses the text of a
 notice or of a message, so a message the agent writes cannot open a hold. A bridge that does not
-advertise the event admits no completion channel: the operator is told once, the session's record says
-so, and the text of that session asks for the foreground launch with `async: false`, whose own result
-is a report the hold already reads. A host that rewrites an
+advertise the event admits no completion channel: the operator of a session that can hold a change is
+told once, the session's record says so, and the text of that session asks for the foreground launch
+with `async: false`, whose own result is a report the hold already reads. A host that rewrites an
 explicit `async: false` into a background launch, such as `pi-subagents` with `forceTopLevelAsync`,
 leaves that launch unanswered and unreported here: its receipt carries no children, and no run is
 registered for it because only a background launch registers one. So while that option is set, a

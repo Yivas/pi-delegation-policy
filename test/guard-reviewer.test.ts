@@ -16,6 +16,7 @@ import {
   REVIEWER_CALLS_PER_TURN,
   REVIEWER_CONTENT_CHARS,
   REVIEWER_STAGE1_TIMEOUT_MS,
+  REVIEWER_UNAVAILABLE_NO_PATH_TEXT,
   REVIEWER_USER_MESSAGE_CHARS,
   buildReviewPayload,
   parseStage1Answer,
@@ -34,6 +35,7 @@ import { getGlobalConfigPath, writeConfig } from "../src/config.ts";
 import { writeGuardMode, type GuardMode } from "../src/guard-mode.ts";
 import piDelegationPolicy from "../src/index.ts";
 import { CURRENT_SCHEMA_VERSION, type GlobalDefaults, type ModelRef } from "../src/types.ts";
+import { within } from "./within.ts";
 
 const small: ModelRef = { provider: "example", model: "small" };
 const medium: ModelRef = { provider: "example", model: "medium" };
@@ -1488,6 +1490,41 @@ test("at the hook, enforcing refuses a shell call the reviewer could not judge",
       assert.match(result?.reason ?? "", /Guard reviewer unavailable/);
       const records = await reviewerRecords();
       assert.equal(records[0]!.lane, "refuse");
+    },
+  );
+});
+
+/**
+ * The failure lane reads one path and one exit: with no Advisor to answer, a refusal that named a
+ * consultation would tell the model to wait for what this session cannot offer and, on the next
+ * line, to ask the person and stop.
+ */
+test("at the hook, a refusal with no consultation path names the person as the exit", async () => {
+  await withHarness(
+    {
+      replies: [{ error: true }],
+      guard: {
+        consultBeforeFirstChange: false,
+        reviewer: { model: "example/reviewer", mode: "enforce" },
+      },
+      // The launcher of the configured mode is not an active tool in this session, so no
+      // consultation it could follow exists here, whatever the configuration names.
+      activeTools: [],
+    },
+    async (harness) => {
+      await within("the prompt", harness.prompt());
+      const result = await within(
+        "the bash call",
+        harness.toolCall("bash", { command: "npm run build" }),
+      );
+      assert.equal(result?.block, true);
+      const reason = result?.reason ?? "";
+      assert.equal(
+        reason,
+        [REVIEWER_UNAVAILABLE_NO_PATH_TEXT, "Ask the user how to continue and stop."].join("\n"),
+      );
+      // The half of the other prefix that would contradict the exit this refusal states.
+      assert.doesNotMatch(reason, /waits for a consultation/);
     },
   );
 });
