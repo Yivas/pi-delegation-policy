@@ -144,12 +144,13 @@ model`). Choosing a model states once what travels to its provider, what never d
 - A consultation that names the Advisors in `workflow: "parallel"` is a consultation, not a change.
   Its children are part of the same call, so no rule and no count refuses them and a held task gets
   all of them. That holds in the background as well, where the run carries an id of its own: those
-  children are bound to the slots the launch verified, one child per slot and thinking level, and
-  only a child that fails the closed field list stays a change that can reach the hold in the middle
-  of the call. The hold lifts on the host's result as before: one Advisor that answered, read from
-  the per-child results, is enough. A parallel workflow that fails is unobservable by design, since
-  the host reports a failed call with no details, so it lifts nothing; the way out is a consultation
-  that succeeds, such as a single-Advisor foreground launch.
+  children are bound to the slots the launch verified, one child per slot and thinking level. Every
+  other child stays a change that can reach the hold in the middle of the call: another profile,
+  another model or another level, a field outside the closed list, or one that arrives once its slot
+  has no entry left. The hold lifts on the host's result as before: one Advisor that answered, read
+  from the per-child results, is enough. A parallel workflow that fails is unobservable by design,
+  since the host reports a failed call with no details, so it lifts nothing; the way out is a
+  consultation that succeeds, such as a single-Advisor foreground launch.
 - A `bash` line that starts with an assignment whose value is quoted reads as the read it is:
   `f="C:/x.md"; wc -l "$f"` no longer counts as a change. A value that expands or redirects inside
   its quotes still does: `f="$(touch x)"`, `f="${X}"` and a backtick there remain changes. A word

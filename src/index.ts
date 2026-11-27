@@ -455,6 +455,18 @@ function launchesOnlyAdvisors(children: readonly LaunchChildRole[]): boolean {
 }
 
 /**
+ * The thinking level a host model string carries for one slot's model, or undefined when it carries
+ * none this product knows. The host appends the level it runs, and only a level this product knows is
+ * that suffix: anything else is part of the id, so it names no slot. The profile match and the slot
+ * key both read the level here, so neither depends on the other having read it first.
+ */
+function thinkingLevelSuffix(reference: string, model: string): string | undefined {
+  if (!model.startsWith(`${reference}:`)) return undefined;
+  const level = model.slice(reference.length + 1);
+  return (THINKING_LEVEL_NAMES as readonly string[]).includes(level) ? level : undefined;
+}
+
+/**
  * The configured Advisor a child launch names, read from what the host runs: the packaged profile of
  * one slot together with that slot's model. The profile name alone is not enough, because several
  * Advisors share one, and a name the model sent is not identity at all.
@@ -469,24 +481,20 @@ function advisorProfileFor(
   return validAdvisors(state).find(({ setting, index }) => {
     if (advisorAgentNameFor(state, setting, index) !== agent) return false;
     const reference = `${setting.provider}/${setting.model}`;
-    if (model === reference) return true;
-    // The host appends the thinking level to the model it runs, and only a level this product knows
-    // is that suffix: anything else is part of the id, so it names no slot.
-    if (!model.startsWith(`${reference}:`)) return false;
-    const level = model.slice(reference.length + 1);
-    return (THINKING_LEVEL_NAMES as readonly string[]).includes(level);
+    return model === reference || thinkingLevelSuffix(reference, model) !== undefined;
   })?.setting;
 }
 
 /**
  * One Advisor child as the launch and the host's nested call are matched: the packaged profile name the
  * launch resolved, that slot's own model and the thinking level the launch asked for. A child that runs
- * the same slot at another level is not that child, so the level is part of the key. `model` is the
- * string `advisorProfileFor` accepted, with the level as its suffix or with none.
+ * the same slot at another level is not that child, so the level is part of the key. The level is read
+ * the way the profile match reads it, so a model that match would refuse names no slot here either.
  */
-function advisorSlotKey(agent: string, setting: AdvisorSetting, model: string): string {
+function advisorSlotKey(agent: string, setting: AdvisorSetting, model: string): string | undefined {
   const reference = `${setting.provider}/${setting.model}`;
-  return `${agent}|${reference}|${model === reference ? "" : model.slice(reference.length + 1)}`;
+  const level = model === reference ? "" : thinkingLevelSuffix(reference, model);
+  return level === undefined ? undefined : `${agent}|${reference}|${level}`;
 }
 
 /**
@@ -1517,6 +1525,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         const setting = advisorProfileFor(state, { ...entry, model });
         if (!agent || setting === undefined) continue;
         const key = advisorSlotKey(agent, setting, model);
+        if (key === undefined) continue;
         consultationSlots.set(key, (consultationSlots.get(key) ?? 0) + 1);
       }
     };
@@ -1544,7 +1553,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       const setting = advisorProfileFor(state, input);
       if (setting === undefined) return undefined;
       const key = advisorSlotKey(agent, setting, model);
-      return (consultationSlots.get(key) ?? 0) > 0 ? key : undefined;
+      return key !== undefined && (consultationSlots.get(key) ?? 0) > 0 ? key : undefined;
     };
     /**
      * Whether this call is the host starting one child of a consultation this task launched. A

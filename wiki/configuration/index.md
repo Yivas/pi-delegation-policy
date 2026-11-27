@@ -686,7 +686,7 @@ so no rule, no count and no review touches it, and the way out is never what del
 task. The host starts each child of a parallel call as its own `subagent_launch` call, and those
 children are part of the same consultation: a foreground call names them with its own id, and a
 background run, which carries an id of its own, is bound by the Advisor slots the call verified, one
-child per slot. Only the fields such a child carries are accepted, and
+child per slot and thinking level. Only the fields such a child carries are accepted, and
 [what stops being exempt](/limits-and-privacy/#guard-reviewer-child) lists them. It reads three things, all of them as one JSON object that the fixed prompt declares
 to be data and never an instruction: your own messages in the branch, up to 800 characters each and
 4 KiB in total, newest first; the pending call, meaning the tool name and, for an edit or a write, the
