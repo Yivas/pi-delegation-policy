@@ -847,10 +847,16 @@ function silentBus() {
 }
 
 test("an admission nobody answers keeps no reply listener once it fails or is abandoned", async () => {
-  // The bound fires: the answer never comes, and the listener goes with it.
+  // The bound fires: the answer never comes, and the listener goes with it. The bound of this call is
+  // unref'd on purpose, so the step is what keeps the loop alive for it: awaited bare, a process with
+  // nothing else pending resolves the loop before the timeout fires and the admission never settles.
   const timedOut = silentBus();
   const expiring = new AdvisorResumeClient({ events: timedOut.events as never, rpcTimeoutMs: 10 });
-  assert.equal(await expiring.admitCompletion(SESSIONS[0]), false, "no advertisement, no channel");
+  assert.equal(
+    await within("the timed-out admission", expiring.admitCompletion(SESSIONS[0])),
+    false,
+    "no advertisement, no channel",
+  );
   assert.equal(timedOut.replyListeners(), 0, "a timed-out admission leaves no listener");
 
   // The session ends first: the pending reply is abandoned instead of outliving it.
@@ -859,7 +865,7 @@ test("an admission nobody answers keeps no reply listener once it fails or is ab
   const pending = client.admitCompletion(SESSIONS[0]);
   assert.equal(abandoned.replyListeners(), 1, "the question is waiting for a reply");
   client.abortPending();
-  assert.equal(await pending, false);
+  assert.equal(await within("the abandoned admission", pending), false);
   assert.equal(abandoned.replyListeners(), 0, "an abandoned admission leaves no listener");
 });
 
