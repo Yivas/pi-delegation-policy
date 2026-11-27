@@ -3,7 +3,7 @@ name: pi-delegation-policy.advisor-provider-extension
 description: Bounded advice through the provider extension the operator admitted for this model.
 tools:
 extensions:
-subagentOnlyExtensions: npm:pi-antigravity-acp-provider@0.1.22
+subagentOnlyExtensions: ../../pi-antigravity-acp-provider
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false

@@ -6,7 +6,14 @@ import {
 } from "@earendil-works/pi-ai";
 import { ADVISOR_AGENT_NAME, ADVISOR_READ_AGENT_NAME } from "./advisor-executor.ts";
 import { ANTHROPIC_ADVISOR_AGENT } from "./advisor-anthropic-provider.ts";
-import { PROVIDER_EXTENSION_ADVISOR_AGENT } from "./advisor-provider-extension.ts";
+import {
+  packagedProfileFor,
+  PROVIDER_EXTENSION_ADVISOR_AGENT,
+  REVIEWED_PACKAGE,
+  reviewedPackageFor,
+  type ReviewedPackage,
+} from "./advisor-provider-extension.ts";
+import { locateSiblingPackage } from "./provider-package.ts";
 import { DEFAULT_LAUNCH_CORRECTION_MODE } from "./launch-correction-mode.ts";
 import {
   enabledOrdinaryRoles,
@@ -36,6 +43,127 @@ const ADVISOR_AGENTS: ReadonlySet<string> = new Set([
   ADVISOR_READ_AGENT_NAME,
   ANTHROPIC_ADVISOR_AGENT,
   PROVIDER_EXTENSION_ADVISOR_AGENT,
+]);
+/**
+ * The agents `pi-subagents` ships, copied from its own `BUILTIN_AGENT_NAMES`
+ * (`src/agents/builtin-names.js` of the installed build; `agents/*.md` there is the same list). A
+ * profile this feature chose to replace is one of these or none at all: any other name is a user or
+ * project agent, whose own configuration this policy must never overwrite or refuse. A builtin added
+ * by a later build is therefore treated as somebody's agent until this list is updated, which fails
+ * towards leaving an agent alone instead of towards replacing it.
+ */
+const BUILTIN_AGENTS: ReadonlySet<string> = new Set([
+  "advisor",
+  "claude-code",
+  "claude-code-writer",
+  "codex-exec",
+  "codex-exec-writer",
+  "cursor-agent",
+  "cursor-agent-writer",
+  "delegate",
+  "evidence-auditor",
+  "oracle",
+  "researcher",
+  "reviewer",
+  "scout",
+  "worker",
+]);
+/**
+ * What a builtin agent becomes when a reviewed provider extension serves its model. A builtin keeps
+ * the tool surface its definition declares or the launch is refused: nothing is widened to the
+ * writing profile and nothing it declares is dropped. The sets below are the ones each definition
+ * declares in `pi-subagents` 0.89.1 `agents/*.md`.
+ *
+ * - `worker` declares its tools at `agents/worker.md:10` and `acceptanceRole: writer` at `:5`;
+ *   `delegate` declares the same set at `:6` and no `acceptanceRole`, which the host reads as the
+ *   light attested level. Both carry exactly the execution profile's tools, so both run it, and a
+ *   `delegate` child then accepts at the profile's `writer` level instead of the light one: a
+ *   stricter review, never a wider tool set, and it is documented.
+ * - `reviewer` declares `read, grep, find, ls, watchdog_diff, contact_supervisor` at
+ *   `agents/reviewer.md:4` and `acceptanceRole: read-only` at `:5`, exactly the reader profile, so
+ *   it keeps that surface and its read-only acceptance. The profile replaces its prompt (its own
+ *   review methodology is `agents/reviewer.md`, and the child runs the reader prompt instead); the
+ *   role still supplies the model and thinking. `watchdog_diff` is registered by the host when a
+ *   child declares it (`pi-subagents` `src/runs/shared/subagent-prompt-runtime.js:680-686`) and
+ *   reports unavailable without a Git baseline (`src/watchdog/diff-tool.js:6`), so declaring it
+ *   costs nothing.
+ * - `scout` declares `bash` and `write` at `agents/scout.md:4`, `oracle` declares `bash` at `:5` and
+ *   a forked default context at `:11`, `evidence-auditor` declares the web tools at `:4`, and
+ *   `researcher` declares `write` and the web tools at `:4`. No packaged profile provides those, so
+ *   each is refused rather than widened to the writing profile or quietly stripped of what it
+ *   declared.
+ * - The six external CLI wrappers (`claude-code`, `claude-code-writer`, `codex-exec`,
+ *   `codex-exec-writer`, `cursor-agent`, `cursor-agent-writer`) declare a `runner` and no Pi tool
+ *   list at all, so a Pi child would replace their runner rather than their tools.
+ * - An Advisor is not in this table: a consultation keeps its own profile.
+ */
+type BuiltinMapping =
+  | { kind: "execution" }
+  | { kind: "reader" }
+  | { kind: "refuse"; reason: string; readOnly?: boolean };
+/**
+ * The aliases the host resolves to a builtin: `agents/worker.md:4` (`developer`, `coder`,
+ * `implementer`, `develop`) and `agents/oracle.md:3` (`advisor`). They are refused rather than
+ * resolved, because a user or project agent may declare the same alias and this policy cannot see
+ * which one the host would pick: the message names the canonical agent instead.
+ */
+const BUILTIN_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["developer", "worker"],
+  ["coder", "worker"],
+  ["implementer", "worker"],
+  ["develop", "worker"],
+  ["advisor", "oracle"],
+]);
+const BUILTIN_PROFILE: ReadonlyMap<string, BuiltinMapping> = new Map<string, BuiltinMapping>([
+  ["worker", { kind: "execution" }],
+  ["delegate", { kind: "execution" }],
+  ["reviewer", { kind: "reader" }],
+  [
+    "scout",
+    {
+      kind: "refuse",
+      reason: "it declares bash and write, and no read-only packaged profile provides either",
+    },
+  ],
+  [
+    "oracle",
+    {
+      kind: "refuse",
+      readOnly: true,
+      reason:
+        "it declares bash and a forked default context, and no read-only packaged profile provides bash",
+    },
+  ],
+  [
+    "evidence-auditor",
+    {
+      kind: "refuse",
+      readOnly: true,
+      reason:
+        "it declares the web tools (web_search, fetch_content, get_search_content, source_check), which no packaged profile provides",
+    },
+  ],
+  [
+    "researcher",
+    {
+      kind: "refuse",
+      reason: "it declares write and the web tools, which no packaged profile provides",
+    },
+  ],
+  ...[
+    "claude-code",
+    "claude-code-writer",
+    "codex-exec",
+    "codex-exec-writer",
+    "cursor-agent",
+    "cursor-agent-writer",
+  ].map((agent): [string, BuiltinMapping] => [
+    agent,
+    {
+      kind: "refuse",
+      reason: "it runs an external CLI runner rather than a Pi child with tools",
+    },
+  ]),
 ]);
 /**
  * Keys that carry children. With `action` the host runs a control or management operation, where
@@ -96,9 +224,11 @@ export type LaunchRefusalCode =
   | "advisor-mismatch"
   | "advisor-off"
   | "advisor-fork-context"
-  | "shared-model-conflict";
+  | "shared-model-conflict"
+  | "provider-profile";
 /** Closed kinds of correction the guard applies instead of refusing an unambiguous call. */
-export type LaunchCorrectionCode = "level-added" | "advisor-profile" | "role-alias";
+export type LaunchCorrectionCode =
+  "level-added" | "advisor-profile" | "provider-profile" | "role-alias";
 /** One applied correction: what the call stated, what the host now runs, and where. */
 export type LaunchCorrection = {
   code: LaunchCorrectionCode;
@@ -582,6 +712,116 @@ function correctAgent(
   };
 }
 
+type ProviderProfilePlan =
+  { kind: "refused"; refusal: Refusal } | { kind: "resolved"; agent?: string };
+
+function refused(message: string): ProviderProfilePlan {
+  return { kind: "refused", refusal: { code: "provider-profile", message } };
+}
+
+/**
+ * The sibling check, repeated here at launch, with the directory the parent read it for. It reads
+ * package metadata only: no import, no execution. Validation resolved it once for the whole session,
+ * and a package removed, replaced or re-linked in between would otherwise be loaded unchecked, so the
+ * launch is where the answer has to be current. It covers every packaged profile, the Advisor one
+ * included, because all of them name their package in static frontmatter. What it still cannot cover
+ * is the child's own load, which happens after this returns.
+ */
+function siblingFailure(state: RuntimeState, reviewed: ReviewedPackage): string | undefined {
+  const cwd = state.cwd;
+  const pluginRoot = state.packageRoot;
+  if (cwd === undefined || pluginRoot === undefined)
+    return `the packaged profile for provider "${reviewed.provider}" was not resolved in this session, so the parent cannot check ${reviewed.package}; reload the session and retry`;
+  const located = locateSiblingPackage(cwd, pluginRoot, reviewed.package, { configured: true });
+  return located.ok
+    ? undefined
+    : `provider "${reviewed.provider}" needs ${reviewed.package} where the packaged profile resolves it: ${located.message}`;
+}
+
+/**
+ * The profile a child runs when a provider extension serves its model. Three cases, and nothing else:
+ * a call that already names a packaged profile must match the provider that profile serves and pass
+ * the sibling check at launch; a call naming a user or project agent is never touched, because what
+ * that agent loads is its own declaration; a call naming no agent or a builtin one gets the packaged
+ * profile its definition fits, or is refused. Advice is never converted, and a provider the host
+ * serves natively needs nothing here.
+ */
+function providerProfilePlan(
+  state: RuntimeState,
+  base: string,
+  agent: string,
+  correct: boolean,
+): ProviderProfilePlan {
+  // An Advisor child is a consultation, never execution, but the profile that serves an admitted
+  // provider still loads the sibling package, so its install is checked here too: a consultation
+  // refused with this cause is an Advisor error, not a launch the host will fail later.
+  if (agent === PROVIDER_EXTENSION_ADVISOR_AGENT) {
+    const why = siblingFailure(state, REVIEWED_PACKAGE);
+    return why
+      ? refused(
+          `the Advisor profile "${PROVIDER_EXTENSION_ADVISOR_AGENT}" loads ${REVIEWED_PACKAGE.package}, and that cannot be confirmed: ${why}`,
+        )
+      : { kind: "resolved" };
+  }
+  if (ADVISOR_AGENTS.has(agent)) return { kind: "resolved" };
+  const separator = base.indexOf("/");
+  if (separator <= 0) return { kind: "resolved" };
+  const provider = base.slice(0, separator);
+  const reviewed = reviewedPackageFor(provider);
+
+  // The package a named profile loads is static frontmatter, so it loads whatever the model is: the
+  // profile and the provider it serves have to agree, and the check has to run even when the call
+  // already states the right name.
+  const named = packagedProfileFor(agent);
+  if (named) {
+    if (!reviewed || reviewed.provider !== named.reviewed.provider)
+      return refused(
+        `agent "${agent}" loads ${named.reviewed.package} for provider "${named.reviewed.provider}", and model "${base}" is not from that provider; name a role model of "${named.reviewed.provider}" or use a profile that fits the model`,
+      );
+    const why = siblingFailure(state, named.reviewed);
+    return why ? refused(why) : { kind: "resolved" };
+  }
+  // Any other name is somebody's own agent: this policy may not replace its configuration or refuse
+  // it for a provider that agent declares loading itself. An alias of a builtin is the one name that
+  // is neither, so it is refused below once the provider needs a profile.
+  const alias = BUILTIN_ALIASES.get(agent);
+  if (agent !== "" && !BUILTIN_AGENTS.has(agent) && alias === undefined)
+    return { kind: "resolved" };
+
+  if (!reviewed)
+    return (state.extensionProviders ?? []).includes(provider)
+      ? refused(
+          `provider "${provider}" is supplied by an extension in this session, and this release ships no packaged profile for it, so a child cannot resolve "${base}"; use a model from a provider the child loads, or launch an agent of your own that loads "${provider}"`,
+        )
+      : { kind: "resolved" };
+
+  if (alias !== undefined)
+    return refused(
+      `agent "${agent}" is an alias the host resolves to the builtin "${alias}", and this policy decides a profile by the canonical name; state agent "${alias}" so the packaged profile can be chosen, or launch an agent of your own that loads "${provider}"`,
+    );
+
+  const mapping: BuiltinMapping | undefined =
+    agent === "" ? { kind: "execution" } : BUILTIN_PROFILE.get(agent);
+  if (!mapping)
+    return refused(
+      `this release ships no packaged profile for agent "${agent}", so a child cannot run "${base}"; use a model from a provider the child loads, or launch an agent of your own that loads "${provider}"`,
+    );
+  if (mapping.kind === "refuse")
+    return refused(
+      `agent "${agent}" cannot run "${base}": ${mapping.reason}. Nothing was launched. Keep that work on a model the child loads${mapping.readOnly ? ", which stays read-only" : ""}, or state agent "${reviewed.executionAgent}" if a writing child through the extension is what you intend`,
+    );
+
+  const target = mapping.kind === "execution" ? reviewed.executionAgent : reviewed.readerAgent;
+  const why = siblingFailure(state, reviewed);
+  if (why !== undefined) return refused(why);
+  if (agent === target) return { kind: "resolved" };
+  return correct
+    ? { kind: "resolved", agent: target }
+    : refused(
+        `state agent "${target}", the packaged profile that loads the provider serving "${base}"`,
+      );
+}
+
 /** What the guard must write for one child, and what it changed. */
 type ChildPlan = {
   /** The corrected model, or undefined when the call's own value is used. */
@@ -626,6 +866,15 @@ const CORRECTION_REASONS: Record<LaunchCorrectionCode, string> = {
   "role-alias": "role name replaced by its exact model",
   "level-added": "the role's thinking level was missing",
   "advisor-profile": "the model belongs to that Advisor",
+  "provider-profile": "the model's provider is loaded by that packaged profile",
+};
+
+/** The field each correction writes: two of them change the profile, the rest the model. */
+const CORRECTION_FIELDS: Record<LaunchCorrectionCode, string> = {
+  "role-alias": "model",
+  "level-added": "model",
+  "advisor-profile": "agent",
+  "provider-profile": "agent",
 };
 
 /**
@@ -647,7 +896,7 @@ function correctionNote(corrections: readonly LaunchCorrection[]): string {
         : covered.join(", ");
     const where =
       covered.length === 0 ? "" : covered.length === 1 ? `child ${listed} ` : `children ${listed} `;
-    const field = correction.code === "advisor-profile" ? "agent" : "model";
+    const field = CORRECTION_FIELDS[correction.code];
     const stated = correction.roleName ? ` "${correction.roleName}"` : "";
     return `- ${where}${field}${stated} → "${correction.applied}": ${CORRECTION_REASONS[correction.code]}`;
   });
@@ -754,14 +1003,25 @@ export function inspectSubagentLaunch(
     if (plan.kind === "refused")
       return refuse(plan.refusal.code, `${label}${plan.refusal.message}`, children);
     const model = plan.plan.model ?? child.model.trim();
-    const profile = plan.plan.agent ?? agent;
+    const corrected = plan.plan.agent ?? agent;
     const { base, level } = splitModel(model);
     const why = plan.plan.role
       ? checkNamedRole(state, plan.plan.role, level)
-      : ADVISOR_AGENTS.has(profile)
-        ? checkAdvisorChild(state, profile, base, level)
+      : ADVISOR_AGENTS.has(corrected)
+        ? checkAdvisorChild(state, corrected, base, level)
         : checkOrdinaryChild(state, base, level);
     if (why) return refuse(why.code, `${label}${why.message}`, children);
+    // After the model and role checks, so a model no role uses still reports `wrong-model`. This is
+    // the one piece that reads the provider: a model served by an extension needs the packaged
+    // profile that loads it, and the guard is what chooses it, in every launch shape alike.
+    const providerPlan = providerProfilePlan(state, base, corrected, correct);
+    if (providerPlan.kind === "refused")
+      return refuse(providerPlan.refusal.code, `${label}${providerPlan.refusal.message}`, children);
+    if (providerPlan.agent !== undefined) {
+      plan.plan.agent = providerPlan.agent;
+      plan.plan.corrections.push({ code: "provider-profile", applied: providerPlan.agent });
+    }
+    const profile = plan.plan.agent ?? corrected;
     // An Advisor receives the brief the extension writes, never the conversation: a child that asks
     // the host to branch this session would send it to the Advisor's provider, which the policy and
     // the documentation say never happens. The check reads the profile this child will actually run

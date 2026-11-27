@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
 import { checkSubagentLaunch, inspectSubagentLaunch } from "../src/launch-guard.ts";
 import { ADVISOR_AGENT_NAME, ADVISOR_READ_AGENT_NAME } from "../src/advisor-executor.ts";
 import { ANTHROPIC_ADVISOR_AGENT } from "../src/advisor-anthropic-provider.ts";
-import { PROVIDER_EXTENSION_ADVISOR_AGENT } from "../src/advisor-provider-extension.ts";
+import {
+  KNOWN_TOOL_SURFACE,
+  PROVIDER_EXTENSION_ADVISOR_AGENT,
+} from "../src/advisor-provider-extension.ts";
 import { resolveDelegateState } from "../src/config.ts";
 import type { RuntimeState } from "../src/runtime.ts";
 import {
@@ -668,6 +674,470 @@ test("a reading Advisor launches under its own profile and is refused with anoth
     inspectSubagentLaunch({ agent: ADVISOR_READ_AGENT_NAME, task: "q" }, advisorOnly).refusal?.code,
     "missing-model",
   );
+});
+
+// The reviewed provider, its two packaged profiles and a user agent of the operator's, which this
+// policy must never replace or refuse. The launch check reads the installed package itself, so the
+// fixture is a real managed install in a temp agent directory, never a stub.
+const REVIEWED_PROVIDER = KNOWN_TOOL_SURFACE[0].provider;
+const EXECUTION_AGENT = KNOWN_TOOL_SURFACE[0].executionAgent;
+const READER_AGENT = KNOWN_TOOL_SURFACE[0].readerAgent;
+const REVIEWED_PACKAGE_NAME = KNOWN_TOOL_SURFACE[0].package;
+const USER_AGENT = "writer";
+const extensionModel = { provider: REVIEWED_PROVIDER, model: "reviewed-model" };
+
+async function writeSiblingPackage(directory: string): Promise<string> {
+  const managed = join(directory, "npm", "node_modules", REVIEWED_PACKAGE_NAME);
+  await mkdir(managed, { recursive: true });
+  await writeFile(
+    join(managed, "package.json"),
+    JSON.stringify({
+      name: REVIEWED_PACKAGE_NAME,
+      version: "9.9.9",
+      pi: { extensions: ["./index.js"] },
+    }),
+  );
+  await writeFile(join(managed, "index.js"), "export default function () {}\n");
+  await writeFile(
+    join(directory, "settings.json"),
+    JSON.stringify({ packages: [`npm:${REVIEWED_PACKAGE_NAME}@1.0.0`] }),
+  );
+  return managed;
+}
+
+const AGENT_DIR_BEFORE = process.env.PI_CODING_AGENT_DIR;
+const PROVIDER_AGENT_DIR = await mkdtemp(join(tmpdir(), "launch-guard-provider-"));
+process.env.PI_CODING_AGENT_DIR = PROVIDER_AGENT_DIR;
+const PROVIDER_MANAGED = await writeSiblingPackage(PROVIDER_AGENT_DIR);
+const PROVIDER_PLUGIN_ROOT = join(
+  PROVIDER_AGENT_DIR,
+  "npm",
+  "node_modules",
+  "pi-delegation-policy",
+);
+after(async () => {
+  if (AGENT_DIR_BEFORE === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = AGENT_DIR_BEFORE;
+  await rm(PROVIDER_AGENT_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+});
+
+function providerState(overrides: Partial<RuntimeState> = {}): RuntimeState {
+  const current = state({ small: extensionModel });
+  current.modelStatuses.set("small", { kind: "available", model: model(extensionModel) as never });
+  current.extensionProviders = [REVIEWED_PROVIDER];
+  current.cwd = process.cwd();
+  current.packageRoot = PROVIDER_PLUGIN_ROOT;
+  return { ...current, ...overrides };
+}
+
+const extensionCall = () => ({
+  agent: "worker",
+  task: "t",
+  model: `${REVIEWED_PROVIDER}/reviewed-model:high`,
+});
+
+test("a model a provider extension serves runs the packaged execution profile", () => {
+  const active = providerState();
+  // A builtin agent cannot load the provider, so the guard chooses the profile that does and says so.
+  const worker = extensionCall();
+  const check = inspectSubagentLaunch(worker, active);
+  assert.equal(check.refusal, undefined);
+  assert.equal(worker.agent, EXECUTION_AGENT);
+  assert.deepEqual(check.corrections, [{ code: "provider-profile", applied: EXECUTION_AGENT }]);
+  assert.match(check.note ?? "", /agent → "pi-delegation-policy\.execution-antigravity-acp"/);
+  assert.match(check.note ?? "", /the model's provider is loaded by that packaged profile/);
+
+  // A call that names no agent gets the profile too: nobody else chose one.
+  const absent = { task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` };
+  assert.equal(inspectSubagentLaunch(absent, providerState()).refusal, undefined);
+  assert.equal((absent as { agent?: string }).agent, EXECUTION_AGENT);
+
+  // Naming the profile already is the idempotent case: nothing is written and nothing is noted.
+  const correct = {
+    agent: EXECUTION_AGENT,
+    task: "t",
+    model: `${REVIEWED_PROVIDER}/reviewed-model:high`,
+  };
+  const before = structuredClone(correct);
+  const idempotent = inspectSubagentLaunch(correct, active);
+  assert.equal(idempotent.refusal, undefined);
+  assert.deepEqual(idempotent.corrections, []);
+  assert.equal(idempotent.note, undefined);
+  assert.deepEqual(correct, before);
+
+  // Every launch shape writes the profile where the host reads it: a single child, tasks, a chain
+  // step, a group inside a chain, and a parallel workflow whose model is the call's own.
+  for (const [call, agents] of [
+    [
+      {
+        tasks: [{ agent: "worker", task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` }],
+      },
+      (input: Record<string, unknown>) => (input.tasks as Array<{ agent: string }>)[0]!.agent,
+    ],
+    [
+      {
+        chain: [{ agent: "worker", task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` }],
+      },
+      (input: Record<string, unknown>) => (input.chain as Array<{ agent: string }>)[0]!.agent,
+    ],
+    [
+      {
+        chain: [
+          {
+            parallel: [
+              { agent: "worker", task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` },
+            ],
+          },
+        ],
+      },
+      (input: Record<string, unknown>) =>
+        (input.chain as Array<{ parallel: Array<{ agent: string }> }>)[0]!.parallel[0]!.agent,
+    ],
+    [
+      {
+        workflow: "parallel",
+        model: `${REVIEWED_PROVIDER}/reviewed-model:high`,
+        args: { tasks: [{ agent: "worker", task: "t" }] },
+      },
+      (input: Record<string, unknown>) =>
+        (input.args as { tasks: Array<{ agent: string }> }).tasks[0]!.agent,
+    ],
+  ] as const) {
+    const input = structuredClone(call) as Record<string, unknown>;
+    const shapeCheck = inspectSubagentLaunch(input, providerState());
+    assert.equal(shapeCheck.refusal, undefined, JSON.stringify(call));
+    assert.equal(agents(input), EXECUTION_AGENT, JSON.stringify(call));
+    assert.deepEqual(
+      shapeCheck.corrections.map((correction) => correction.code),
+      ["provider-profile"],
+      JSON.stringify(call),
+    );
+  }
+});
+
+// One table, one decision per builtin. A builtin keeps the tool surface its own definition declares,
+// so nothing read-only is widened into bash, edit and write, and nothing loses a tool it declared.
+// `advisor` is not here: it is a consultation and keeps its own profile before this table is read.
+test("every builtin that can execute fits a packaged profile or is refused, never widened", () => {
+  const mapping: Record<string, string | "refused"> = {
+    worker: EXECUTION_AGENT,
+    delegate: EXECUTION_AGENT,
+    reviewer: READER_AGENT,
+    scout: "refused",
+    oracle: "refused",
+    "evidence-auditor": "refused",
+    researcher: "refused",
+    "claude-code": "refused",
+    "claude-code-writer": "refused",
+    "codex-exec": "refused",
+    "codex-exec-writer": "refused",
+    "cursor-agent": "refused",
+    "cursor-agent-writer": "refused",
+  };
+  const reasons: Record<string, RegExp> = {
+    scout: /declares bash and write/,
+    oracle: /declares bash and a forked default context/,
+    "evidence-auditor": /declares the web tools/,
+    researcher: /declares write and the web tools/,
+    "claude-code": /runs an external CLI runner/,
+  };
+  for (const [agent, target] of Object.entries(mapping)) {
+    const input = { agent, task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` };
+    const before = structuredClone(input);
+    const check = inspectSubagentLaunch(input, providerState());
+    if (target === "refused") {
+      assert.equal(check.refusal?.code, "provider-profile", agent);
+      assert.deepEqual(input, before, `${agent} is refused without being rewritten`);
+      assert.deepEqual(check.corrections, [], agent);
+      assert.match(check.refusal?.message ?? "", /cannot run/, agent);
+      assert.match(check.refusal?.message ?? "", reasons[agent] ?? /external CLI runner/, agent);
+      continue;
+    }
+    assert.equal(check.refusal, undefined, agent);
+    assert.equal(input.agent, target, agent);
+    assert.deepEqual(check.corrections, [{ code: "provider-profile", applied: target }], agent);
+  }
+  // The reader profile keeps a read-only worker: no writing profile is ever applied to it.
+  const reviewer = {
+    agent: "reviewer",
+    task: "t",
+    model: `${REVIEWED_PROVIDER}/reviewed-model:high`,
+  };
+  const reviewCheck = inspectSubagentLaunch(reviewer, providerState());
+  assert.equal(reviewer.agent, READER_AGENT);
+  assert.notEqual(READER_AGENT, EXECUTION_AGENT);
+  assert.match(reviewCheck.note ?? "", new RegExp(`agent → "${READER_AGENT}"`));
+  // Naming that profile already is the idempotent case.
+  const conformant = {
+    agent: READER_AGENT,
+    task: "t",
+    model: `${REVIEWED_PROVIDER}/reviewed-model:high`,
+  };
+  const conformantCheck = inspectSubagentLaunch(conformant, providerState());
+  assert.equal(conformantCheck.refusal, undefined);
+  assert.deepEqual(conformantCheck.corrections, []);
+});
+
+// `subagentOnlyExtensions` is static frontmatter, so a packaged profile loads its package whatever
+// the model is. Naming one with another provider would load it unchecked and for nothing.
+test("a packaged profile named with another provider is refused, and its own provider is checked", () => {
+  for (const agent of [EXECUTION_AGENT, READER_AGENT]) {
+    const input = { agent, task: "t", model: "other/large-model:high" };
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, providerState());
+    assert.equal(refused.refusal?.code, "provider-profile", agent);
+    assert.match(
+      refused.refusal?.message ?? "",
+      new RegExp(`loads ${REVIEWED_PACKAGE_NAME}`),
+      agent,
+    );
+    assert.match(refused.refusal?.message ?? "", /is not from that provider/, agent);
+    assert.deepEqual(input, before, agent);
+
+    const accepted = { agent, task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` };
+    const check = inspectSubagentLaunch(accepted, providerState());
+    assert.equal(check.refusal, undefined, agent);
+    assert.deepEqual(check.corrections, [], agent);
+    assert.equal(accepted.agent, agent, agent);
+  }
+});
+
+// The Advisor profile that serves an admitted provider loads the same sibling, so its install is
+// checked at launch too: a consultation that cannot be served is refused as an Advisor error here
+// instead of failing inside the child after the brief has already been sent.
+test("the Advisor profile that loads the sibling is checked at launch like any other", async () => {
+  const adviceModel = { provider: REVIEWED_PROVIDER, model: "advice-from-extension" };
+  const adviceState = (intensity: "aggressive" | "off") => {
+    const current = providerState();
+    current.effective.intensity = intensity;
+    current.admissions = {
+      [REVIEWED_PROVIDER]: { package: REVIEWED_PACKAGE_NAME, version: "1.0.0" },
+    };
+    current.advisorEntries = [
+      {
+        index: 0,
+        setting: adviceModel,
+        status: { kind: "available", model: model(adviceModel) as never },
+        errors: [],
+      },
+    ];
+    return current;
+  };
+  const call = {
+    agent: PROVIDER_EXTENSION_ADVISOR_AGENT,
+    task: "q",
+    model: `${REVIEWED_PROVIDER}/advice-from-extension:high`,
+  };
+  // Both axes are exercised: with delegation off the Advisor is the only launch left, and it is the
+  // case where refusing for an uncomputed pair made a healthy consultation impossible.
+  for (const intensity of ["aggressive", "off"] as const) {
+    assert.equal(
+      inspectSubagentLaunch(structuredClone(call), adviceState(intensity)).refusal,
+      undefined,
+      `healthy Advisor with delegation ${intensity}`,
+    );
+  }
+
+  await rm(PROVIDER_MANAGED, { recursive: true, force: true });
+  try {
+    for (const intensity of ["aggressive", "off"] as const) {
+      const input = structuredClone(call);
+      const refused = inspectSubagentLaunch(input, adviceState(intensity));
+      assert.equal(refused.refusal?.code, "provider-profile", intensity);
+      assert.match(
+        refused.refusal?.message ?? "",
+        new RegExp(`the Advisor profile "${PROVIDER_EXTENSION_ADVISOR_AGENT}"`),
+        intensity,
+      );
+      assert.match(refused.refusal?.message ?? "", /cannot be confirmed/, intensity);
+      assert.doesNotMatch(
+        refused.refusal?.message ?? "",
+        /was not resolved in this session/,
+        `a refused Advisor names the package cause, not a missing check (${intensity})`,
+      );
+      assert.deepEqual(input, call, "the Advisor call is never rewritten");
+      assert.deepEqual(refused.corrections, [], intensity);
+    }
+  } finally {
+    await writeSiblingPackage(PROVIDER_AGENT_DIR);
+  }
+});
+
+// The host resolves aliases to a builtin itself, but a user agent may declare the same alias and this
+// policy cannot see which one the host would pick: an alias is refused with the canonical name.
+test("a builtin alias is refused with the canonical name to state", () => {
+  for (const [alias, canonical] of [
+    ["developer", "worker"],
+    ["coder", "worker"],
+    ["implementer", "worker"],
+    ["develop", "worker"],
+    ["advisor", "oracle"],
+  ] as const) {
+    const input = { agent: alias, task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` };
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, providerState());
+    assert.equal(refused.refusal?.code, "provider-profile", alias);
+    assert.match(refused.refusal?.message ?? "", /is an alias the host resolves to/, alias);
+    assert.ok(refused.refusal?.message.includes(`state agent "${canonical}"`), alias);
+    assert.deepEqual(input, before, alias);
+  }
+  // A native provider needs no profile, so the alias is left exactly as sent.
+  const native = { agent: "developer", task: "t", model: "other/large-model:high" };
+  const nativeCheck = inspectSubagentLaunch(native, providerState());
+  assert.equal(nativeCheck.refusal, undefined);
+  assert.deepEqual(nativeCheck.corrections, []);
+  assert.equal(native.agent, "developer");
+});
+
+// A read-only builtin that cannot fit either profile is told to stay read-only on a provider the
+// child loads before it is told how to become a writing child.
+test("a read-only builtin is offered the read-only way out first", () => {
+  for (const agent of ["oracle", "evidence-auditor"]) {
+    const refused = inspectSubagentLaunch(
+      { agent, task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` },
+      providerState(),
+    );
+    const message = refused.refusal?.message ?? "";
+    assert.match(
+      message,
+      /Keep that work on a model the child loads, which stays read-only/,
+      agent,
+    );
+    assert.ok(
+      message.indexOf("stays read-only") < message.indexOf(EXECUTION_AGENT),
+      `${agent} names the read-only way out before the writing profile`,
+    );
+  }
+});
+
+test("an agent of your own is never replaced and never refused for its provider", () => {
+  // The operator's agent declares its own extensions, so what it loads is its own decision: a
+  // provider this release has no profile for is that agent's business, not this policy's.
+  const unlisted = { provider: "unlisted-provider", model: "own-model" };
+  const active = state({ small: unlisted });
+  active.modelStatuses.set("small", { kind: "available", model: model(unlisted) as never });
+  active.extensionProviders = ["unlisted-provider"];
+  for (const agent of [USER_AGENT, "code-explorer"]) {
+    const input = { agent, task: "t", model: "unlisted-provider/own-model:high" };
+    const before = structuredClone(input);
+    const check = inspectSubagentLaunch(input, active);
+    assert.equal(check.refusal, undefined, agent);
+    assert.deepEqual(check.corrections, [], agent);
+    assert.deepEqual(input, before, agent);
+  }
+  // The same model through a builtin agent is refused, naming the provider and the hole.
+  const builtin = { agent: "worker", task: "t", model: "unlisted-provider/own-model:high" };
+  const refused = inspectSubagentLaunch(builtin, active);
+  assert.equal(refused.refusal?.code, "provider-profile");
+  assert.match(
+    refused.refusal?.message ?? "",
+    /provider "unlisted-provider" is supplied by an extension/,
+  );
+  assert.match(refused.refusal?.message ?? "", /ships no packaged profile for it/);
+  assert.match(
+    refused.refusal?.message ?? "",
+    /an agent of your own that loads "unlisted-provider"/,
+  );
+  assert.deepEqual(builtin, {
+    agent: "worker",
+    task: "t",
+    model: "unlisted-provider/own-model:high",
+  });
+});
+
+test("the sibling check runs at launch, so a package gone after validation is refused", async () => {
+  // Validation resolved this package once. Removing it afterwards is exactly the window between
+  // that answer and the child's own load, and the launch check has to close it.
+  assert.equal(inspectSubagentLaunch(extensionCall(), providerState()).refusal, undefined);
+  await rm(PROVIDER_MANAGED, { recursive: true, force: true });
+  try {
+    const input = extensionCall();
+    const before = structuredClone(input);
+    const refused = inspectSubagentLaunch(input, providerState());
+    assert.equal(refused.refusal?.code, "provider-profile");
+    assert.match(refused.refusal?.message ?? "", /cannot be confirmed as installed in/);
+    assert.match(refused.refusal?.message ?? "", /install it as a user package/);
+    assert.deepEqual(input, before, "a refused call is never rewritten");
+    assert.deepEqual(refused.corrections, []);
+  } finally {
+    await writeSiblingPackage(PROVIDER_AGENT_DIR);
+  }
+
+  // A profile whose sibling cannot be located at all, because the parent never recorded the pair,
+  // fails closed instead of passing.
+  const unresolved = inspectSubagentLaunch(
+    extensionCall(),
+    providerState({ cwd: undefined, packageRoot: undefined }),
+  );
+  assert.equal(unresolved.refusal?.code, "provider-profile");
+  assert.match(unresolved.refusal?.message ?? "", /was not resolved in this session/);
+  assert.match(unresolved.refusal?.message ?? "", /reload the session/);
+});
+
+test("block mode refuses the profile it would otherwise apply, and an Advisor keeps its own", () => {
+  const blocking = providerState();
+  blocking.launchCorrection = "block";
+  const input = extensionCall();
+  const before = structuredClone(input);
+  const refused = inspectSubagentLaunch(input, blocking);
+  assert.equal(refused.refusal?.code, "provider-profile");
+  assert.ok(refused.refusal?.message.includes(EXECUTION_AGENT));
+  assert.match(
+    refused.refusal?.message ?? "",
+    /the packaged profile that loads the provider serving/,
+  );
+  assert.deepEqual(input, before);
+  assert.deepEqual(refused.corrections, []);
+  assert.equal(refused.note, undefined);
+  // The exact profile is not a correction in block mode either: it is already what would run.
+  const conformant = inspectionOfBlockingProfile(blocking);
+  assert.equal(conformant.refusal, undefined);
+
+  // An Advisor child never becomes an execution child, whatever its provider.
+  const advisorModel = { provider: REVIEWED_PROVIDER, model: "advice-from-extension" };
+  const active = providerState();
+  active.advisorEntries = [
+    {
+      index: 0,
+      setting: advisorModel,
+      status: { kind: "available", model: model(advisorModel) as never },
+      errors: [],
+    },
+  ];
+  const advisorCall = {
+    agent: ADVISOR_AGENT_NAME,
+    task: "q",
+    model: `${REVIEWED_PROVIDER}/advice-from-extension:high`,
+  };
+  const advisorCheck = inspectSubagentLaunch(advisorCall, active);
+  assert.equal(advisorCheck.refusal, undefined);
+  assert.equal(advisorCall.agent, ADVISOR_AGENT_NAME);
+  assert.deepEqual(advisorCheck.corrections, []);
+});
+
+function inspectionOfBlockingProfile(blocking: RuntimeState) {
+  return inspectSubagentLaunch(
+    { agent: EXECUTION_AGENT, task: "t", model: `${REVIEWED_PROVIDER}/reviewed-model:high` },
+    blocking,
+  );
+}
+
+test("a model of no role, or a launch delegation does not check, keeps its own refusal", () => {
+  // The provider check runs after the model and role checks, so an unknown model still says so.
+  const unknown = inspectSubagentLaunch(
+    { agent: "worker", task: "t", model: `${REVIEWED_PROVIDER}/not-a-role-model:high` },
+    providerState(),
+  );
+  assert.equal(unknown.refusal?.code, "wrong-model");
+  assert.match(unknown.refusal?.message ?? "", /not the model of any enabled role/);
+
+  // With delegation off, an ordinary child is not this policy's to correct; the Advisor stays one.
+  const advisorOnly = providerState();
+  advisorOnly.effective.intensity = "off";
+  const untouched = extensionCall();
+  const before = structuredClone(untouched);
+  assert.equal(inspectSubagentLaunch(untouched, advisorOnly).refusal, undefined);
+  assert.deepEqual(untouched, before);
 });
 
 test("a reading Advisor is refused when the call asks the host to branch the session", () => {

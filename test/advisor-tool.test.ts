@@ -13,10 +13,9 @@ import {
   ANTHROPIC_ADVISOR_EXTENSION,
 } from "../src/advisor-anthropic-provider.ts";
 import {
-  PINNED_PACKAGE,
   PROVIDER_EXTENSION_ADVISOR_AGENT,
+  REVIEWED_PACKAGE,
 } from "../src/advisor-provider-extension.ts";
-import { packageSource } from "../src/provider-package.ts";
 import { AdvisorLog, ADVISOR_LOG_MAX_BYTES } from "../src/advisor-log.ts";
 import { GATE_HOLD_CHANGES, gateMessage } from "../src/advisor-gate.ts";
 import {
@@ -2272,9 +2271,19 @@ const PROVIDER_PROFILES = [
     providerExtension: "admitted" as const,
     agent: PROVIDER_EXTENSION_ADVISOR_AGENT,
     file: "../agents/pi-delegation-policy.advisor-provider-extension.md",
-    // The packaged profile pins the admitted package, so the host reports that source rather than
-    // an extension path of its own.
-    extension: packageSource(PINNED_PACKAGE),
+    // The profile names the installed sibling by a relative path, so the host reports the absolute
+    // path that resolves to, rather than a registry source.
+    // Composed here, not with the production helper: the host resolves the frontmatter entry against
+    // the profile file's directory, so the expected value is written as exactly that arithmetic.
+    extension: resolve(
+      dirname(
+        fileURLToPath(
+          new URL("../agents/pi-delegation-policy.advisor-provider-extension.md", import.meta.url),
+        ),
+      ),
+      "../..",
+      REVIEWED_PACKAGE.package,
+    ),
     provider: "example-provider",
   },
 ];

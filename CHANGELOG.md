@@ -1,5 +1,74 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A role whose model a provider extension serves now launches.** When the model of an ordinary or
+  optional role is served by an extension instead of a builtin provider, the launch check writes the
+  packaged profile that can load that extension, in every launch shape: a single child, `tasks`, a
+  `chain` step, a group inside a chain, and a parallel workflow whose model is the call's own. The
+  correction note names the profile applied, so the transcript and the child agree. For
+  `antigravity-acp` that is `pi-delegation-policy.execution-antigravity-acp`, which carries the
+  `worker` tool set and no `antigravity_acp_permission`, or
+  `pi-delegation-policy.reader-antigravity-acp`, which carries exactly the `reviewer` tool set and
+  `acceptanceRole: read-only`. Both load the provider package by the relative path that resolves to
+  the installed sibling.
+
+### Changed
+
+- **Each builtin keeps its declared tool surface, or the launch is refused.** One table maps the
+  canonical builtin name to a packaged profile: `worker`, `delegate` and a call with no agent run the
+  writing profile, `reviewer` runs the read-only one. `scout`, `oracle`, `evidence-auditor` and
+  `researcher` declare a tool no profile provides (`bash`, `write`, the web tools, or a forked default
+  context), so they are refused with the tools they need instead of being widened into a child with
+  `bash`, `edit` and `write` or quietly stripped of what they asked for, and the message offers
+  keeping that work on a model the child loads before it offers the writing profile. The six external
+  CLI wrappers are refused for the same reason: their `runner` is not a Pi child. A builtin alias
+  (`developer`, `coder`, `implementer`, `develop` for `worker`, `advisor` for `oracle`) is refused
+  with the canonical name to state, because the host resolves an alias through whichever agent
+  declares it and a user agent may declare the same one. A user or project agent is never replaced
+  and never refused: what it loads is its own declaration, and this policy cannot see it.
+- **Two properties of the mapping, stated exactly.** A `delegate` child runs the writing profile,
+  which declares `acceptanceRole: writer`, while `delegate` declares none and the host reads that as
+  the light attested level: the child accepts at the stricter `writer` level, which adds review, not
+  tools. A `reviewer` child runs the read-only profile, and a packaged profile replaces the system
+  prompt, so it uses that profile's prompt instead of the review methodology in `pi-subagents`' own
+  `reviewer` definition; its model and thinking still come from the role.
+- **`subagents.agentOverrides` keyed on a replaced builtin stops applying to that launch.** A launch
+  that named `worker`, `delegate` or `reviewer` now runs a packaged profile, so copy the override
+  under the profile name to keep the extra tools and skills. For `reviewer`, copy it to the read-only
+  profile, never to the writing one.
+- **The Advisor profile that loads a provider extension no longer fixes a version.** It names the
+  installed package (`../../pi-antigravity-acp-provider`) instead of `npm:pi-antigravity-acp-provider@0.1.22`,
+  so updating that package needs no release of this one. The parent checks the managed install
+  (`<agentDir>/npm/node_modules/<package>`), the package name, an unlinked directory with exactly one
+  extension entry inside it, and that your settings list the package; it does not compare the
+  version or the content. An admission records the package you selected, and its version is no longer
+  an expectation.
+
+### Security
+
+- **What runs in an execution child, and what does not.** The provider package runs there as trusted
+  host code with the child's permissions: it can read files, use the network and reach its own
+  accounts, and it is not a sandbox. Its `antigravity_acp_permission` tool stays outside the tool
+  allowlist, and `extensions:` is empty so no ambient extension reaches the child. Antigravity keeps
+  native tools that Pi cannot see or gate, whichever Pi tool list the profile has.
+- **Five new refusals, all before anything launches.** A model whose provider an extension registered
+  and no packaged profile serves is refused with the provider id and the two ways out. A builtin whose
+  declared tools fit no packaged profile is refused with the tools it needs. A packaged profile named
+  with a model from another provider is refused, because the package it loads is static frontmatter
+  and would be loaded without the model needing it. A builtin alias is refused with the canonical
+  name to state. And a reviewed provider whose sibling package the parent cannot confirm is refused
+  with the cause it found. A user agent naming such a model is
+  neither replaced nor refused, because loading that provider is what its own profile declares.
+- **The sibling check now runs at launch, for every packaged profile, and its remaining race is
+  declared.** It reads package metadata again on every launch that loads one of them, the Advisor
+  profile that serves an admitted provider included, so a package removed, replaced or re-linked
+  after session validation is refused instead of loaded, and a consultation refused there is an
+  Advisor error rather than a failure inside the child. The child still loads the package after the
+  check returns, so a change inside that interval is not seen; SECURITY.md and the wiki say so.
+
 ## 0.36.0 - 2026-11-27
 
 ### Added

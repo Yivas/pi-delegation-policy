@@ -1,5 +1,5 @@
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
-import { isPinnedAdmission, PINNED_PACKAGE } from "./advisor-provider-extension.ts";
+import { isPackagedAdmission, REVIEWED_PACKAGE } from "./advisor-provider-extension.ts";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
@@ -382,7 +382,7 @@ const PROVIDER_DESCRIPTION =
 
 const EXTENSION_STANDARD = "Standard profile (no provider extension)";
 function extensionDescription(provider: string): string {
-  return `An Advisor child loads no extension of its own, so a ${provider} model that an extension supplies only works once you admit that extension here. The admitted package runs as trusted code in every ${provider} Advisor, in every session, and only its installed identity is checked, in this session. The packaged profile pins one package: ${PINNED_PACKAGE.package} ${PINNED_PACKAGE.version}. Admitting a different one reports that Advisor as an error instead of serving it. Apply and Save both store this choice globally; Standard removes it.`;
+  return `An Advisor child loads no extension of its own, so a ${provider} model that an extension supplies only works once you admit that extension here. The admitted package runs as trusted code in every ${provider} Advisor, in every session, and only its installed identity is checked, in this session. One packaged profile loads one package, ${REVIEWED_PACKAGE.package}, and nothing compares its version: updating that package needs no release of this extension. Admitting a different one reports that Advisor as an error instead of serving it. Apply and Save both store this choice globally; Standard removes it.`;
 }
 
 const FIELD_LABELS: Record<DelegateField, string> = {
@@ -1852,9 +1852,9 @@ export class DelegatePanel implements Component, Focusable {
         !pkg
           ? EXTENSION_STANDARD
           : this.extensionCandidates.includes(pkg)
-            ? isPinnedAdmission(pkg)
+            ? isPackagedAdmission(pkg)
               ? `${pkg.package} ${pkg.version} · trusted extension, identity only`
-              : `${pkg.package} ${pkg.version} · not served by the pinned profile`
+              : `${pkg.package} ${pkg.version} · no packaged profile serves it`
             : `${pkg.package} ${pkg.version} · no longer installed as admitted`,
         width,
         index === mode.selected,

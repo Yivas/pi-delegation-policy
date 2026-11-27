@@ -1,6 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { locateAdvisorAnthropicProvider } from "./advisor-anthropic-provider.ts";
-import { isPinnedAdmission, PINNED_PACKAGE } from "./advisor-provider-extension.ts";
+import {
+  isPackagedAdmission,
+  KNOWN_TOOL_SURFACE,
+  REVIEWED_PACKAGE,
+} from "./advisor-provider-extension.ts";
 import { advisorAgentName } from "./advisor-executor.ts";
 import {
   admissionFor,
@@ -9,7 +13,7 @@ import {
   readProviderAdmissions,
   RESERVED_PROVIDER,
 } from "./provider-admissions.ts";
-import { locateInstalledPackage } from "./provider-package.ts";
+import { locateSiblingPackage, PACKAGE_ROOT } from "./provider-package.ts";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import {
   getGlobalConfigPath,
@@ -115,6 +119,15 @@ export type RuntimeState = {
     status: ModelStatus;
     errors: string[];
   }>;
+  /** Provider ids an extension registered in this session. The registry names no package. */
+  extensionProviders?: readonly string[];
+  /**
+   * The working directory and the running package root the launch check repeats the sibling check
+   * with, at launch time, so a package removed or replaced after validation is refused instead of
+   * loaded.
+   */
+  cwd?: string;
+  packageRoot?: string;
 };
 
 /**
@@ -449,6 +462,12 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
       state.advisorErrors.push(...errors);
     }
   }
+  // A packaged profile can be launched as soon as either axis is on: an ordinary child needs
+  // delegation, and the Advisor profile that serves an admitted provider needs only an enabled
+  // Advisor, which survives delegation being off. The directory pair and the registered providers are
+  // therefore resolved before either early return, or a healthy consultation would be refused for a
+  // check the session never ran.
+  resolveProviderProfiles(ctx, state);
   if (state.effective.intensity === "off") return;
   for (const role of MODEL_ROLES) {
     const setting = state.effective[role];
@@ -506,8 +525,33 @@ export function validateRuntime(ctx: ExtensionContext, state: RuntimeState): voi
 }
 
 /**
- * An admitted package must pass the identity check the parent applies, and name the package the
- * packaged profile pins. The child does not repeat the check, so a failure here leaves the Advisor
+ * The provider ids an extension registered in this session, and the directory pair the launch check
+ * needs to repeat the sibling check at launch time. The warning below is only a warning: a reviewed
+ * provider whose package is not installed where the profile resolves it must not invalidate the
+ * delegation axis, and the launch that needs it is refused with the cause when it happens.
+ */
+function resolveProviderProfiles(ctx: ExtensionContext, state: RuntimeState): void {
+  state.cwd = ctx.cwd;
+  state.packageRoot = PACKAGE_ROOT;
+  state.extensionProviders = [...(ctx.modelRegistry?.getRegisteredProviderIds?.() ?? [])];
+  for (const reviewed of KNOWN_TOOL_SURFACE) {
+    const located = locateSiblingPackage(ctx.cwd, PACKAGE_ROOT, reviewed.package, {
+      configured: true,
+    });
+    if (located.ok) continue;
+    const roles = [...MODEL_ROLES, ...OPTIONAL_ROLE_ENTRY_KEYS]
+      .filter((key) => state.effective[key]?.provider === reviewed.provider)
+      .map((key) => ROLE_LABELS[key]);
+    if (roles.length)
+      (state.roleWarnings ??= []).push(
+        `${roles.join(", ")}: provider "${reviewed.provider}" needs ${reviewed.package} where the packaged profile resolves it: ${located.message}.`,
+      );
+  }
+}
+
+/**
+ * An admitted package must pass the identity check the parent applies, and name the package a
+ * packaged profile loads. The child does not repeat the check, so a failure here leaves the Advisor
  * out instead of launching a profile that cannot serve it. Without an admission, a provider that an
  * extension replaced natively in this session runs as a different implementation in the child,
  * which loads no extension. That is only a warning: the built-in provider may still answer with its
@@ -522,22 +566,19 @@ function providerExtensionCheck(
 ): { kind: "error" | "warning"; message: string } | undefined {
   const pkg = admissionFor(admissions, setting.provider);
   if (pkg) {
-    // Two states reach this point with different remedies: a version of the pinned package that was
-    // never reviewed, and a second package the single packaged profile cannot load. Each message
-    // offers only what actually resolves its own state.
-    if (!isPinnedAdmission(pkg))
+    // The reviewed profile loads one package; a second admitted package needs its own profile and
+    // its own review, so naming it is an error rather than a silent route to the ordinary profile.
+    if (!isPackagedAdmission(pkg))
       return {
         kind: "error",
-        message:
-          pkg.package === PINNED_PACKAGE.package
-            ? `${label} provider extension ${pkg.package} ${pkg.version} cannot be served: this pi-delegation-policy release serves only ${PINNED_PACKAGE.package} ${PINNED_PACKAGE.version} in the packaged profile. Install that version and select the provider extension again in /delegate so the admission records it, or update pi-delegation-policy to a release that reviews ${pkg.version}.`
-            : `${label} provider extension ${pkg.package} ${pkg.version} cannot be served: the packaged profile pins ${PINNED_PACKAGE.package} ${PINNED_PACKAGE.version}, and a second package needs its own profile and its own review. Use an Advisor whose provider needs no extension, or wait for a pi-delegation-policy release that adds a profile for ${pkg.package}.`,
+        message: `${label} provider extension ${pkg.package} cannot be served: this release ships one packaged provider profile, and it loads ${REVIEWED_PACKAGE.package}, so a second package needs its own profile and its own review. Use an Advisor whose provider needs no extension, or wait for a pi-delegation-policy release that adds a profile for ${pkg.package}.`,
       };
-    return locateInstalledPackage(ctx.cwd, pkg, { configured: true }).ok
+    const located = locateSiblingPackage(ctx.cwd, PACKAGE_ROOT, pkg.package, { configured: true });
+    return located.ok
       ? undefined
       : {
           kind: "error",
-          message: `${label} provider extension ${pkg.package} ${pkg.version} is no longer installed and configured as admitted; install that exact version, then re-select the provider extension in /delegate.`,
+          message: `${label} provider extension ${pkg.package} cannot be loaded: ${located.message}.`,
         };
   }
   if (setting.provider === RESERVED_PROVIDER) return undefined;

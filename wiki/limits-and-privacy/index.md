@@ -28,7 +28,7 @@ client; the executor performs model calls. A content-free local log is described
 ### Launch check
 
 While delegation is active, or while an Advisor is enabled, the extension checks a `subagent` call
-before anything launches. It corrects the three cases that are unambiguous instead of refusing them
+before anything launches. It corrects the four cases that are unambiguous instead of refusing them
 by default (the global row can still be set to `block`, which refuses every call it would otherwise
 correct):
 
@@ -38,7 +38,12 @@ correct):
 - a role's exact model with no `:LEVEL` gains one: the role's fixed level, the lowest supported level
   inside its range, or `medium` clamped to what the model supports when it has no policy;
 - a child whose model is exactly one configured Advisor's runs with that Advisor's profile, whatever
-  profile it named or omitted.
+  profile it named or omitted;
+- a child whose model a provider extension serves runs the packaged profile that loads that
+  extension, when the call named no agent or a builtin whose declared tools fit one: `worker` and
+  `delegate` get the writing profile, `reviewer` gets the read-only one, which replaces the builtin's
+  own prompt. A user or project agent is never replaced: what it loads is its own declaration, which
+  this policy cannot see. A builtin alias is refused with the canonical name to state.
 
 The correction is written into the call the host already validated, so it changes what executes; the
 stored transcript keeps what the model sent. The extension then appends a note to that call's tool
@@ -46,6 +51,17 @@ result saying what it applied, so the agent sees the difference. Corrections app
 shared top-level `model` once; a call whose children would resolve differently, or whose model fits
 more than one role or Advisor, is refused instead of guessed.
 
+Four provider states are refused instead, in both modes. Two are provable before anything runs: a
+model whose provider an extension registered in this session and for which no packaged profile
+exists, which names the provider and the two ways out, and a builtin agent whose declared tools fit
+no packaged profile (`scout`, `oracle`, `evidence-auditor`, `researcher`, and the external CLI
+wrappers), which names the tools it needs and offers keeping that work on a provider the child loads
+before it offers the writing profile; a builtin alias is refused the same way, with the canonical
+name to state. The third is the reviewed package itself: the parent resolves it at launch, including
+for the Advisor profile that serves an admitted provider, and refuses when it cannot confirm the
+managed install, an unlinked directory with one entry, and the package listed in your settings. The
+fourth is a packaged profile named with a model from another provider, since the package it loads is
+static frontmatter.
 Everything else is refused as before: a child with no model, a model that is not the exact model of
 an enabled role, a thinking level or Advisor profile it cannot settle, or an Advisor profile with a
 model that is not that Advisor's. Parallel tasks and chain steps are checked one by one, and one
@@ -280,8 +296,32 @@ An [admitted provider extension](/configuration/#admitted-provider-extensions) w
 any other provider, with a weaker check: only its installed identity and listed user source are
 verified, and only in the parent. The child does not revalidate the package, because it has to load
 it to resolve the model at all. Once the host loads it, it is trusted host code with your files,
-network and its own accounts. The admission applies to every session, and the packaged profile pins
+network and its own accounts. The admission applies to every session, and each packaged profile names
 one package, so a second one needs its own profile and its own review.
+
+### The execution child of a provider extension {#execution-child}
+
+When an ordinary or optional role runs on a model a provider extension serves, the launch check
+writes the packaged execution profile that loads that package
+([configuration](/configuration/#execution-profiles)). That child has tools, unlike an Advisor child,
+or the packaged read-only profile when the builtin it replaced was read-only, and what it can
+actually do was measured on 2026-11-27 against `pi-antigravity-acp-provider` `0.1.22`:
+
+- **Pi tools go through the provider's MCP bridge.** The provider starts a loopback `pi-bridge` MCP
+  server and Antigravity calls the child's Pi tools through it. Those calls only complete while the
+  provider's permission mode does not ask. With an asking mode the provider turns the request into its
+  own permission tool, and a headless child cannot answer it, so every tool comes back denied. The
+  mode that does not ask is `/antigravity-acp permissions yolo`, and it applies to the whole Pi agent
+  directory, parent and every child alike.
+- **A PreToolUse hook that asks has the same effect.** Antigravity's own pre-tool hook layer can return
+  an ask before the bridge call is ever made. Nothing in a child can answer it, so every tool is denied
+  while that hook matches.
+- **Antigravity keeps native tools that Pi cannot see.** Tools such as `view_file` run in
+  Antigravity's own loop, bypass Pi's tool list and Pi's permission system, and cannot be disabled from
+  Pi. That includes the Advisor child whose Pi tool list is empty, and the ContextShunt reader.
+
+So the execution profile bounds what Pi hands to the model. It does not bound what Antigravity does on
+its own, and the package is trusted host code rather than a sandbox.
 
 ### Local content-free log
 

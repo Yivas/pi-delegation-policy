@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   KNOWN_TOOL_SURFACE,
-  PINNED_PACKAGE,
-  isPinnedAdmission,
+  PACKAGED_PROFILES,
+  REVIEWED_PACKAGE,
+  isPackagedAdmission,
 } from "../src/advisor-provider-extension.ts";
 import { advisorAgentName } from "../src/advisor-executor.ts";
 import { getGlobalConfigPath } from "../src/config.ts";
@@ -19,9 +20,11 @@ import {
   writeProviderAdmissions,
 } from "../src/provider-admissions.ts";
 import {
-  isProviderPackage,
+  locateSiblingPackage,
   listProviderExtensionCandidates,
-  packageSource,
+  PACKAGE_ROOT,
+  siblingExtensionEntry,
+  siblingExtensionPath,
 } from "../src/provider-package.ts";
 import { resolveDelegateState } from "../src/config.ts";
 import { validateRuntime, type RuntimeState } from "../src/runtime.ts";
@@ -29,11 +32,6 @@ import { CURRENT_SCHEMA_VERSION, type GlobalDefaults } from "../src/types.ts";
 
 const PACKAGE = "synthetic-go-provider";
 const VERSION = "1.0.0";
-
-// The pinned version with its last number raised: a valid exact version this release never reviewed.
-const UNREVIEWED_VERSION = PINNED_PACKAGE.version.replace(/(\d+)(?=[-+]|$)/, (number) =>
-  String(Number(number) + 1),
-);
 
 // The candidate check reads only the manifest, the pinned user source and one entry file inside the
 // package, so the entry has to exist but does not have to do anything.
@@ -121,13 +119,21 @@ function routeAndReport(): void {
     advisorLaunch: "role",
   };
   const admissions = {
-    "example-provider": { package: PINNED_PACKAGE.package, version: PINNED_PACKAGE.version },
+    "example-provider": { package: REVIEWED_PACKAGE.package, version: "0.0.1" },
   };
   assert.equal(
     advisorAgentName(advisors[0]!, admissions),
     "pi-delegation-policy.advisor-provider-extension",
   );
-  // The packaged profile pins one package, so an admission naming another one must not route to it.
+  // The version an admission records is not compared: the profile loads the installed package, so a
+  // version this release never saw still routes.
+  assert.equal(
+    advisorAgentName(advisors[0]!, {
+      "example-provider": { package: REVIEWED_PACKAGE.package, version: "99.0.0" },
+    }),
+    "pi-delegation-policy.advisor-provider-extension",
+  );
+  // One packaged profile loads one package, so an admission naming another one must not route to it.
   assert.equal(
     advisorAgentName(advisors[0]!, {
       "example-provider": { package: PACKAGE, version: VERSION },
@@ -157,6 +163,7 @@ function routeAndReport(): void {
           models.find((model) => model.provider === provider && model.id === id),
         getAvailable: () => models,
         hasConfiguredAuth: () => true,
+        getRegisteredProviderIds: () => natives,
         getRegisteredNativeProvider: (provider: string) =>
           natives.includes(provider) ? { id: provider } : undefined,
       },
@@ -178,36 +185,33 @@ function routeAndReport(): void {
   assert.match(unadmitted.advisorWarnings?.[0] ?? "", /replaced by an extension in this session/);
   assert.deepEqual(unadmitted.advisorEntries?.[1]?.errors, []);
 
-  // An admitted package that is no longer installed is reported before any launch.
-  const missing = state(admissions);
-  validateRuntime(context(["example-provider"]), missing);
-  const missingMessage = missing.advisorEntries?.[0]?.errors[0] ?? "";
-  assert.match(missingMessage, /re-select the provider extension/);
-  assert.match(missingMessage, /install that exact version/);
+  // This package runs from a checkout here, so the profile's relative entry does not reach the
+  // managed install: the cause and the remedy are both named before any launch.
+  const notManaged = state(admissions);
+  validateRuntime(context(["example-provider"]), notManaged);
+  const notManagedMessage = notManaged.advisorEntries?.[0]?.errors[0] ?? "";
+  assert.match(notManagedMessage, /cannot be loaded/);
+  assert.match(notManagedMessage, /cannot be confirmed as Pi's managed user package/);
+  assert.match(notManagedMessage, /install it as a user package/);
+  assert.ok(notManagedMessage.includes(REVIEWED_PACKAGE.package));
+  assert.doesNotMatch(notManagedMessage, /needs its own profile/);
+  // These settings have delegation off and the Advisor on, and the launch check needs this pair then
+  // too: an enabled Advisor can launch the profile that loads the sibling. Resolving it only after the
+  // delegation-off return would refuse a healthy consultation for a check the session never ran.
+  assert.equal(notManaged.cwd, tmpdir());
+  assert.equal(notManaged.packageRoot, PACKAGE_ROOT);
+  assert.deepEqual(notManaged.extensionProviders, ["example-provider"]);
 
-  // A version of the pinned package this release never reviewed and a second admitted package are
-  // different states, and each message offers only what resolves its own state.
-  const unreviewed = state({
-    "example-provider": { package: PINNED_PACKAGE.package, version: UNREVIEWED_VERSION },
-  });
-  validateRuntime(context(["example-provider"]), unreviewed);
-  const unreviewedMessage = unreviewed.advisorEntries?.[0]?.errors[0] ?? "";
-  assert.match(unreviewedMessage, /cannot be served/);
-  assert.ok(unreviewedMessage.includes(UNREVIEWED_VERSION));
-  assert.ok(unreviewedMessage.includes(PINNED_PACKAGE.version));
-  assert.match(unreviewedMessage, /select the provider extension again/);
-  assert.doesNotMatch(unreviewedMessage, /needs its own profile/);
-
-  // The packaged profile pins one package, so an admission naming another one is an error, not a
+  // One packaged profile loads one package, so an admission naming another one is an error, not a
   // silent route to the ordinary profile, and selecting it cannot serve it.
   const foreign = state({ "example-provider": { package: PACKAGE, version: VERSION } });
   validateRuntime(context(["example-provider"]), foreign);
   const foreignMessage = foreign.advisorEntries?.[0]?.errors[0] ?? "";
   assert.match(foreignMessage, /cannot be served/);
-  assert.ok(foreignMessage.includes(`${PACKAGE} ${VERSION}`));
+  assert.ok(foreignMessage.includes(PACKAGE));
   assert.match(foreignMessage, /needs its own profile/);
   assert.match(foreignMessage, /provider needs no extension/);
-  assert.doesNotMatch(foreignMessage, /select the provider extension again/);
+  assert.doesNotMatch(foreignMessage, /install it as a user package/);
 
   const unaffected = state({});
   validateRuntime(context([]), unaffected);
@@ -335,41 +339,240 @@ test("the provider-extension step admits, removes and discards only through the 
   assert.ok(!withoutStep.render(80).some((line) => line.startsWith("> Standard profile")));
 });
 
-// The child resolves its model and provider before any extension `session_start` runs, so the host
-// loads the admitted package and the profile pins it. The empty `extensions:` key is what turns
-// ambient extensions off, and no extension path of its own may come back.
-test("the packaged profile pins the reviewed provider package the host loads", async () => {
-  const profile = (
-    await readFile(
-      join(process.cwd(), "agents", "pi-delegation-policy.advisor-provider-extension.md"),
-      "utf8",
-    )
-  ).replace(/\r\n/g, "\n");
+async function frontmatterOf(...segments: string[]): Promise<string> {
+  const profile = (await readFile(join(process.cwd(), ...segments), "utf8")).replace(/\r\n/g, "\n");
   const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(profile)?.[1];
-  assert.ok(frontmatter, "provider extension profile must have frontmatter");
-  assert.match(frontmatter, /^extensions:\nsubagentOnlyExtensions: npm:\S+@\S+$/m);
-  assert.equal(
-    frontmatter.match(/^subagentOnlyExtensions:(.*)$/m)?.[1]?.trim(),
-    packageSource(PINNED_PACKAGE),
+  assert.ok(frontmatter, `${segments.join("/")} must have frontmatter`);
+  return frontmatter;
+}
+
+// The child resolves its model and provider before any extension `session_start` runs, so the host
+// loads the reviewed package and the profile names it. The empty `extensions:` key is what turns
+// ambient extensions off, and no extension path of its own may come back.
+test("the packaged profiles name the installed sibling, by the path the host resolves", async () => {
+  for (const [file, tools] of [
+    ["pi-delegation-policy.advisor-provider-extension.md", /^tools:$/m],
+    [
+      "pi-delegation-policy.execution-antigravity-acp.md",
+      /^tools: read, grep, find, ls, bash, edit, write, contact_supervisor$/m,
+    ],
+    // The read-only profile: exactly what `reviewer` declares, and no writing or shell tool.
+    [
+      "pi-delegation-policy.reader-antigravity-acp.md",
+      /^tools: read, grep, find, ls, watchdog_diff, contact_supervisor$/m,
+    ],
+  ] as const) {
+    const frontmatter = await frontmatterOf("agents", file);
+    assert.match(frontmatter, /^extensions:\nsubagentOnlyExtensions: \.\.\/\.[^\n]*$/m, file);
+    assert.equal(
+      frontmatter.match(/^subagentOnlyExtensions:(.*)$/m)?.[1]?.trim(),
+      siblingExtensionEntry(REVIEWED_PACKAGE.package),
+      file,
+    );
+    // A registry source would install a copy instead of loading the installed package, and an
+    // absolute path would name one machine.
+    assert.doesNotMatch(frontmatter, /^subagentOnlyExtensions:\s*npm:/m, file);
+    assert.match(frontmatter, tools, file);
+  }
+  // The permission tool the package registers must stay out of the allowlist the model sees, and the
+  // read-only profile may not gain a writing or shell tool either.
+  for (const file of [
+    "pi-delegation-policy.execution-antigravity-acp.md",
+    "pi-delegation-policy.reader-antigravity-acp.md",
+  ]) {
+    const frontmatter = await frontmatterOf("agents", file);
+    assert.doesNotMatch(frontmatter, new RegExp(REVIEWED_PACKAGE.tool), file);
+  }
+  const reader = await frontmatterOf("agents", "pi-delegation-policy.reader-antigravity-acp.md");
+  assert.match(reader, /^acceptanceRole: read-only$/m);
+  assert.doesNotMatch(reader, /^tools:.*\b(bash|edit|write)\b/m);
+  const execution = await frontmatterOf(
+    "agents",
+    "pi-delegation-policy.execution-antigravity-acp.md",
   );
-  assert.match(frontmatter, /^tools:$/m);
-  // A static profile can pin one package, so the reviewed exception has to stay a single one.
+  assert.match(execution, /^acceptanceRole: writer$/m);
+  // A static profile names one package, so the reviewed exception has to stay a single one.
   assert.equal(KNOWN_TOOL_SURFACE.length, 1);
+  assert.equal(KNOWN_TOOL_SURFACE[0].provider, "antigravity-acp");
+  assert.equal(
+    KNOWN_TOOL_SURFACE[0].executionAgent,
+    "pi-delegation-policy.execution-antigravity-acp",
+  );
+  assert.equal(KNOWN_TOOL_SURFACE[0].readerAgent, "pi-delegation-policy.reader-antigravity-acp");
+  assert.deepEqual(
+    PACKAGED_PROFILES.map((profile) => profile.kind),
+    ["execution", "reader"],
+  );
 });
 
-// The pin compares package and version exactly, so an admission this release did not review stays
-// unreviewed even when the other half matches.
-test("an admission naming another package or version is not the pinned admission", () => {
-  // A derived version that is not a valid exact version would make the case below vacuous.
-  assert.ok(isProviderPackage({ package: PINNED_PACKAGE.package, version: UNREVIEWED_VERSION }));
-  assert.notEqual(UNREVIEWED_VERSION, PINNED_PACKAGE.version);
+// A fixed path with a fixed expected value: the arithmetic is asserted, not rebuilt with the
+// production helper, so a wrong number of `..` segments fails here. The agent file always sits in
+// `<package>/agents`, so `../..` necessarily lands in the directory the package is installed in.
+test("the sibling path is the installed package two levels above the profile file", () => {
+  const modules = resolve(tmpdir(), "agentdir", "npm", "node_modules");
+  const agentPath = join(modules, "pi-delegation-policy", "agents", "profile.md");
   assert.equal(
-    isPinnedAdmission({ package: PINNED_PACKAGE.package, version: PINNED_PACKAGE.version }),
+    siblingExtensionPath(agentPath, REVIEWED_PACKAGE.package),
+    join(modules, REVIEWED_PACKAGE.package),
+  );
+  // One level up would be the plugin's own directory, which is what a wrong depth would return.
+  assert.notEqual(
+    siblingExtensionPath(agentPath, REVIEWED_PACKAGE.package),
+    join(modules, "pi-delegation-policy", REVIEWED_PACKAGE.package),
+  );
+});
+
+// The admission selects the package the review covered, not a version: that is what keeps a
+// provider update from needing a release of this one.
+test("an admission selects the reviewed package whatever version it records", () => {
+  assert.equal(isPackagedAdmission({ package: REVIEWED_PACKAGE.package, version: "0.0.1" }), true);
+  assert.equal(
+    isPackagedAdmission({ package: REVIEWED_PACKAGE.package, version: "99.0.0-beta.1" }),
     true,
   );
-  assert.equal(
-    isPinnedAdmission({ package: PINNED_PACKAGE.package, version: UNREVIEWED_VERSION }),
-    false,
-  );
-  assert.equal(isPinnedAdmission({ package: PACKAGE, version: PINNED_PACKAGE.version }), false);
+  assert.equal(isPackagedAdmission({ package: PACKAGE, version: "1.0.0" }), false);
+});
+
+// The parent checks the installed sibling itself, because the child cannot: it loads the package
+// before it could inspect anything. Each cause has its own remedy, so each one is exercised.
+test("the sibling check accepts one installed, unlinked, configured package and names each cause", async () => {
+  await withAgentDirectory("advisor-sibling-", async (directory) => {
+    const modules = join(directory, "npm", "node_modules");
+    const managed = join(modules, REVIEWED_PACKAGE.package);
+    const pluginRoot = join(modules, "pi-delegation-policy");
+    const install = async (
+      options: {
+        entries?: unknown;
+        name?: string;
+        packages?: string[];
+      } = {},
+    ) => {
+      await rm(managed, { recursive: true, force: true });
+      await mkdir(join(pluginRoot, "agents"), { recursive: true });
+      await mkdir(managed, { recursive: true });
+      await writeFile(
+        join(managed, "package.json"),
+        JSON.stringify({
+          name: options.name ?? REVIEWED_PACKAGE.package,
+          version: "9.9.9",
+          pi: { extensions: options.entries ?? ["./index.js"] },
+        }),
+      );
+      await writeFile(join(managed, "index.js"), syntheticSource);
+      await writeFile(
+        join(directory, "settings.json"),
+        JSON.stringify({ packages: options.packages ?? [`npm:${REVIEWED_PACKAGE.package}@1.0.0`] }),
+      );
+    };
+    const check = (root = pluginRoot) =>
+      locateSiblingPackage(directory, root, REVIEWED_PACKAGE.package, { configured: true });
+
+    // The manifest declares 9.9.9 while the settings list 1.0.0 and no version is compared.
+    await install();
+    const valid = check();
+    assert.equal(valid.ok, true);
+    assert.equal(valid.ok && valid.entry, resolve(managed, "index.js"));
+
+    // A package Pi never installed is told to install it.
+    await rm(managed, { recursive: true, force: true });
+    const missing = check();
+    assert.equal(missing.ok, false);
+    assert.match(missing.ok ? "" : missing.message, /cannot be confirmed as installed in/);
+    assert.match(missing.ok ? "" : missing.message, /install it as a user package/);
+
+    // A checkout, a project install or git resolves `../..` somewhere else entirely.
+    await install();
+    const elsewhere = check(join(directory, "elsewhere", "pi-delegation-policy"));
+    assert.equal(elsewhere.ok, false);
+    assert.match(
+      elsewhere.ok ? "" : elsewhere.message,
+      /cannot be confirmed as Pi's managed user package/,
+    );
+    assert.match(elsewhere.ok ? "" : elsewhere.message, /install it as a user package/);
+
+    // A link is not the installed package.
+    await rm(managed, { recursive: true, force: true });
+    await mkdir(join(directory, "linked"), { recursive: true });
+    await writeFile(
+      join(directory, "linked", "package.json"),
+      JSON.stringify({
+        name: REVIEWED_PACKAGE.package,
+        version: "9.9.9",
+        pi: { extensions: ["./index.js"] },
+      }),
+    );
+    await writeFile(join(directory, "linked", "index.js"), syntheticSource);
+    await symlink(join(directory, "linked"), managed, "junction");
+    const linked = check();
+    assert.equal(linked.ok, false);
+    assert.match(linked.ok ? "" : linked.message, /resolves through a link/);
+
+    // A manifest that does not say what it is, or that declares two entries, cannot be loaded.
+    await install({ name: "another-package" });
+    const renamed = check();
+    assert.equal(renamed.ok, false);
+    assert.match(renamed.ok ? "" : renamed.message, /reports another name/);
+
+    await install({ entries: ["./index.js", "./second.js"] });
+    const twoEntries = check();
+    assert.equal(twoEntries.ok, false);
+    assert.match(twoEntries.ok ? "" : twoEntries.message, /exactly one extension entry/);
+
+    // An entry inside the package is required: a parent-relative one loads code from elsewhere.
+    await install({ entries: ["../escape.js"] });
+    const escape = check();
+    assert.equal(escape.ok, false);
+    assert.match(escape.ok ? "" : escape.message, /outside its own directory/);
+
+    // Only code the user configured may run in the child.
+    await install({ packages: [] });
+    const unconfigured = check();
+    assert.equal(unconfigured.ok, false);
+    assert.match(unconfigured.ok ? "" : unconfigured.message, /do not list it/);
+  });
+});
+
+// The agent directory and the package directory are compared as the filesystem sees them, so a
+// differently capitalised path is the same install on Windows and a different one on Linux. Both
+// branches are asserted, so the case-folding decision is exercised on every platform.
+test("the agent directory compares as the filesystem does, not as the string reads", async () => {
+  await withAgentDirectory("advisor-sibling-case-", async (directory) => {
+    const modules = join(directory, "npm", "node_modules");
+    const pluginRoot = join(modules, "pi-delegation-policy");
+    const managed = join(modules, REVIEWED_PACKAGE.package);
+    await mkdir(managed, { recursive: true });
+    await writeFile(
+      join(managed, "package.json"),
+      JSON.stringify({
+        name: REVIEWED_PACKAGE.package,
+        version: "9.9.9",
+        pi: { extensions: ["./index.js"] },
+      }),
+    );
+    await writeFile(join(managed, "index.js"), syntheticSource);
+    await writeFile(
+      join(directory, "settings.json"),
+      JSON.stringify({ packages: [`npm:${REVIEWED_PACKAGE.package}@1.0.0`] }),
+    );
+    assert.equal(locateSiblingPackage(directory, pluginRoot, REVIEWED_PACKAGE.package).ok, true);
+    // The same directory, upper-cased: Windows resolves it, so the check must accept it.
+    assert.equal(
+      locateSiblingPackage(
+        directory,
+        pluginRoot.toUpperCase(),
+        REVIEWED_PACKAGE.package.toUpperCase(),
+      ).ok,
+      false,
+      "an upper-cased package name is not that package name",
+    );
+    const casedRoot = locateSiblingPackage(
+      join(directory, "npm", "node_modules", "pi-delegation-policy"),
+      join(modules.toUpperCase(), "pi-delegation-policy"),
+      REVIEWED_PACKAGE.package,
+    );
+    if (process.platform === "win32")
+      assert.equal(casedRoot.ok, true, "an upper-cased managed root is the same root on Windows");
+    else
+      assert.equal(casedRoot.ok, false, "a differently cased root is another directory on Linux");
+  });
 });

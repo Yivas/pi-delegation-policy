@@ -109,6 +109,33 @@ REQUEST API cannot prove that the live executor session is the same, so a termin
 rejected only after the context has been sent. The executor and runtime are trusted host code, and
 digests are not signatures or a sandbox.
 
+## Execution children that load a provider extension
+
+When the model of an ordinary or optional role is served by an extension, the launch check writes one
+of two packaged profiles that load that package: the writing one for `worker`, `delegate` and a call
+that names no agent, and the read-only one for `reviewer`. Every other builtin whose declared tools no
+profile matches is refused with the tools it needs, so a read-only review never becomes a child with
+`bash`, `edit` and `write`, and no launch gains a tool it did not declare. A user or project agent is
+never replaced and never refused: what it loads is its own declaration, which this policy cannot
+read. The child then runs that package as trusted host code with the tools the profile lists and the
+child's permissions, so it can read files, use the network and reach its own accounts. It is not a
+sandbox. Its `antigravity_acp_permission` tool stays outside the allowlist, and an empty `extensions:`
+keeps ambient extensions out of the child, so the package's own handlers are the only extension code
+there besides the host's runtimes.
+
+The parent checks the installed sibling, not the code: the managed user install, the package name, an
+unlinked directory with exactly one extension entry inside it, and that your own settings list the
+package. The check runs at every launch that loads a packaged profile, including the Advisor profile
+that serves an admitted provider, and it reads package metadata only. One race stays open and is not claimed closed: the child loads the package
+after the check returns, so a package removed, replaced or re-linked in that interval is loaded by a
+child the parent approved a moment earlier. Nothing repeats the check inside the child, and the
+registry attributes no provider to a package, so a homonymous package that does not register the
+provider passes the parent and fails in the child. No version and no content are compared, because
+the profile loads the installed package, which is what stops a provider update from needing a release
+of this one. Antigravity also keeps native tools that bypass Pi's tool list and Pi's permission system
+entirely, including for the Advisor 3 profile whose Pi tool list is empty: nothing on the Pi side
+disables them.
+
 One pending call per tool: three Advisors plus the reader, at most four children. Abort, branch
 changes, shutdown, and detected settings changes cancel the extension-owned group, never host-owned
 role subagents. No retry is issued automatically: a failed consultation reports a closed reason and

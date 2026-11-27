@@ -538,50 +538,123 @@ store a changed admission; **Cancel** discards it and **Standard** removes it. T
 }
 ```
 
-Only a package you already load qualifies: your user settings must list exactly
-`npm:<package>@<version>` unfiltered, Pi's managed user install must hold that version with no
-project candidate or links, and its manifest must declare exactly one extension entry inside the
-package. The panel offers only packages that pass this check, and `/delegate` validation repeats it.
-The Advisor child does not, and cannot: it resolves its model and its provider before any extension
-`session_start` runs, so a check inside the child would arrive too late to matter. The admission is a
-saved value: it never follows the installed version on its own, and selecting the extension again is
-what records the installed one. An invalid file is ignored with a diagnostic and leaves the other
-Advisors running.
+Only a package you already load qualifies: your user settings must list `npm:<package>` (any
+version) unfiltered, Pi's managed user install must hold it with no links, and its manifest must
+declare exactly one extension entry inside the package. The panel also requires the exact installed
+user source and no project candidate before it offers a package, because those come from the package
+manager. `/delegate` validation and every launch repeat the narrower check described below, which
+reads the managed install directly. The child does not, and cannot: it resolves its model and its
+provider before any extension `session_start` runs, so a check inside the child would arrive too late
+to matter. An invalid file is ignored with a diagnostic and leaves the other Advisors running.
 
-The packaged profile pins the admitted package in `subagentOnlyExtensions` and keeps `extensions:`
-empty, so the host loads exactly that package for the child and no ambient extension. The pin is one
-package and one version: `pi-antigravity-acp-provider` `0.1.22`. Its registration is the only one
-reviewed, and it may register `antigravity_acp_permission`, the tool that asks Antigravity for a
-permission decision the provider itself issued. The Advisor child launches with an empty tool
-allowlist, so that tool never reaches the model. A second admitted package, or a new version of this
-one, needs its own profile and its own review: a static profile can pin only one.
+The packaged profiles name their package in `subagentOnlyExtensions` and keep `extensions:` empty, so
+the host loads exactly that package for the child and no ambient extension. The entry is the relative
+path `../../pi-antigravity-acp-provider`, which the host resolves against the directory of the profile
+file: installed as a user package, that is `<agentDir>/npm/node_modules/pi-antigravity-acp-provider`.
+No version appears anywhere, so updating that package needs no release of this one. Its registration
+is the only one reviewed, and it may register `antigravity_acp_permission`, the tool that asks
+Antigravity for a permission decision the provider itself issued. The Advisor child launches with an
+empty tool allowlist, so that tool never reaches the model. A different package needs its own profile
+and its own review: a static profile names one.
 
-Because the pin is fixed, an admission that names another version of the pinned package, or another
-package, is not served. Routing checks it before any launch and leaves the Advisor out, rather than
-loading a package the current admission no longer authorizes. The two states get different advice.
-For a version the pin does not name, the admitted version has to become the pinned one: install the
-pinned version and select the provider extension again so the admission records it, or update
-`pi-delegation-policy` to a release that reviews the version you admitted. Selecting the extension
-again only re-records the installed version, so on its own it cannot help while that version is not
-the pinned one. Another package needs its own profile, so selecting it helps only once a release
-ships one; until then that Advisor needs a provider that needs no extension.
+What the parent checks before a launch is identity, not version or content: the path the profile
+resolves is the managed install, that install exists, it is not reached through a link, its manifest
+reports that package name, it declares exactly one extension entry inside its own directory, and your
+settings list the package. Paths are compared as the filesystem sees them, so a differently
+capitalised agent directory is the same directory on Windows and a different one on Linux. When the
+check fails, the message says what could not be confirmed and the remediation is to install the
+package as a user package. Because there is no version comparison, an admission whose recorded
+version differs from the installed one is served: the file holds the version you selected, and the
+profile loads whatever is installed now.
+
+The check runs again at every launch that loads a packaged profile, not only when the session
+validation ran, and it reads package metadata only. That includes the Advisor profile that serves an
+admitted provider: a consultation refused there is an Advisor error, not a launch the host fails
+later. A package removed, replaced or re-linked after validation is therefore refused instead of
+loaded. One window stays open: the child loads the package after the check returns, so a change in
+that gap is not seen ([SECURITY.md](https://github.com/Yivas/pi-delegation-policy/blob/main/SECURITY.md)).
+
+## Execution profiles {#execution-profiles}
+
+An ordinary or optional role whose model an extension serves needs a child that loads that
+extension, so the launch check chooses the packaged profile itself. The table is code: provider,
+package, the one tool the review details, and the profile.
+
+| provider          | package                       | tool                         | writing profile                                  | read-only profile                             |
+| ----------------- | ----------------------------- | ---------------------------- | ------------------------------------------------ | --------------------------------------------- |
+| `antigravity-acp` | `pi-antigravity-acp-provider` | `antigravity_acp_permission` | `pi-delegation-policy.execution-antigravity-acp` | `pi-delegation-policy.reader-antigravity-acp` |
+
+The writing profile carries the `worker` tool set (`read`, `grep`, `find`, `ls`, `bash`, `edit`,
+`write`, `contact_supervisor`) and `acceptanceRole: writer`. The read-only profile carries the
+`reviewer` tool set (`read`, `grep`, `find`, `ls`, `watchdog_diff`, `contact_supervisor`) and
+`acceptanceRole: read-only`. Neither lists `antigravity_acp_permission`, both keep `extensions:`
+empty so no ambient extension reaches the child, and neither declares a model: the launch states it,
+as for any role.
+
+What a builtin agent becomes is one table in code, and a builtin keeps the tool surface its own
+definition declares or the launch is refused. Nothing is widened into the writing profile and nothing
+drops a tool it declared:
+
+| builtin                                                                                                       | declared tools                                                             | becomes                                        |
+| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------- |
+| `worker`                                                                                                      | `read, grep, find, ls, bash, edit, write, contact_supervisor`              | writing profile                                |
+| `delegate`                                                                                                    | the same set                                                               | writing profile                                |
+| `reviewer` (read-only)                                                                                        | `read, grep, find, ls, watchdog_diff, contact_supervisor`                  | read-only profile                              |
+| `scout`                                                                                                       | `read, grep, find, ls, bash, write, contact_supervisor`                    | refused: needs `bash` and `write`              |
+| `oracle` (read-only, forked default context)                                                                  | `read, grep, find, ls, bash`                                               | refused: needs `bash`                          |
+| `evidence-auditor` (read-only)                                                                                | `read, web_search, fetch_content, get_search_content, source_check`        | refused: needs the web tools                   |
+| `researcher`                                                                                                  | `read, write, web_search, fetch_content, get_search_content, source_check` | refused: needs `write` and the web tools       |
+| `claude-code`, `claude-code-writer`, `codex-exec`, `codex-exec-writer`, `cursor-agent`, `cursor-agent-writer` | none, they declare an external CLI runner                                  | refused: a Pi child would replace their runner |
+| `advisor`                                                                                                     | its own Advisor profile                                                    | never execution                                |
+
+A call that names no agent gets the writing profile. A call that names one of the two packaged
+profiles is checked too, because the package a profile loads is static frontmatter: naming it with a
+model from another provider, or after its package stopped loading, is refused rather than followed.
+
+The table covers the canonical agent names `pi-subagents` defines. Its aliases (`developer`, `coder`,
+`implementer`, `develop` for `worker`, and `advisor` for `oracle`) are refused with the canonical
+name to state, because the host resolves an alias through whatever agent declares it, and a user or
+project agent may declare the same one; this policy cannot see which one would win, so it never
+rewrites an alias. With a native provider the alias is passed through untouched, as before.
+
+Two properties of the mapping are worth stating exactly. A `delegate` child runs the writing profile,
+which declares `acceptanceRole: writer`, while `delegate` itself declares none and the host reads
+that as the light attested level: the child therefore accepts at the stricter `writer` level, which
+adds review rather than tools. A `reviewer` child runs the read-only profile, and a packaged profile
+replaces the system prompt, so that child uses the read-only profile's prompt instead of the review
+methodology in `pi-subagents`' own `reviewer` definition; its model and thinking still come from the
+role, and its tool set and `acceptanceRole: read-only` are exactly what `reviewer` declares.
+
+Four refusals protect the same boundary. A model whose provider an extension registered in this
+session, with no packaged profile for that provider, is refused with the provider id and the two ways
+out. A reviewed provider whose package the parent cannot resolve is refused with the cause. A builtin
+whose declared tools fit no packaged profile is refused with the tools it needs, and the message puts
+keeping that work on a provider the child loads first, the writing profile second, so an intended
+write is a stated choice instead of a silent widening. A builtin alias is refused with the canonical
+name to state. A user or project agent is never replaced and never refused here: what it loads is its
+own declaration, and this policy cannot see it.
+
+One consequence to know: a launch that named `worker`, `delegate` or `reviewer` now runs a packaged
+profile, so a `subagents.agentOverrides` entry keyed on that agent name no longer applies to it. Copy
+the override under the profile name to keep the tools and skills you gave that agent. For `reviewer`,
+copy it to the read-only profile, never to the writing one.
 
 This is trusted code, not a sandbox. The package identity is checked in this session, and that is the
-only check: the child loads the pinned package before it can inspect anything. It can read files,
+only check: the child loads the installed package before it can inspect anything. It can read files,
 use the network and reach its own accounts, and a provider it registers is the one used. Per-process
 state stays per process: a quota-rotating extension checks quota again in each child and can pick an
 account the main session already exhausted. An Advisor whose provider an extension replaced in the
 main session, with no admission, gets a warning in `/delegate status` and stays consulted, because
 the built-in provider may still answer with its own credentials. An admission whose package no longer
-passes the check, or whose package is not the pinned one, is an Advisor error instead. The candidate
-list holds every pinned user package, not only providers. Releases before this option ignore the
+passes the check, or whose package is not the reviewed one, is an Advisor error instead. The candidate
+list holds every configured user package, not only providers. Releases before this option ignore the
 file and launch the standard profile, which may answer through the built-in provider or fail as
 before.
 
 ## Launch correction mode {#launch-correction-mode}
 
-While delegation is active, or while an Advisor is enabled, the launch check corrects three
-unambiguous cases instead of refusing them, and tells the agent what it applied. The three cases, and
+While delegation is active, or while an Advisor is enabled, the launch check corrects four
+unambiguous cases instead of refusing them, and tells the agent what it applied. The four cases, and
 the refusals that remain, are listed under [launch check](/limits-and-privacy/#launch-check). Accepted
 role names are `small`, `medium`, `large`, `visual-design`, `ui-design`, `uidesign`, `advisor`,
 `advisor-1`, `advisor-2` and `advisor-3`, case-insensitive. The added level is the role's fixed level,

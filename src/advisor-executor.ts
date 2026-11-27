@@ -23,13 +23,13 @@ import {
   ANTHROPIC_ADVISOR_EXTENSION,
 } from "./advisor-anthropic-provider.ts";
 import {
-  isPinnedAdmission,
-  PINNED_PACKAGE,
+  isPackagedAdmission,
   PROVIDER_EXTENSION_ADVISOR_AGENT,
+  REVIEWED_PACKAGE,
 } from "./advisor-provider-extension.ts";
 import { sessionChildExtensions } from "./advisor-extensions.ts";
 import { admissionFor, type ProviderAdmissions } from "./provider-admissions.ts";
-import { packageSource } from "./provider-package.ts";
+import { siblingExtensionPath } from "./provider-package.ts";
 import {
   AdvisorResumeClient,
   advisorStatusVerdict,
@@ -243,7 +243,7 @@ export function advisorProfile(
   const admitted = admissionFor(admissions, setting.provider);
   // The packaged profile pins one package, so an admission naming another one cannot be served. It
   // fails closed here instead of loading a package the current admission no longer authorizes.
-  return admitted && isPinnedAdmission(admitted) ? "admitted" : undefined;
+  return admitted && isPackagedAdmission(admitted) ? "admitted" : undefined;
 }
 
 /**
@@ -274,15 +274,20 @@ const ANTHROPIC_DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
   ),
   configuredExtensions: [ANTHROPIC_ADVISOR_EXTENSION],
 };
+/** The profile file the host parses, which is also the base of its relative sibling entry. */
+const PROVIDER_EXTENSION_AGENT_PATH = fileURLToPath(
+  new URL("../agents/pi-delegation-policy.advisor-provider-extension.md", import.meta.url),
+);
 const PROVIDER_EXTENSION_DEFINITION: AgentLaunchDefinition<AdvisorRequest, string> = {
   ...DEFINITION,
   agentName: PROVIDER_EXTENSION_ADVISOR_AGENT,
-  agentPath: fileURLToPath(
-    new URL("../agents/pi-delegation-policy.advisor-provider-extension.md", import.meta.url),
-  ),
-  // The profile pins the admitted package for the host to load, so the launch contract expects that
-  // source rather than an extension path of its own.
-  configuredExtensions: [packageSource(PINNED_PACKAGE)],
+  agentPath: PROVIDER_EXTENSION_AGENT_PATH,
+  // The profile names the installed package in `subagentOnlyExtensions` by the relative path the
+  // host resolves against its own directory, so the launch contract expects that path rather than a
+  // registry source: the installed package is loaded in place, whatever version it is.
+  configuredExtensions: [
+    siblingExtensionPath(PROVIDER_EXTENSION_AGENT_PATH, REVIEWED_PACKAGE.package),
+  ],
 };
 
 /** Highest first; levels above `high` are left out to bound cost across parallel advisors. */

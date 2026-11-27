@@ -3879,6 +3879,8 @@ test("public package contents exclude private planning, tests, archives, and old
     "agents/pi-delegation-policy.advisor.md",
     "agents/pi-delegation-policy.bulk-reader.md",
     "agents/pi-delegation-policy.context-shunt-inline-reader.md",
+    "agents/pi-delegation-policy.execution-antigravity-acp.md",
+    "agents/pi-delegation-policy.reader-antigravity-acp.md",
     "examples/global.json",
     "package.json",
     "schema/delegation-policy.schema.json",
