@@ -1251,8 +1251,8 @@ test("at the hook, enforcing refuses the call with its category and the one exit
         /Not an error: this call was not run\. Guard reviewer: cross-trust-boundary\./,
       );
       assert.match(reason, /Find another way that stays within what the user asked/);
-      // The exit is the consultation, which this session can make.
-      assert.match(reason, /consult/i);
+      // The exit is the consultation, in the same words the policy block and the count gate use.
+      assert.match(reason, /Call consult_advisor once; it asks all Advisors\./);
       // One paid stage 1 and one stage 2, and the refusal is in the record.
       assert.equal(harness.calls.length, 2);
       const records = await reviewerRecords();

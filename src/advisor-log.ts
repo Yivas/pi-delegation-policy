@@ -103,6 +103,14 @@ function ruleHitsRecord(
   return record;
 }
 
+/**
+ * The closed verdicts a background completion leaves in the record; never a message or an id.
+ * `unreadable` is a reading that threw before anything was applied, and `notice-failed` a verdict
+ * that was applied while the operator notice could not be delivered.
+ */
+export type CompletionRecordStatus =
+  "answered" | "failed" | "ignored" | "unreadable" | "notice-failed";
+
 export type LaunchOutcome = "allowed" | "refused";
 export type LaunchRecord = {
   outcome: LaunchOutcome;
@@ -205,6 +213,16 @@ export class AdvisorLog {
       subagentLaunches: summary.subagentLaunches,
       launchRefusals: summary.launchRefusals,
     });
+  }
+
+  /**
+   * One record per background completion this extension read, with the closed status of its verdict
+   * and nothing of the event: no id, no session, no message, no answer. Every outcome is recorded, so
+   * the trail says whether a report opened a held task, counted a failure or proved nothing.
+   */
+  completion(status: CompletionRecordStatus): void {
+    if (!this.lastHash) return;
+    this.enqueue({ event: "completion", version: VERSION, policyHash: this.lastHash, status });
   }
 
   /** One record per subagent call the guard checked: its outcome, a closed code and role codes. */

@@ -26,9 +26,14 @@
  * hold it leaves stands and the human channel can still resolve it. A result this reader cannot
  * interpret is one more call that proved nothing: `not-run`, which keeps the hold.
  *
- * It is a pure state machine with no imports. Nothing here reads a tool result, the user's words or
- * the model's intent: only the classified calls the caller passes in.
+ * It is a pure state machine. Its only import is the sentence that says how a configuration consults,
+ * which is text and holds no state. Nothing here reads a tool result, the user's words or the model's
+ * intent: only the classified calls the caller passes in.
  */
+import { consultSentence } from "./advisor-consult.ts";
+
+export { consultSentence };
+
 /** Changes without a consultation after which the task is warned once. */
 export const GATE_WARN_CHANGES = 3;
 /** The change that closes the gate: the task may not reach this many without a consultation. */
@@ -74,20 +79,18 @@ const PREFIX = [
   "Not an error: this call was not run. Advisor checkpoint.",
   "The checkpoint holds every change in this task until an Advisor consultation answers. Reading is not affected.",
 ];
-/** The one way out. It says what to do after consulting, and offers nothing else. */
-const CONSULT_NOW = "Consult the Advisors now: ";
 const AFTER = "After the consultation answers, make this change again.";
 
 /**
  * The path each launch mode has. Tool launch depends on who writes the brief, because a call with no
- * question is refused when the agent writes it. Role launch states the foreground requirement as
- * this checkpoint's own: the policy asks for background launches, and one cannot answer in time.
+ * question is refused when the agent writes it. Role launch names the same background launch the
+ * policy asks for: the host reports the answer when the detached run ends, and that report is what
+ * opens the checkpoint. Both follow the one sentence that says how this configuration consults.
  */
 const CONSULT_PATH = {
-  tool: "call consult_advisor(). It needs no arguments; the host supplies the context.",
-  toolManual:
-    "call consult_advisor with a question, and with a brief if this is the first consultation of the task.",
-  role: "launch every listed Advisor with the host subagent tool, with the agent profile and model the delegation policy lists and a short self-contained brief. For this checkpoint the launch must be in the foreground (async: false), whatever the policy says about background launches.",
+  tool: " It needs no arguments; the host supplies the context.",
+  toolManual: " Pass a question, and a brief if this is the first consultation of the task.",
+  role: " Use the host subagent tool with each exact agent profile and model the delegation policy lists, a short self-contained brief and a supported thinking level chosen per run, in the background. The checkpoint opens when the host reports the answer of that run.",
 } as const;
 
 /**
@@ -219,16 +222,21 @@ export function wayOutBrokenClause(): string {
 }
 
 /**
- * The one sentence that names how this configuration consults. Every refusal of every level uses it,
- * so the ways out a model is offered cannot drift apart between the count and a rule.
+ * The one instruction that names how this configuration consults. Every refusal of every level uses
+ * it, so the ways out a model is offered cannot drift apart between the count and a rule.
  */
-export function consultInstruction(launcher: GateLauncher, manualContext = false): string {
+export function consultInstruction(
+  launcher: GateLauncher,
+  manualContext = false,
+  advisors: readonly string[] = [],
+): string {
   const toolPath = manualContext ? CONSULT_PATH.toolManual : CONSULT_PATH.tool;
-  return `${CONSULT_NOW}${launcher === "role" ? CONSULT_PATH.role : toolPath}`;
+  return `${consultSentence(launcher, advisors)}${launcher === "role" ? CONSULT_PATH.role : toolPath}`;
 }
 
 /**
  * `manualContext` is true when the agent, not the host, writes the consultation brief.
+ * `advisors` are the profile names the instruction states in `role` launch.
  * `wayOutBroken` appends the one clause that tells the model the hold now needs a person; without it
  * the text is byte-identical to the refusal this gate has always sent.
  */
@@ -236,8 +244,9 @@ export function gateMessage(
   launcher: GateLauncher,
   manualContext = false,
   wayOutBroken = false,
+  advisors: readonly string[] = [],
 ): string {
-  const message = [...PREFIX, consultInstruction(launcher, manualContext), AFTER];
+  const message = [...PREFIX, consultInstruction(launcher, manualContext, advisors), AFTER];
   if (wayOutBroken) message.push(WAY_OUT_BROKEN);
   return message.join("\n");
 }
@@ -318,6 +327,8 @@ export class AdvisorGate {
     available: boolean;
     launcher: GateLauncher;
     manualContext?: boolean;
+    /** The profile names the refusal states in `role` launch: what a consultation launches. */
+    advisors?: readonly string[];
   }): GateDecision {
     if (!this.open || !input.changes) return { action: "pass", reason: "quiet" };
     // A `??` task at a level that holds nothing by count is free once its consultation arrived.
@@ -329,7 +340,12 @@ export class AdvisorGate {
       this.holds += 1;
       return {
         action: "block",
-        message: gateMessage(input.launcher, input.manualContext, this.wayOutBroken),
+        message: gateMessage(
+          input.launcher,
+          input.manualContext,
+          this.wayOutBroken,
+          input.advisors ?? [],
+        ),
       };
     }
     this.changes += 1;

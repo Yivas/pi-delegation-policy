@@ -110,7 +110,14 @@ waits for the main agent. Local timeouts do not cap external generation or cost.
 the other advisors' answers, and every reply is untrusted advice.
 
 The `strict` and `guard` Advisor levels hold every state-changing call of a task once several were
-made with no consultation, until an Advisor answers. `guard` decides on its own deterministic rules
+made with no consultation, until an Advisor answers. A consultation launched in the background is
+never refused for being detached: the checkpoint opens on the completion the host advertises for a
+run this task launched, in this session, that ended complete and not stopped, timed out or cut short,
+with output present from a configured Advisor profile and its exact model. The listener is opened
+under the event name the bridge advertises, its payload is read as closed fields with no text
+parsed, one run decides once, and a report that proves nothing leaves the hold where it was. A bridge
+that advertises nothing leaves the hold standing, so a missing or renamed event strands a held task
+instead of releasing it. `guard` decides on its own deterministic rules
 before that count, with no model call: a force push, a hard reset, a forced clean, a recursive delete
 of an absolute path, the home directory, a parent or `.git`, a download piped to a shell, a publish or
 pull-request merge, a write to credentials or to this
@@ -150,8 +157,9 @@ tell the model to ask the user and stop; every change stays refused, and the hol
 answered consultation or with the operator, who can fix the Advisor, change the level with
 `/delegate` and send a new prompt, because a task keeps the level it started with, or cancel the
 task. These levels are a nudge for a person at the keyboard, not a boundary for an unattended run.
-Only a result whose details prove an Advisor started counts as such a failure, so repeating a call
-that consulted nobody, or one refused for want of a brief before any launch, buys nothing. This is a
+Only a result, or a completion the host reports, whose details prove an Advisor started counts as
+such a failure, so repeating a call that consulted nobody, or one refused for want of a brief before
+any launch, buys nothing. This is a
 nudge, not a security boundary: the extension decides what changes state by reading the tool name
 and the text of a shell command, which it never runs, and that reading can be wrong in both
 directions. It grants, widens and inspects no permission, and with no Advisor to
@@ -197,7 +205,11 @@ provider after a failed check does not undo what it already did.
 Content-free records are written only while a policy block is active. With delegation and Advisor both
 off, no new event is written except in the short window before the next request notices that the policy
 is off. `delegation-policy.events.jsonl` holds policy and consultation metadata plus one `task` counter
-record per main-agent task, one `launch` record per checked subagent call, and one `gate` record per
+record per main-agent task, one `launch` record per checked subagent call, one `completion` record per
+background completion read (every report the task reads carries its closed status: `answered`,
+`failed`, `ignored`, `unreadable` when the reading threw before anything was applied, or
+`notice-failed` when a verdict was applied and the notice could not be delivered; never an id, a
+session, a message or an answer), and one `gate` record per
 task whose gate opened (a `strict` or `guard` task, or any task a `??` prompt opened), written when
 it ends by a settle, a branch move or shutdown, with counts only and that reason. Its `ruleHits`
 also count `engine-failure` when the guard could not judge a call at all. `passes` counts the calls a

@@ -139,20 +139,25 @@ const UNREADABLE_CALL_AFTER =
 const FAILED_AFTER =
   "The guard failed while judging this call, so it was not run. No consultation lifts this one: report the failure to the user and stop.";
 
+/** What a refusal may state: the launcher, who writes the brief, the Advisor profiles and the run. */
+type GuardRefusalOptions = {
+  launcher: GateLauncher;
+  manualContext?: boolean;
+  advisors?: readonly string[];
+  wayOutBroken?: boolean;
+};
+
 /**
  * The refusal for one rule hit. It names the category and nothing else: no count, no threshold and no
  * pattern, because any of those can be satisfied by the model the rule exists for. A `hard` rule
  * offers no way through the model at all, so it names the person instead.
  */
-export function guardMessage(
-  match: GuardMatch,
-  options: { launcher: GateLauncher; manualContext?: boolean; wayOutBroken?: boolean },
-): string {
+export function guardMessage(match: GuardMatch, options: GuardRefusalOptions): string {
   const prefix = `Not an error: this call was not run. Guard rule: ${GUARD_RULE_LABELS[match.code]}.`;
   if (match.kind === "hard") return [prefix, HARD_AFTER].join("\n");
   const message = [
     prefix,
-    consultInstruction(options.launcher, options.manualContext ?? false),
+    consultInstruction(options.launcher, options.manualContext ?? false, options.advisors ?? []),
     match.unreadable === true
       ? match.noLine === true
         ? UNREADABLE_CALL_AFTER
@@ -1160,12 +1165,7 @@ export class GuardRules {
   decide(
     facts: ToolCallFacts,
     toolName: string,
-    options: {
-      launcher: GateLauncher;
-      manualContext?: boolean;
-      available: boolean;
-      wayOutBroken?: boolean;
-    },
+    options: GuardRefusalOptions & { available: boolean },
   ): GuardDecision {
     const match = guardRule(facts, toolName, this.historyFor(facts));
     if (!match) return { action: "pass", reason: "quiet" };
@@ -1191,12 +1191,7 @@ export class GuardRules {
    * never break the turn, and there is no exit here a model can open: the refusal says to report the
    * failure and stop, and the pair is never recorded, so no consultation pass can lift it.
    */
-  failedDecision(options: {
-    launcher: GateLauncher;
-    manualContext?: boolean;
-    available: boolean;
-    wayOutBroken?: boolean;
-  }): GuardDecision {
+  failedDecision(options: { available: boolean; wayOutBroken?: boolean }): GuardDecision {
     this.hits.set("engine-failure", (this.hits.get("engine-failure") ?? 0) + 1);
     const lines = [
       `Not an error: this call was not run. Guard rule: ${GUARD_RULE_LABELS["engine-failure"]}.`,

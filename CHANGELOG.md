@@ -60,6 +60,32 @@ model`). Choosing a model states once what travels to its provider, what never d
 
 ### Changed
 
+- **A background Advisor consultation opens the checkpoint.** A launch in the background is no longer
+  refused while changes are held: the extension subscribes at session start to the completion event
+  the `pi-subagents` bridge advertises and opens the hold when the host reports that a run it launched
+  ended. Only a run id this task received from the host, in this session, that ended complete and was
+  not stopped, timed out or cut short, with output present from a configured Advisor profile and that
+  slot's model, counts; the report of one run decides it once, a report that proves nothing changes
+  nothing, and a completion that arrives after the task closed opens nothing. Nothing parses the text
+  of a message, so a notice the agent writes cannot open a hold, and a bridge that does not advertise
+  the event leaves the hold standing. A run that started and did not answer counts towards the
+  operator's notice, as a failed foreground launch already did. A report has to name this session and the model the
+  host resolved; a report with no session, or a model only the launch asked for, is no answer. A
+  reader that throws is recorded as `unreadable` in the local log instead of propagating into the
+  host's event emit, and the admission of the channel leaves no listener or timer behind when the
+  session ends. Every report a held task reads carries its closed status in that record (`answered`,
+  `failed`, `ignored`, `unreadable`, or `notice-failed` when the notice could not be delivered). The
+  text the model reads no longer
+  asks for a foreground launch: the policy block, the checkpoint refusal and the `consult_advisor`
+  redirect all ask for the background launch the policy prefers, and the refusal says the change runs
+  after the Advisor answers. Foreground launches keep working.
+- **The consultation instruction names one launch per mode.** The policy block, the `standard` note
+  and every `strict`/`guard` refusal, the guard reviewer's block exit and the `consult_advisor`
+  redirect state `Consult all Advisors in one parallel call: <the configured Advisor profiles>.` for
+  `role` launch, with the profiles read from the configuration and no count, and
+  `Call consult_advisor once; it asks all Advisors.` for `tool` launch, which never says every listed
+  Advisor. The general launch policy says the background is the default for every launch, ordinary
+  roles included, and still names no foreground form.
 - `guard` no longer behaves exactly like `strict`. Before the count it decides on a closed set of
   deterministic rules, with no model call: a force push, a hard reset, a forced clean, a recursive
   delete of an absolute path, the home directory, a parent, a path built from a variable or `.git`

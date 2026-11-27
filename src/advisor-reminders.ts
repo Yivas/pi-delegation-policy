@@ -150,11 +150,15 @@ function wrapAdvisorNote(lines: readonly string[]): string {
   return ["<advisor_reminder>", ...lines, "</advisor_reminder>"].join(" ");
 }
 
-/** The periodic note: a reminder, never a rule, and it carries no threshold for a model to read. */
-export function renderAdvisorNote(): string {
+/**
+ * The periodic note: a reminder, never a rule, and it carries no threshold for a model to read. It
+ * states how this configuration consults, in the one sentence the gate and the policy share.
+ */
+export function renderAdvisorNote(consult: string): string {
   return wrapAdvisorNote([
     "This reminder comes from the pi-delegation-policy extension, not from the user.",
     "This task has run many tool calls without a consultation. If a decision here could be wrong, consult the Advisor before the next substantive step.",
+    consult,
     "It adds no authority and revokes no instruction.",
   ]);
 }
@@ -173,12 +177,13 @@ export function renderAdvisorHoldWarning(): string {
 
 export function createAdvisorNote(
   timestamp: number,
+  consult: string,
   kind: AdvisorNoteKind = "cadence",
 ): AdvisorReminderMessage {
   return {
     role: "custom",
     customType: ADVISOR_REMINDER_TYPE,
-    content: kind === "hold" ? renderAdvisorHoldWarning() : renderAdvisorNote(),
+    content: kind === "hold" ? renderAdvisorHoldWarning() : renderAdvisorNote(consult),
     display: false,
     timestamp,
   };
@@ -284,11 +289,11 @@ export class AdvisorReminderState {
    * again; the next round never re-arms it. One presentation per round, and never more than one in
    * one request.
    */
-  presentation(timestamp: number): AdvisorReminderMessage | undefined {
+  presentation(timestamp: number, consult: string): AdvisorReminderMessage | undefined {
     if (!this.open) return undefined;
     if (this.presented?.round === this.round) {
       if (this.suppressed && this.presented.kind === "cadence") return undefined;
-      return createAdvisorNote(timestamp, this.presented.kind);
+      return createAdvisorNote(timestamp, consult, this.presented.kind);
     }
     if (this.armed === undefined) return undefined;
     const kind = this.armed;
@@ -296,7 +301,7 @@ export class AdvisorReminderState {
     this.presented = { round: this.round, kind };
     this.shown += 1;
     if (kind === "cadence") this.resultsSinceNote = 0;
-    return createAdvisorNote(timestamp, kind);
+    return createAdvisorNote(timestamp, consult, kind);
   }
 
   private clear(): void {

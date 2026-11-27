@@ -1775,10 +1775,10 @@ test("every refusal names the exit it leaves open", async () => {
     assert.equal(wrapped?.block, true, "a wrapper is not judged, and never allowed");
     assert.match(wrapped?.reason ?? "", /Split it into shorter commands/);
     const soft = await harness.toolCall("edit", EDIT(CI_WORKFLOW));
-    assert.match(soft?.reason ?? "", /Consult the Advisors now/);
+    assert.match(soft?.reason ?? "", /Call consult_advisor once; it asks all Advisors\./);
     const unreadable = await harness.toolCall("bash", { command: `bash -c "echo $(date)"` });
     assert.equal(unreadable?.block, true);
-    assert.match(unreadable?.reason ?? "", /Consult the Advisors now/);
+    assert.match(unreadable?.reason ?? "", /Call consult_advisor once; it asks all Advisors\./);
     assert.match(unreadable?.reason ?? "", /Split it into shorter commands/);
     for (const reason of [
       hard?.reason ?? "",
@@ -1796,7 +1796,7 @@ test("a rule that fails refuses the call instead of letting it run", () => {
   // consultation could lift.
   const rules = new GuardRules();
   rules.openTask();
-  const decision = rules.failedDecision({ launcher: "tool", available: true });
+  const decision = rules.failedDecision({ available: true });
   assert.equal(decision.action, "block");
   const message = decision.action === "block" ? decision.message : "";
   assert.match(message, /Guard rule: the guard could not judge this call\./);
@@ -1808,9 +1808,9 @@ test("a rule that fails refuses the call instead of letting it run", () => {
   // Its own closed code, so the log can tell a broken engine from a line it could not read.
   const broken = new GuardRules();
   broken.openTask();
-  broken.failedDecision({ launcher: "tool", available: true });
+  broken.failedDecision({ available: true });
   assert.deepEqual(broken.report().ruleHits, { "engine-failure": 1 });
-  const again = rules.failedDecision({ launcher: "tool", available: false });
+  const again = rules.failedDecision({ available: false });
   assert.equal(again.action, "block", "and it is not released without a consultation path");
 });
 

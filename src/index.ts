@@ -82,6 +82,12 @@ import {
   reviewerBlockText,
   type ReviewerReport,
 } from "./guard-reviewer.ts";
+import {
+  BackgroundConsultations,
+  completionRunId,
+  type AdvisorCompletion,
+  type AdvisorSlotIdentity,
+} from "./advisor-async.ts";
 import type { GuardReviewerMode } from "./guard-mode.ts";
 import { classifyToolCall, type ToolCallFacts } from "./state-change.ts";
 import {
@@ -137,7 +143,8 @@ import {
   writeRoleEntries,
   getRoleEntriesPath,
 } from "./role-entries.ts";
-import { advisorRoleLines, buildDelegationPolicy } from "./prompt.ts";
+import { consultSentence } from "./advisor-consult.ts";
+import { advisorConsultNames, advisorRoleLines, buildDelegationPolicy } from "./prompt.ts";
 import { updateProviderPolicy } from "./provider-policy.ts";
 import {
   advisorSlots,
@@ -353,6 +360,24 @@ function currentSessionId(ctx: ExtensionContext): string | undefined {
   }
 }
 
+/**
+ * Every identity this session answers to: the id the bridge reports when it is asked, and the session
+ * file a background run records with its status, which is the first of the two the host has. A
+ * completion names one of them, and a name that is neither is another session's.
+ */
+function sessionIdentities(ctx: ExtensionContext): string[] {
+  const identities = new Set<string>();
+  const sessionId = currentSessionId(ctx);
+  if (sessionId !== undefined) identities.add(sessionId);
+  try {
+    const file: unknown = ctx.sessionManager.getSessionFile();
+    if (typeof file === "string" && file.trim()) identities.add(file);
+  } catch {
+    // A host that keeps no session file still has the id.
+  }
+  return [...identities];
+}
+
 function isBuiltinTool(pi: ExtensionAPI, toolName: string): boolean {
   return pi
     .getAllTools()
@@ -436,6 +461,21 @@ function advisorProfileFor(
     const level = model.slice(reference.length + 1);
     return (THINKING_LEVEL_NAMES as readonly string[]).includes(level);
   })?.setting;
+}
+
+/**
+ * The profile and model of every configured Advisor slot: what the host records per child, and the
+ * only identity a completion can come from. A slot whose model cannot run is not one of them,
+ * because it cannot have been consulted either.
+ */
+function advisorIdentities(state: RuntimeState | undefined): AdvisorSlotIdentity[] {
+  if (state === undefined) return [];
+  return advisorSlots(state)
+    .filter((slot) => slot.model !== undefined)
+    .map((slot) => ({
+      agent: advisorAgentNameFor(state, slot.setting, slot.index),
+      model: `${slot.setting.provider}/${slot.setting.model}`,
+    }));
 }
 
 /** Counters for one main-agent task: a user prompt to the next settle. */
@@ -609,23 +649,6 @@ function heldTrigger(pending: PendingChange | undefined): ConsultTrigger {
 function holdsChanges(level: AdvisorLevel): boolean {
   return level === "strict" || level === "guard";
 }
-
-/**
- * The refusal of a consultation that the host would answer after the call. The level holds changes
- * until a consultation answers, and a background launch never answers inside the call, so the text
- * names the one field that makes it count and offers nothing else.
- */
-const BACKGROUND_CONSULT_TOOL_MESSAGE = [
-  "Not an error: this call was not run. Advisor checkpoint.",
-  "The checkpoint holds every change in this task until an Advisor consultation answers, and a launch in the background returns before the Advisor does. Reading is not affected.",
-  "Consult with consult_advisor() instead: this session launches Advisors with that tool, not with the subagent tool.",
-].join("\n");
-
-const BACKGROUND_CONSULT_MESSAGE = [
-  "Not an error: this call was not run. Advisor checkpoint.",
-  "The checkpoint holds every change in this task until an Advisor consultation answers, and a launch in the background returns before the Advisor does. Reading is not affected.",
-  "Relaunch this consultation with `async: false` and it runs; the host answers it inside the call.",
-].join("\n");
 
 type ReaderAuthorization = Readonly<{
   fingerprint: string;
@@ -936,12 +959,102 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     // The gate counts the classified changes of one task and holds them once a consultation is due.
     const advisorGate = new AdvisorGate();
     // The consultations this task launched, by the id of the call that launched them: a foreground
-    // one is read when its result arrives, and a background one is remembered only so the children
-    // it starts belong to it instead of counting as changes of their own.
+    // one is read when its result arrives, and a background one registers the run the host handed
+    // back so its completion can be matched, and so the children it starts belong to it instead of
+    // counting as changes of their own.
     const consultationCalls = new Map<string, "consult" | "background">();
     // Consultation results this task already read: the host can report the same result twice, and a
     // call counts once whichever launcher read it.
     const readConsults = new Set<string>();
+    // The background consultations of this task: the runs the host handed back, by run id, with the
+    // Advisor profiles a completion has to come from. A completion that arrives for another task or
+    // another session is dropped, and the first decision a run gets is its only one.
+    const backgroundConsults = new BackgroundConsultations();
+    /**
+     * One Advisor started and did not answer: the task stays held, the operator is told once per pair
+     * of failures, and no text of the brief or the answer reaches the notice.
+     */
+    const notifyConsultFailure = (
+      ctx: ExtensionContext,
+      launcher: AdvisorLaunch,
+      evidence: readonly string[],
+    ): void => {
+      const level = latestRuntime ? taskAdvisorLevel(latestRuntime) : undefined;
+      ctx.ui.notify(
+        `Advisor level ${level}: the ${launcher} launcher started an Advisor and got no answer in ${GATE_CONSULT_FAILURES} consultations in a row${evidence.length === 0 ? "" : ` (statuses: ${evidence.join(", ")})`}. The task stays held: fix the Advisor and consult again, change the level with /delegate and send a new prompt, or cancel the task.`,
+        "warning",
+      );
+    };
+    /**
+     * The consequence of one host report about a background run. It is the same transition a
+     * foreground result makes: an answer opens the checkpoint, a run that started and did not
+     * answer counts towards the notice, and anything that proves nothing changes nothing.
+     */
+    const applyCompletion = (ctx: ExtensionContext, payload: unknown): void => {
+      if (isSubagentChildProcess() || !advisorGate.watching) return;
+      // Every report this task reads leaves one closed status in the local record, whatever it
+      // proved. Nothing here may throw into the host's emit, because a listener that throws would
+      // abort the other listeners of the same event.
+      let outcome: AdvisorCompletion;
+      try {
+        outcome = backgroundConsults.noteCompletion(payload);
+      } catch {
+        // Nothing of that report was applied, so it is an unreadable one rather than a verdict.
+        advisorLog.completion("unreadable");
+        return;
+      }
+      advisorLog.completion(outcome);
+      if (outcome === "ignored") return;
+      try {
+        if (outcome === "answered") {
+          advisorGate.noteAnswer();
+          guardRules.noteAnswer();
+          guardReviewer.noteAnswer();
+          return;
+        }
+        const launcher = latestRuntime?.effective.advisorLaunch ?? "tool";
+        if (advisorGate.noteFailure()) notifyConsultFailure(ctx, launcher, []);
+      } catch {
+        // The verdict is recorded and an answer is already applied: what is left is the operator
+        // notice, so this is a notice that failed, never an unreadable report.
+        advisorLog.completion("notice-failed");
+      }
+    };
+    let unsubscribeCompletions: (() => void) | undefined;
+    // The client the session's completion channel was admitted through, so a session that ends can
+    // abandon the reply it may still be waiting for instead of leaving its listener behind.
+    let completionClient: AdvisorResumeClient | undefined;
+    // The session the listener belongs to. A session that ends before the bridge answers its question
+    // attaches nothing, and the answer that arrives later is not this session's.
+    let completionEpoch = 0;
+    /**
+     * Listen for the completion the host advertises. The name comes from the bridge itself, never from
+     * a constant here, and a bridge that does not advertise one leaves the listener off: the
+     * checkpoint then stands until a consultation the host reports inside a call answers.
+     *
+     * It is not awaited on purpose. A host without the bridge never answers, and the question has its
+     * own timeout; a session whose first prompt comes later still hears every run it starts.
+     */
+    const subscribeCompletions = async (ctx: ExtensionContext): Promise<void> => {
+      const epoch = (completionEpoch += 1);
+      unsubscribeCompletions?.();
+      unsubscribeCompletions = undefined;
+      // A session that starts again abandons the admission of the one before, so no reply listener of
+      // an older client can outlive this one.
+      completionClient?.abortPending();
+      completionClient = undefined;
+      const sessionId = currentSessionId(ctx);
+      if (sessionId === undefined) return;
+      try {
+        const client = resumeClient(pi.events);
+        completionClient = client;
+        if (!(await client.admitCompletion(sessionId))) return;
+        if (epoch !== completionEpoch) return;
+        unsubscribeCompletions = client.onAsyncComplete((payload) => applyCompletion(ctx, payload));
+      } catch {
+        // A bridge that cannot be asked advertises nothing: no listener, and no forged answer.
+      }
+    };
     // Notes this task was shown, recorded when it closes and never with their text.
     let gateNotes = 0;
     // The deterministic rules of the `guard` level: free, decided before the count, and inert in a
@@ -1488,7 +1601,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         const launcher = latestRuntime?.effective.advisorLaunch ?? "tool";
         const manual = latestRuntime?.advisorContextMode === "manual";
         const exit = consultationAvailable(latestRuntime)
-          ? [consultInstruction(launcher, manual)]
+          ? [consultInstruction(launcher, manual, consultAdvisorNames(latestRuntime))]
           : ["Ask the user how to continue and stop."];
         if (advisorGate.wayOutIsBroken) exit.push(wayOutBrokenClause());
         return { block: true, reason: [prefix, ...exit].join("\n") };
@@ -1603,6 +1716,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       validAdvisors(state).length > 0 &&
       reminderConsultationPath(state.effective.advisorLaunch, activeTools()) !== undefined &&
       taskToken !== undefined;
+    /** The profile names a `role` refusal states, read from the configuration the task runs. */
+    const consultAdvisorNames = (state: RuntimeState | undefined): string[] =>
+      state === undefined ? [] : advisorConsultNames(state);
     /** Whether one more consultation can start right now; a busy executor only delays the next one. */
     const consultationAvailable = (state: RuntimeState | undefined): boolean =>
       consultationPath(state) && !advisorExecutor.busy;
@@ -1637,7 +1753,9 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // The gate earns the warning by crossing its threshold; consuming that flag here means the
       // note is presented once, in the request that follows the change that earned it.
       if (advisorGate.warnDue()) advisorReminder.armHoldWarning();
-      const note = advisorReminder.presentation(Date.now());
+      // The note states how this configuration consults, in the same sentence the refusal uses.
+      const consult = consultSentence(state.effective.advisorLaunch, advisorConsultNames(state));
+      const note = advisorReminder.presentation(Date.now(), consult);
       gateNotes = advisorReminder.presentations;
       return note;
     };
@@ -1798,16 +1916,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           const subagentTool = pi.getActiveTools().find((name) => name === "subagent");
           if (!subagentTool)
             return notRun(
-              'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another mechanism: do not use foreground execution, a CLI, or another agent.',
+              'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another launcher: no CLI, no other agent, and no stand-in for the host subagent tool.',
             );
-          // While changes are held only a launch the host answers inside the call opens the
-          // checkpoint, so the redirect must not send the model to the background it would refuse.
-          const placement =
-            advisorGate.held && consultationAvailable(state)
-              ? "in the foreground (async: false), because the Advisor checkpoint is holding changes until an answer arrives"
-              : "in the background";
+          // A launch in the background is the launch this policy asks for, held task or not: the
+          // host reports the answer when the run ends.
           return notRun(
-            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". Launch every listed Advisor with the host subagent tool "${subagentTool}", using each exact agent profile and model below, ${placement}, all listed Advisors with the same question in one call, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run.\n${advisorRoleLines(state)}`,
+            `Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". ${consultSentence("role", advisorConsultNames(state))} Launch them with the host subagent tool "${subagentTool}", using each exact agent profile and model below, in the background, as the delegation policy describes. Replace LEVEL with a supported thinking level chosen per run.\n${advisorRoleLines(state)}`,
           );
         }
         if (advisorExecutor.busy) return notRun(advisorContinuityText("busy"));
@@ -2489,6 +2603,10 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // The cap the reviewer has for one session, and its breaker, belong to the session that just
       // started: nothing of the one that ended carries over.
       guardReviewer.startSession();
+      backgroundConsults.startSession(sessionIdentities(ctx));
+      // The channel is admitted with the session and not with the Advisor axis: a session can turn
+      // Advisors on later with `/delegate`, and a hold then needs the completion it hears here.
+      void subscribeCompletions(ctx);
       // A request of the session that ended cannot stand in for this one's short prompt.
       previousRequest = undefined;
       advisorEpoch += 1;
@@ -2593,6 +2711,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         readConsults.clear();
         guardRules.openTask();
         guardReviewer.openTask();
+        backgroundConsults.openTask();
         if (child) return;
         if (observation) observation.level = level;
         // Only the two levels that hold changes count them: `standard` states a periodic note and
@@ -2700,6 +2819,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       // The gate's report is closed with the task, whatever the answer was: it is the only record of
       // how many changes a task made without a consultation.
       const closed = closeGateTask();
+      backgroundConsults.closeTask();
       advisorEpoch += 1;
       advisorExecutor.cancel();
       if (settledToken) {
@@ -2791,27 +2911,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
           observeCommand(observed, event.toolCallId, facts.command);
       }
       const launcher = latestRuntime?.effective.advisorLaunch ?? "tool";
-      // While changes are held, the way out is a consultation the host answers inside the call. A
-      // background launch only returns a run id, so it is refused with the one correction that
-      // makes it work. Before the hold a background consultation runs as the policy asks, and it
-      // covers nothing. Other launches, mixed ones included, are classified like any other call.
-      if (
-        launchKind === "background" &&
-        observed !== undefined &&
-        advisorGate.held &&
-        consultationAvailable(latestRuntime)
-      ) {
-        countTaskToolCall(event, check, false, true);
-        // Tool launch has its own consultation tool, which the policy does not forbid, so the way
-        // out names that one instead of a launch the policy tells the model not to make.
-        return {
-          block: true,
-          reason:
-            launcher === "tool" ? BACKGROUND_CONSULT_TOOL_MESSAGE : BACKGROUND_CONSULT_MESSAGE,
-        };
-      }
+      // The profile names a `role` refusal states, so the instruction is the one a consultation
+      // uses here and names what it launches instead of counting it.
+      const advisorNames = consultAdvisorNames(latestRuntime);
+      // A consultation runs in the background, hold or no hold: the host reports its answer when the
+      // run ends, and that report is what opens the checkpoint. Nothing here refuses a launch for
+      // being detached, and nothing here asks for a foreground one.
       // An attempt that runs ends the periodic note for this task; whether it answers is the
-      // result's business. A launch refused above attempted nothing.
+      // result's business.
       if (consulted) advisorReminder.noteConsultAttempt();
       const manualContext =
         (latestRuntime?.advisorContextMode ?? DEFAULT_ADVISOR_CONTEXT_MODE) === "manual";
@@ -2828,14 +2935,14 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
             ? guardRules.decide(facts, event.toolName, {
                 launcher,
                 manualContext,
+                advisors: advisorNames,
                 available: consultationPath(latestRuntime),
                 wayOutBroken: advisorGate.wayOutIsBroken,
               })
             : undefined;
       } catch {
+        // The engine failure offers no consultation way out, so this refusal states no names.
         rule = guardRules.failedDecision({
-          launcher,
-          manualContext,
           available: consultationPath(latestRuntime),
           wayOutBroken: advisorGate.wayOutIsBroken,
         });
@@ -2849,6 +2956,7 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
               available: consultationPath(latestRuntime),
               launcher,
               manualContext,
+              advisors: advisorNames,
             })
           : undefined;
       const gateRefused = ruleRefused || decision?.action === "block";
@@ -2877,8 +2985,8 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       if (rule?.action === "block") return { block: true, reason: rule.message };
       if (decision?.action === "block") return { block: true, reason: decision.message };
       if (reviewed !== undefined) return reviewed;
-      // The id is recorded after the background cut, the rules and the count gate, so none of those
-      // refusals can leave an entry behind. The launch check's own refusal still comes below, and the
+      // The id is recorded after the rules and the count gate, so none of those refusals can leave an
+      // entry behind. The launch check's own refusal still comes below, and the
       // entry it leaves is inert: a refused launch starts no child, so nothing can claim the id, and
       // the map is cleared when the task ends.
       if (launchKind !== undefined) consultationCalls.set(event.toolCallId, launchKind);
@@ -2967,6 +3075,18 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
       if (!isSubagentChildProcess())
         guardRules.noteResult(event.toolName, event.input, event.isError);
       if (!isSubagentChildProcess() && advisorGate.watching) {
+        // A background launch hands back a run id and nothing else, so it registers that id here,
+        // with the call that launched it and the Advisor slots the task's configuration can answer
+        // from. The answer arrives later, on the event the host advertises, and only for this task.
+        if (consultationCalls.get(event.toolCallId) === "background") {
+          const runId = completionRunId("details" in event ? event.details : undefined);
+          if (runId !== undefined)
+            backgroundConsults.noteLaunch(
+              runId,
+              event.toolCallId,
+              advisorIdentities(latestRuntime),
+            );
+        }
         const answered = answersConsultation(event, advisorLauncher);
         // Only an answer frees the task, and only a result that proves an Advisor started and did
         // not answer counts toward the notice. A call that consulted nobody counts nothing at all:
@@ -2979,16 +3099,12 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
         // One notice per pair of failures, read from the constant that defines the pair: the level,
         // the launcher, the closed statuses it saw, and the three things a person can do. No error
         // text, brief, question or answer of the consultation reaches it, and no change is released.
-        else if (answered === "failed" && advisorGate.noteFailure()) {
-          const evidence = failureEvidence(
+        else if (answered === "failed" && advisorGate.noteFailure())
+          notifyConsultFailure(
+            ctx,
             advisorLauncher,
-            "details" in event ? event.details : undefined,
+            failureEvidence(advisorLauncher, "details" in event ? event.details : undefined),
           );
-          ctx.ui.notify(
-            `Advisor level ${level}: the ${advisorLauncher} launcher started an Advisor and got no answer in ${GATE_CONSULT_FAILURES} consultations in a row${evidence.length === 0 ? "" : ` (statuses: ${evidence.join(", ")})`}. The task stays held: fix the Advisor and consult again, change the level with /delegate and send a new prompt, or cancel the task.`,
-            "warning",
-          );
-        }
       }
       const note = takeCorrection(event.toolCallId);
       let result: { content?: Array<{ type: "text"; text: string }> } | undefined;
@@ -3006,6 +3122,13 @@ export function createPiDelegationPolicy(options: PiDelegationPolicyOptions = {}
     });
     pi.on("session_shutdown", async (_event, ctx) => {
       readerEpoch += 1;
+      completionEpoch += 1;
+      unsubscribeCompletions?.();
+      unsubscribeCompletions = undefined;
+      // An admission this session never heard back from leaves no reply listener and no timer.
+      completionClient?.abortPending();
+      completionClient = undefined;
+      backgroundConsults.closeTask();
       // The task ends here with the session, so its record is written before the runtime it names is
       // dropped, and it says it ended by shutdown.
       const shuttingDown = closeGateTask();

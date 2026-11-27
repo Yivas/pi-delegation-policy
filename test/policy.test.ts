@@ -1297,7 +1297,8 @@ test("Advisor guidance names observable checkpoints and asks for a brief in fres
     "not delegated execution",
     'agent "pi-delegation-policy.advisor" exactly',
     'never a host agent or alias named "advisor" or "oracle"',
-    "in the background unless the host or the user requires foreground",
+    "in the background: a detached launch returns a run id and the host reports the answer",
+    "which is the report this policy waits for",
     "never switch silently",
     "user decisions remain theirs",
   ]) {
@@ -1348,7 +1349,10 @@ test("the tool branch asks for no arguments in composed mode and keeps the manua
 
   // The default, with no context mode stored, composes the context in the host.
   for (const policy of [policyFor(), policyFor("composed")]) {
-    assert.match(policy, /Call consult_advisor with no arguments for all enabled valid advisors/);
+    assert.match(
+      policy,
+      /Call consult_advisor once; it asks all Advisors\. Pass no arguments for all enabled valid advisors/,
+    );
     assert.match(
       policy,
       /The host sends them the user's request, your latest messages in this task, the files you touched and the change you are about to make/,
@@ -1372,14 +1376,14 @@ test("the tool branch asks for no arguments in composed mode and keeps the manua
   const manual = policyFor("manual");
   assert.ok(
     manual.includes(
-      "Call consult_advisor with the same question for all enabled valid advisors: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. Every consultation runs in fresh context: this tool sends the question and brief and never this conversation, and the launch check refuses any call that asks to fork the session for an Advisor. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.",
+      "Call consult_advisor once; it asks all Advisors. Pass the same question for every enabled valid advisor: it launches the packaged profiles with their exact configured models and supported thinking, never an ambient default, in parallel in the background; do not use the generic subagent tool for Advisor. Supply brief for a first consultation: objective and constraints, relevant facts, options and proposal, uncertainty. On a later call in the same task it continues each Advisor's thread instead of relaunching: pass the new question and evidence for what changed, never a run id, an output path, a model or a profile. Every consultation runs in fresh context: this tool sends the question and brief and never this conversation, and the launch check refuses any call that asks to fork the session for an Advisor. Continuity covers one operative task, from a prompt you start to the point it settles; a new prompt, a branch move or a configuration change starts a new thread.",
     ),
   );
   assert.match(
     manual,
     /call consult_advisor once with that evidence and an updated brief on disagreement/,
   );
-  assert.doesNotMatch(manual, /Call consult_advisor with no arguments/);
+  assert.doesNotMatch(manual, /Pass no arguments/);
 });
 
 test("an optional role is described without a forward reference and outside the cost rule", () => {
@@ -3880,6 +3884,8 @@ test("public package contents exclude private planning, tests, archives, and old
     "schema/delegation-policy.schema.json",
     "src/agent-launch.ts",
     "src/advisor-anthropic-provider.ts",
+    "src/advisor-async.ts",
+    "src/advisor-consult.ts",
     "src/advisor-gate.ts",
     "src/advisor-context.ts",
     "src/advisor-executor.ts",
@@ -4794,7 +4800,9 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
   // Vision, and the cost comparison still covers Small, Medium and Large only. Front 47 added the
   // sentence that claims a public-text deliverable for Writing even when the task touches code, with
   // the by-product exception. It renders only when a Writing entry is advertised, and this fixture
-  // configures none, so these two hashes stay the previous ones.
+  // configures none, so these two hashes stay the previous ones. Front 51 regenerated them once more
+  // for the general launch policy, which now says the background is the default for every launch
+  // instead of the only form it asks for; the fixture configures no Advisors, so nothing else moved.
   const fixture: GlobalDefaults = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     preference: "standard",
@@ -4803,8 +4811,8 @@ test("normal and aggressive policy blocks match the ff15c0d baseline fixture", (
     large,
   };
   const expectedHashes = {
-    normal: "dcdf64f60f27ae750dacc068946dcd9f501d780681edafcea15f2da82f1ea997",
-    aggressive: "a0f8a0e409f6ce39e1c131590505ff11f4fc7086ae1e004095635ddb4b2e1571",
+    normal: "85a2dcd6335de7f095a973ee62ffe222fff65f8aed392516ef7330e41d4b13c4",
+    aggressive: "b720e190f643e79763feda902465962886189999376ba71782318af45ee42179",
   } as const;
   for (const intensity of ["normal", "aggressive"] as const) {
     const current = runtime({ schemaVersion: CURRENT_SCHEMA_VERSION, intensity }, fixture);

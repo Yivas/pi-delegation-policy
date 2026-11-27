@@ -84,8 +84,10 @@ export class AdvisorResumeClient {
   private readonly clearTimer: (timer: Timer) => void;
   private readonly rpcTimeoutMs: number;
   private readonly stopTimeoutMs: number;
-  /** Advertised by the admitted bridge; absent until `probe` succeeds. */
+  /** Advertised by the admitted bridge; absent until `probe` or `admitCompletion` succeeds. */
   private asyncCompleteEvent: string | undefined;
+  /** Calls still waiting for a reply, so a session that ends can abandon them. */
+  private readonly pending = new Set<(reply: RpcReply) => void>();
 
   constructor(options: AdvisorResumeClientOptions) {
     this.events = options.events;
@@ -94,6 +96,29 @@ export class AdvisorResumeClient {
     this.clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer));
     this.rpcTimeoutMs = options.rpcTimeoutMs ?? ADVISOR_RPC_TIMEOUT_MS;
     this.stopTimeoutMs = options.stopTimeoutMs ?? ADVISOR_STOP_TIMEOUT_MS;
+  }
+
+  /**
+   * Admit only what a background consultation needs: protocol 1, an advertised completion event and
+   * this session. It is deliberately weaker than `probe`, which also requires `resume`, because a
+   * session that cannot continue a thread can still hear an Advisor answer. Anything else fails
+   * closed, and a failed admission only means no completion is heard, so the hold stands.
+   *
+   * Nothing waits for this answer, so its bound must not hold the process open: a host without the
+   * bridge never replies, and the timer would outlive the session that asked.
+   */
+  async admitCompletion(sessionId: string): Promise<boolean> {
+    const reply = await this.call("ping", {}, this.rpcTimeoutMs, true);
+    if (!reply.ok) return false;
+    const data = reply.data;
+    if (data.version !== SUBAGENT_RPC_PROTOCOL_VERSION) return false;
+    const events = data.events;
+    if (!isRecord(events) || typeof events.asyncComplete !== "string" || !events.asyncComplete)
+      return false;
+    const session = data.session;
+    if (!isRecord(session) || session.sessionId !== sessionId) return false;
+    this.asyncCompleteEvent = events.asyncComplete;
+    return true;
   }
 
   /**
@@ -235,16 +260,23 @@ export class AdvisorResumeClient {
     await this.call("stop", { id: runId }, this.stopTimeoutMs).catch(() => undefined);
   }
 
-  /** Wake a waiting turn when the host reports a completion; the caller still validates status. */
-  onAsyncComplete(listener: (runId: string | undefined) => void): () => void {
+  /**
+   * Abandon every reply this client is still waiting for, settling each as an unavailable bridge. A
+   * session that ends leaves no reply listener and no timer behind for an answer nobody wants.
+   */
+  abortPending(): void {
+    for (const finish of [...this.pending]) finish({ ok: false, code: "rpc-unavailable" });
+  }
+
+  /**
+   * Wake a waiting turn when the host reports a completion. The whole payload is handed over, because
+   * the caller is the one that decides what it proves; nothing here reads an answer.
+   */
+  onAsyncComplete(listener: (payload: unknown) => void): () => void {
     const event = this.asyncCompleteEvent;
     if (!event) return () => undefined;
     try {
-      return this.events.on(event, (payload) => {
-        listener(
-          isRecord(payload) && typeof payload.runId === "string" ? payload.runId : undefined,
-        );
-      });
+      return this.events.on(event, (payload) => listener(payload));
     } catch {
       return () => undefined;
     }
@@ -254,6 +286,7 @@ export class AdvisorResumeClient {
     method: string,
     params: Record<string, unknown>,
     timeoutMs = this.rpcTimeoutMs,
+    unrefTimer = false,
   ): Promise<RpcReply> {
     const requestId = this.createId();
     return new Promise<RpcReply>((resolve) => {
@@ -263,6 +296,7 @@ export class AdvisorResumeClient {
       const finish = (reply: RpcReply): void => {
         if (settled) return;
         settled = true;
+        this.pending.delete(finish);
         for (const timer of timers) this.clearTimer(timer);
         try {
           unsubscribe?.();
@@ -283,7 +317,10 @@ export class AdvisorResumeClient {
       } catch {
         return finish({ ok: false, code: "rpc-unavailable" });
       }
-      timers.push(this.setTimer(() => finish({ ok: false, code: "rpc-timeout" }), timeoutMs));
+      const expiry = this.setTimer(() => finish({ ok: false, code: "rpc-timeout" }), timeoutMs);
+      if (unrefTimer) expiry.unref();
+      timers.push(expiry);
+      this.pending.add(finish);
       try {
         this.events.emit(SUBAGENT_RPC_REQUEST_EVENT, {
           version: SUBAGENT_RPC_PROTOCOL_VERSION,

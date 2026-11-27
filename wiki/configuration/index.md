@@ -334,9 +334,9 @@ checkpoint. Weigh disagreements; agreement is not proof. The packaged no-tools/n
 working exactly as before, and the schema default is `tool`:
 
 - `role`: the main agent launches every valid advisor in one background subagent call, with exact
-  models and a thinking level it chooses per run, and in the foreground while a task holds its
-  changes, because only then does the answer arrive inside the call. The extension observes matching
-  attempts but does not launch them.
+  models and a thinking level it chooses per run. A background launch is the only form the policy
+  asks for, and it is never refused for being detached: it returns a run id, and the host reports
+  the answer when the run ends. The extension observes matching attempts but does not launch them.
 - `tool`: the always-registered `consult_advisor({ question?, brief?, evidence? })` launches one
   child per valid advisor in parallel through the public `pi-subagents` delegation API. It requires
   stable SemVer `>=0.76.1`, with no upper bound; prereleases and invalid versions are rejected. Every
@@ -820,23 +820,35 @@ A change is a tool call that changes state, decided closed by default:
 Shell text is read as data and never executed. Counting tests and builds has a known cost: an
 edit-and-test loop reaches the hold quickly.
 
-A consultation answers when the details of its result show that at least one Advisor did. Text alone
-proves nothing, because both launchers return text when they fail. In `tool` launch those are the
-details `consult_advisor` writes. In `role` launch it is a single or `tasks` launch whose every child
-is a configured Advisor, with `async: false`, read from the details of the host's `subagent` tool: a
-child that ended cleanly, was not cut short and left output of its own. A launch that names
-`workflow: "parallel"` is a consultation too, and the children the host starts for it belong to the
-same call when it runs in the foreground; a workflow script that chooses its own children is not
-read, so it counts as a change like any other unknown call. In the background the host reports a
-different parent id for each child, so those children count as changes like any other launch and can
-reach the hold in the middle of the call. A single foreground Advisor launch is enough to answer. Those details were read against `pi-subagents`
-`0.89.1`. A result in a shape this version does not recognize opens nothing and keeps the hold. An
-omitted `async` counts as background, whatever `asyncByDefault` says in `pi-subagents`, and
-so does an `async: false` that `pi-subagents` rewrites to a background launch with
-`forceTopLevelAsync`: no `role` launch can answer while that option is set. A background launch returns before the Advisor answers and
-covers nothing, so while a level holds changes an Advisor launch with `async` omitted or `true` is
-refused: in `role` launch the message says to relaunch it with `async: false`, and in `tool` launch
-it names `consult_advisor()` instead, because this session does not launch Advisors with that tool. A consultation that returns an error or empty text opens nothing.
+A consultation answers when the host reports an answer from at least one Advisor. Text alone proves
+nothing, because both launchers return text when they fail. In `tool` launch those are the details
+`consult_advisor` writes: the per-turn output file the extension owns. In `role` launch it is the
+result of a single or `tasks` launch, or the completion the host reports when a background run ends.
+A foreground result is read from the details of the host's `subagent` tool: a single or `tasks` launch
+whose every child is a configured Advisor, with a child that ended cleanly, was not cut short and
+left output of its own. A launch that names `workflow: "parallel"` is a consultation too, and the
+children the host starts for it belong to the same call when it runs in the foreground; a workflow
+script that chooses its own children is not read, so it counts as a change like any other unknown
+call. In the background the host reports a different parent id for each child, so those children
+count as changes like any other launch and can reach the hold in the middle of the call. A single
+foreground Advisor launch is enough to answer. Those details were read against `pi-subagents`
+`0.89.1`. A result in a shape this version does not recognize opens nothing and keeps the hold.
+
+A background launch is not refused while changes are held. It returns a run id, and the checkpoint
+opens on the completion the host advertises when that run ends, subscribed under the name the bridge
+itself advertises, never a constant here. The report has to name a run this task launched, in this
+session, that ended complete and was not stopped, timed out or cut short, and at least one of its
+children has to be a configured Advisor profile with that slot's model, output present and no error.
+The tool call that launched it and the run id are both read as host identifiers, the report of one
+run decides it once, and a report that proves nothing changes nothing. Nothing parses the text of a
+notice or of a message, so a message the agent writes cannot open a hold. A bridge that does not
+advertise the event leaves the hold standing: only the host's report opens it. A host that rewrites an
+explicit `async: false` into a background launch, such as `pi-subagents` with `forceTopLevelAsync`,
+leaves that launch unanswered and unreported here: its receipt carries no children, and no run is
+registered for it because only a background launch registers one. So while that option is set, a
+`role` launch answers nothing, foreground or background. A completion that
+arrives after the task ended opens nothing. A consultation that returns an error or empty text opens
+nothing.
 Nothing releases the hold automatically, and a run of failures does not either. Two consultations in
 a row that did reach an Advisor and did not answer give the operator one warning notification per
 such pair and leave every change refused. The notification names the level, the launcher and the
@@ -858,7 +870,7 @@ The refused call returns this text, verbatim, in `tool` launch:
 ```text
 Not an error: this call was not run. Advisor checkpoint.
 The checkpoint holds every change in this task until an Advisor consultation answers. Reading is not affected.
-Consult the Advisors now: call consult_advisor(). It needs no arguments; the host supplies the context.
+Call consult_advisor once; it asks all Advisors. It needs no arguments; the host supplies the context.
 After the consultation answers, make this change again.
 ```
 
@@ -869,11 +881,12 @@ more line instead of changing anything it already said:
 Two consultations have not answered, so ask the user and stop rather than calling this again.
 ```
 
-In `role` launch the third line asks for a foreground launch of every listed Advisor instead. In
+In `role` launch the third line states `Consult all Advisors in one parallel call: <the configured
+Advisor profiles>.` and then the background launch that answers it, so the model launches what this
+configuration resolves instead of counting copies. In
 `tool` launch with `/delegate advisor context manual` it asks for a question, and for a brief on a
-first consultation, instead of saying the call needs no arguments. While changes are held,
-`consult_advisor` in `role` launch also redirects to a foreground launch. A background launch refused
-by the checkpoint writes no `launch` record.
+first consultation, instead of saying the call needs no arguments. `consult_advisor` in `role` launch
+also redirects to a background launch.
 
 It refuses nothing when a consultation is not possible: no valid Advisor, no launcher for the
 configured launch mode, no open task, or a subagent child process. A consultation that is merely
@@ -949,7 +962,7 @@ launch:
 
 ```text
 Not an error: this call was not run. Guard rule: continuous integration configuration.
-Consult the Advisors now: call consult_advisor(). It needs no arguments; the host supplies the context.
+Call consult_advisor once; it asks all Advisors. It needs no arguments; the host supplies the context.
 A consultation that answers covers this target for a few calls. Reading is not affected.
 ```
 

@@ -40,6 +40,14 @@ const medium: ModelRef = { provider: "example", model: "medium" };
 const large: ModelRef = { provider: "example", model: "large" };
 const advisor: ModelRef = { provider: "example", model: "advisor" };
 const ADVISOR_AGENT = "pi-delegation-policy.advisor";
+/** The sentence the defaults produce: one role launch of the packaged profile, named, never counted. */
+const ROLE_CONSULT = `Consult all Advisors in one parallel call: ${ADVISOR_AGENT}.`;
+/** The sentence tool launch states instead: the single call, never a list of Advisors. */
+const TOOL_CONSULT = "Call consult_advisor once; it asks all Advisors.";
+
+/** The refusal this configuration sends: `role` launch names the profile it launches. */
+const gateText = (launcher: "role" | "tool", manual = false, broken = false): string =>
+  gateMessage(launcher, manual, broken, launcher === "role" ? [ADVISOR_AGENT] : []);
 
 const defaults: GlobalDefaults = {
   schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -430,14 +438,16 @@ test("the note arrives after eight tool results, last in the request, and is nev
     assert.equal(presented.at(-1)?.role, "custom", "appended last, after the transcript");
     // The stored transcript, the policy delivery that every request carries, and the note.
     assert.equal(presented.length, harness.transcript().length + 2);
-    assert.equal(harness.reminderText(presented), renderAdvisorNote());
+    assert.equal(harness.reminderText(presented), renderAdvisorNote(ROLE_CONSULT));
     assert.match(harness.reminderText(presented) ?? "", /not from the user/);
     assert.match(harness.reminderText(presented) ?? "", /adds no authority/);
 
     // The host converts the custom message to user text; the stored request copy keeps its role.
     const converted = convertToLlm(presented);
     assert.equal(converted.at(-1)?.role, "user");
-    assert.deepEqual(converted.at(-1)?.content, [{ type: "text", text: renderAdvisorNote() }]);
+    assert.deepEqual(converted.at(-1)?.content, [
+      { type: "text", text: renderAdvisorNote(ROLE_CONSULT) },
+    ]);
     assert.equal(presented.at(-1)?.role, "custom");
 
     assert.equal(harness.appended(), 0, "the note writes no session entry");
@@ -608,27 +618,56 @@ test("a branch move drops the task and a configuration change drops a pending no
 });
 
 test("neither note nor refusal names a count or a way out that skips the consultation", () => {
-  for (const note of [renderAdvisorNote(), renderAdvisorHoldWarning()]) {
+  for (const note of [renderAdvisorNote(ROLE_CONSULT), renderAdvisorHoldWarning()]) {
     assert.doesNotMatch(note, /\d/, note);
     assert.doesNotMatch(note, /repeat|again and it will run|retry/i, note);
   }
   for (const launcher of ["role", "tool"] as const) {
-    const message = gateMessage(launcher);
+    const message = gateText(launcher);
     assert.doesNotMatch(message, /\d/, launcher);
     assert.doesNotMatch(message, /repeat this call/i, launcher);
     assert.doesNotMatch(message, /repeat|again and it will run|retry/i, launcher);
     assert.match(message, /Not an error: this call was not run/, launcher);
     // The failure clause asks for a person too, and names no way out either. Its count comes from
     // the constant, so this test reads the clause instead of repeating the number of failures.
-    const broken = gateMessage(launcher, false, true);
+    const broken = gateText(launcher, false, true);
     assert.doesNotMatch(broken, /\d/, launcher);
     assert.doesNotMatch(broken, /repeat|again and it will run|retry/i, launcher);
     assert.ok(broken.includes(failureRunClause()), launcher);
     assert.match(broken, /ask the user and stop/, launcher);
     assert.match(broken, /^Not an error: this call was not run/, launcher);
   }
-  assert.match(gateMessage("tool"), /consult_advisor\(\)/, "tool launch names its own tool");
-  assert.match(gateMessage("role"), /async: false/, "role launch names the one field that answers");
+  assert.match(gateText("tool"), /Call consult_advisor once/, "tool launch names its own tool");
+  // A consultation runs in the background, held or not: no refusal asks for a foreground launch.
+  assert.match(gateText("role"), /in the background/, "role launch asks for the background");
+  for (const launcher of ["role", "tool"] as const) {
+    assert.doesNotMatch(gateText(launcher), /async|foreground/i, launcher);
+    assert.doesNotMatch(gateText(launcher, false, true), /async|foreground/i, launcher);
+  }
+});
+
+test("the block, the note and the refusal name one launch per mode", async () => {
+  for (const mode of ["role", "tool"] as const) {
+    const consult = mode === "role" ? ROLE_CONSULT : TOOL_CONSULT;
+    const refusal = gateMessage(mode, false, false, mode === "role" ? [ADVISOR_AGENT] : []);
+    // The refusal states exactly one way to consult, with the profiles named in `role` launch.
+    assert.ok(refusal.includes(consult), `${mode}: the refusal states the sentence`);
+    assert.doesNotMatch(refusal, /every listed Advisor/i, mode);
+    await withHarness(
+      mode === "role"
+        ? {}
+        : { config: { ...defaults, advisorLaunch: "tool" }, activeTools: ["consult_advisor"] },
+      async (harness) => {
+        await writeLevel({ level: "standard" });
+        await harness.prompt();
+        const opened = JSON.stringify(await harness.request());
+        assert.ok(opened.includes(consult), `${mode}: the policy block states the sentence`);
+        await harness.results(ADVISOR_CADENCE_RESULTS);
+        const presented = await harness.request();
+        assert.equal(harness.reminderText(presented), renderAdvisorNote(consult), mode);
+      },
+    );
+  }
 });
 
 test("the extension no longer registers the settle boundary", async () => {
@@ -659,7 +698,7 @@ test("standard presents the periodic note and never refuses a call", async () =>
       assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index + 1}`);
       await harness.toolResult("edit");
     }
-    assert.equal(harness.reminderText(await harness.request()), renderAdvisorNote());
+    assert.equal(harness.reminderText(await harness.request()), renderAdvisorNote(ROLE_CONSULT));
     await harness.settled();
     assert.deepEqual(await logEventsNamed("gate"), [], "a level that holds nothing writes no gate");
   });
@@ -675,7 +714,7 @@ test("strict and guard let five changes run and hold the sixth, seventh and eigh
 
       const refused = await harness.toolCall("edit", SMALL_EDIT);
       assert.equal(refused?.block, true, `${level}: the sixth change is held`);
-      assert.equal(refused?.reason, gateMessage("role"), `${level}: one refusal, one text`);
+      assert.equal(refused?.reason, gateText("role"), `${level}: one refusal, one text`);
       // A refused change is not counted, and repeating it does not unblock it.
       assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, `${level}: seventh`);
       assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true, `${level}: eighth`);
@@ -706,7 +745,7 @@ test("a ?? prompt holds the first change at any level, and only while an Advisor
       assert.equal(await harness.toolCall("read", { path: "src/a.ts" }), undefined, level);
       const refused = await harness.toolCall("edit", SMALL_EDIT);
       assert.equal(refused?.block, true, `${level}: the first change is held`);
-      assert.equal(refused?.reason, gateMessage("role"));
+      assert.equal(refused?.reason, gateText("role"));
       // Nothing changed yet, so the warning about changes already made is never presented.
       assert.equal(harness.reminders(await harness.request()).length, 0, level);
 
@@ -874,7 +913,7 @@ test("a run of failures keeps the hold, is reported once, and an answer reopens 
       assert.equal(refusal?.block, true);
       assert.equal(
         refusal?.reason,
-        gateMessage("tool", false, true),
+        gateText("tool", false, true),
         "the refusal keeps its shape and adds the one clause that asks for a person",
       );
 
@@ -920,7 +959,7 @@ test("a run of failures keeps the hold, is reported once, and an answer reopens 
       assert.equal(heldAgain?.block, true);
       assert.equal(
         heldAgain?.reason,
-        gateMessage("tool"),
+        gateText("tool"),
         "the answer removed the clause from the refusal as well",
       );
     },
@@ -1030,7 +1069,7 @@ test("an unreadable result counts nothing and leaves the hold", async () => {
   );
 });
 
-test("a background Advisor launch runs before the hold and is refused inside it", async () => {
+test("a background Advisor launch runs before the hold and inside it", async () => {
   await withHarness({}, async (harness) => {
     await writeLevel({ level: "strict" });
     await harness.prompt();
@@ -1049,17 +1088,13 @@ test("a background Advisor launch runs before the hold and is refused inside it"
       );
     assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
 
-    // While the gate holds, the same launch is refused with the one field that makes it answer:
-    // in `role` launch, the foreground form the policy permits.
+    // While the gate holds, the same launch is allowed too: the host reports its answer when the
+    // run ends, and that report is what opens the gate. It still counts no change.
     for (const launch of [
       { tasks: FOREGROUND_CONSULT.tasks },
       { async: true, tasks: FOREGROUND_CONSULT.tasks },
-    ]) {
-      const refused = await harness.toolCall("subagent", launch);
-      assert.equal(refused?.block, true, JSON.stringify(launch));
-      assert.match(refused?.reason ?? "", /async: false/);
-      assert.doesNotMatch(refused?.reason ?? "", /consult_advisor\(\) instead/);
-    }
+    ])
+      assert.equal(await harness.toolCall("subagent", launch), undefined, JSON.stringify(launch));
     // A refusal counted no change either, so the gate is exactly where it was.
     assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
   });
@@ -1113,7 +1148,7 @@ test("a launch that is not a consultation counts as a change and gets no async r
     // refused by the gate, and the refusal is the gate's text, not the consultation correction.
     const refused = await harness.toolCall("subagent", ORDINARY_LAUNCH);
     assert.equal(refused?.block, true);
-    assert.equal(refused?.reason, gateMessage("role"));
+    assert.equal(refused?.reason, gateText("role"));
   });
 });
 
@@ -1197,7 +1232,7 @@ test("a child of a consultation is exempt only with the profile the host resolve
     ] as const) {
       const refused = await harness.toolCall("subagent_launch", child);
       assert.equal(refused?.block, true, why);
-      assert.equal(refused?.reason, gateMessage("role"), why);
+      assert.equal(refused?.reason, gateText("role"), why);
     }
     // A child whose parent is not a consultation this task launched is no part of one.
     const stray = await harness.toolCall("subagent_launch", advisorChild("no-such-call", "task-1"));
@@ -1245,16 +1280,17 @@ test("a launch that mixes an Advisor with a worker is a change, not a consultati
     // At the hold it is refused by the gate, so a worker cannot ride on a consultation.
     const refused = await harness.toolCall("subagent", mixed);
     assert.equal(refused?.block, true);
-    assert.equal(refused?.reason, gateMessage("role"));
+    assert.equal(refused?.reason, gateText("role"));
   });
 });
 
-test("a role refusal asks for the foreground as its own rule, and so does the redirect", () => {
-  const message = gateMessage("role");
-  assert.match(message, /in the foreground \(async: false\)/);
-  assert.doesNotMatch(message, /Roles section/, "the policy asks for background launches");
-  assert.match(gateMessage("tool", true), /with a question/);
-  assert.doesNotMatch(gateMessage("tool", true), /needs no arguments/);
+test("a role refusal asks for the background, and never for a foreground launch", () => {
+  const message = gateText("role");
+  assert.match(message, /in the background/);
+  assert.doesNotMatch(message, /foreground|async/i);
+  assert.doesNotMatch(message, /Roles section/, "the refusal does not restate the policy");
+  assert.match(gateText("tool", true), /Pass a question/);
+  assert.doesNotMatch(gateText("tool", true), /needs no arguments/);
 });
 
 test("a ?? task that changed nothing reports no change", async () => {
@@ -1272,7 +1308,7 @@ test("a ?? task that changed nothing reports no change", async () => {
   });
 });
 
-test("in tool launch the background refusal names the consultation tool, not a subagent launch", async () => {
+test("in tool launch a background Advisor launch is allowed while the gate holds", async () => {
   await withHarness(
     {
       config: { ...defaults, advisorLaunch: "tool" },
@@ -1283,12 +1319,14 @@ test("in tool launch the background refusal names the consultation tool, not a s
       await harness.prompt();
       for (let index = 1; index < GATE_HOLD_CHANGES; index += 1)
         assert.equal(await harness.toolCall("edit", SMALL_EDIT), undefined, `change ${index}`);
-      const refused = await harness.toolCall("subagent", { tasks: FOREGROUND_CONSULT.tasks });
-      assert.equal(refused?.block, true);
-      // The policy forbids launching Advisors with the subagent tool in this mode, so the way out
-      // is the tool that does launch them here.
-      assert.match(refused?.reason ?? "", /consult_advisor\(\) instead/);
-      assert.doesNotMatch(refused?.reason ?? "", /async: false/);
+      // A launch is not refused for being detached, in this mode either; and a refusal of another
+      // change names this mode's own consultation tool.
+      assert.equal(
+        await harness.toolCall("subagent", { tasks: FOREGROUND_CONSULT.tasks }),
+        undefined,
+      );
+      assert.match(gateText("tool"), /Call consult_advisor once/);
+      assert.equal((await harness.toolCall("edit", SMALL_EDIT))?.block, true);
     },
   );
 });
@@ -1377,15 +1415,15 @@ test("a presentation this task already spent is not resurrected by a later trigg
   const state = new AdvisorReminderState();
   state.openTask();
   for (let index = 0; index < ADVISOR_CADENCE_RESULTS; index += 1) state.noteResult();
-  assert.ok(state.presentation(1), "the cadence arms the note");
+  assert.ok(state.presentation(1, ROLE_CONSULT), "the cadence arms the note");
   assert.equal(state.presentations, 1);
   state.suspend();
   // The spent cadence is not handed back to a retry of the same round, or to any later one.
-  assert.equal(state.presentation(2), undefined);
+  assert.equal(state.presentation(2, ROLE_CONSULT), undefined);
   // A hold warning armed afterwards is its own note: an attempt ends the periodic note, never this
   // one, because the warning is about changes made since and a task can cross the hold again.
   state.armHoldWarning();
-  const hold = state.presentation(3);
+  const hold = state.presentation(3, ROLE_CONSULT);
   assert.ok(hold, "the hold warning is armed while the task is open");
   assert.equal("content" in hold ? hold.content : undefined, renderAdvisorHoldWarning());
   assert.equal(state.presentations, 2, "and it is a second presentation, counted as one");
@@ -1692,7 +1730,7 @@ test("the guard switch holds the first change until a consultation answers", asy
     await harness.prompt();
     const held = await harness.toolCall("edit", SMALL_EDIT);
     assert.equal(held?.block, true);
-    assert.equal(held?.reason, gateMessage("role"));
+    assert.equal(held?.reason, gateText("role"));
     // Reading is never affected by any hold.
     assert.equal(await harness.toolCall("read", { path: "src/a.ts" }), undefined);
     await harness.toolCall("subagent", FOREGROUND_CONSULT);

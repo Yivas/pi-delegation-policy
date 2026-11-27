@@ -846,7 +846,7 @@ test("each advisor validates independently and role mode groups every valid advi
         assert.match(payload.instructions, /Advisor 2 \(optional\)/);
         assert.match(
           payload.instructions,
-          /Ask every listed Advisor the same question in one call/,
+          /Consult all Advisors in one parallel call: pi-delegation-policy\.advisor\./,
         );
         assert.match(payload.instructions, /agreement neither proof nor authority/);
       } else if (available.length === 1) {
@@ -885,10 +885,12 @@ test("role redirects to one background host call with the policy's exact launch 
       assert.match(answer, /^Not an error:/);
       assert.match(answer, /do not call this tool again while Advisor launch is "role"/);
       assert.match(answer, /host subagent tool "subagent"/);
+      // The redirect states the shared sentence, with the profiles this configuration resolves.
       assert.match(
         answer,
-        /in the background, all listed Advisors with the same question in one call/,
+        /Consult all Advisors in one parallel call: pi-delegation-policy\.advisor\./,
       );
+      assert.doesNotMatch(answer, /every listed Advisor/i);
       assert.match(answer, /agent profile: "pi-delegation-policy.advisor"/);
       assert.match(answer, /pi-subagents form: "example\/first:LEVEL"/);
       assert.match(answer, /unset \(choose per run\)/);
@@ -916,7 +918,7 @@ test("role without an active subagent tool reports the limitation without improv
   try {
     assert.equal(
       await run.call(),
-      'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another mechanism: do not use foreground execution, a CLI, or another agent.',
+      'Not an error: Advisor launch is "role", so this tool does not launch Advisors; do not call this tool again while Advisor launch is "role". The host subagent tool "subagent" is not available. Tell the user that you cannot launch the Advisor with the available host tools. Do not improvise another launcher: no CLI, no other agent, and no stand-in for the host subagent tool.',
     );
     activeTools.push("subagent");
     assert.match(await run.call(), /host subagent tool "subagent", using each exact agent profile/);
@@ -1437,7 +1439,12 @@ test("abort and branch rotation cancel the whole group and remove listeners idem
       controller.abort();
       run.executor.cancel();
       assert.equal(run.bus.cancels.length, 2);
-      assert.ok([...run.bus.listeners.values()].every((listeners) => listeners.size === 0));
+      // Cancelling the group leaves no listener behind on any channel. The one exception is the
+      // reply this session's bridge admission is still waiting for, which this bus never answers and
+      // which the session itself abandons when it closes.
+      for (const [channel, listeners] of run.bus.listeners)
+        if (!channel.startsWith("subagents:rpc:v1:reply:"))
+          assert.equal(listeners.size, 0, channel);
       for (const request of run.bus.requests) run.bus.finish(request);
       assert.equal(run.executor.busy, false);
     } finally {
@@ -3044,7 +3051,7 @@ test("guard holds changes until a consultation answers, not until a call is made
     // The agent writes the brief in this mode, so the refusal asks for a question instead of
     // promising that a call with no arguments works.
     assert.equal(held?.reason, gateMessage("tool", true));
-    assert.match(held?.reason ?? "", /with a question/);
+    assert.match(held?.reason ?? "", /Pass a question/);
     assert.doesNotMatch(held?.reason ?? "", /needs no arguments/);
 
     // A call that reached no Advisor answers nothing, so the gate stays where it was. The result
@@ -3087,7 +3094,7 @@ test("guard holds changes until a consultation answers, not until a call is made
   }
 });
 
-test("role mode holds changes until a foreground Advisor launch answers", async () => {
+test("role mode holds changes until an Advisor launch answers", async () => {
   // In `role` mode `consult_advisor` only returns the redirect, so the launcher is the host tool.
   const run = await harness(base, models, 10_000, { activeTools: ["subagent"], mainProcess: true });
   try {
@@ -3099,15 +3106,15 @@ test("role mode holds changes until a foreground Advisor launch answers", async 
       assert.equal(await gatedEdit(run, `role-edit-${index}`), undefined, `change ${index}`);
     assert.equal((await gatedEdit(run, "role-held"))?.block, true);
 
-    // A consultation the host would answer after the call is refused with the one field that makes
-    // it answer inside the call, and it counted no change.
+    // A consultation the host would answer after the call runs: it is the background launch the
+    // policy asks for, and it counts no change. Its answer arrives on the completion the host
+    // advertises, so until then the gate is where it was.
     const background = (await run.hook("tool_call", {
       toolCallId: "role-consult-background",
       toolName: "subagent",
       input: { tasks: [{ agent: ADVISOR_AGENT_NAME, task: "q", model: "example/first:high" }] },
     })) as { block?: boolean; reason?: string } | undefined;
-    assert.equal(background?.block, true);
-    assert.match(background?.reason ?? "", /async: false/);
+    assert.equal(background, undefined);
     assert.equal((await gatedEdit(run, "role-still-held"))?.block, true);
 
     // A foreground launch whose one child exited non-zero answered nothing, whatever text it
