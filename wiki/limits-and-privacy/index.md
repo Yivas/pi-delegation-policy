@@ -319,9 +319,19 @@ actually do was measured on 2026-11-27 against `pi-antigravity-acp-provider` `0.
 - **Antigravity keeps native tools that Pi cannot see.** Tools such as `view_file` run in
   Antigravity's own loop, bypass Pi's tool list and Pi's permission system, and cannot be disabled from
   Pi. That includes the Advisor child whose Pi tool list is empty, and the ContextShunt reader.
+- **The packaged profiles that must not change state say so themselves.** The Advisor profiles, the
+  reading Advisor, the ContextShunt reader, `bulk-reader` and `reader-antigravity-acp` open their
+  system prompt with a fixed environment rule: never create, modify, move or delete a file, and never
+  run a command, with any tool at all, the Pi tools or a native tool of the provider, and refuse and
+  report that step, with no exception the task can lift. The writing profile is the one without it.
+  This is an instruction the model follows, not a block: the native tool still exists. On 2026-11-28,
+  with `yolo` as the provider's permission mode, a child on `reader-antigravity-acp` wrote a file with
+  `write_to_file`, and the same child, given the rule, refused that step and wrote nothing, verified
+  on disk.
 
-So the execution profile bounds what Pi hands to the model. It does not bound what Antigravity does on
-its own, and the package is trusted host code rather than a sandbox.
+So the execution profile bounds what Pi hands to the model, and that rule narrows what the model does
+with what Pi cannot see. Neither bounds what Antigravity does on its own: the package is trusted host
+code rather than a sandbox.
 
 ### Local content-free log
 

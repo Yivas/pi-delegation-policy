@@ -589,7 +589,11 @@ The writing profile carries the `worker` tool set (`read`, `grep`, `find`, `ls`,
 `reviewer` tool set (`read`, `grep`, `find`, `ls`, `watchdog_diff`, `contact_supervisor`) and
 `acceptanceRole: read-only`. Neither lists `antigravity_acp_permission`, both keep `extensions:`
 empty so no ambient extension reaches the child, and neither declares a model: the launch states it,
-as for any role.
+as for any role. The read-only profile, and every other packaged profile that must not change state,
+opens its system prompt with a fixed environment rule: never create, modify, move or delete a file,
+and never run a command, with any tool, the provider's native ones included, while reading, searching
+and the tool that returns the answer stay allowed. It is an instruction the model follows, not a
+block ([limits and privacy](/limits-and-privacy/#execution-child)).
 
 What a builtin agent becomes is one table in code, and a builtin keeps the tool surface its own
 definition declares or the launch is refused. Nothing is widened into the writing profile and nothing

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **The packaged profiles that must not change state now forbid it in their own prompt.**
+  `advisor`, `advisor-anthropic-auth`, `advisor-provider-extension`, `advisor-read`,
+  `context-shunt-inline-reader`, `bulk-reader` and `reader-antigravity-acp` open their system prompt
+  with a fixed environment rule: never create, modify, move or delete a file, and never run a
+  command, with any tool at all, the Pi tools or a native tool of the provider, and refuse and
+  report that step, with no exception the task can lift. The writing profile
+  `execution-antigravity-acp` keeps its tools and does not carry it. It is an instruction the model
+  follows, not a block: Antigravity's native tools still exist and nothing on the Pi side disables
+  them. On 2026-11-28, against `pi-antigravity-acp-provider` `0.1.22` with the provider's permission
+  mode set to `yolo`, a child on the read-only profile created a file with `write_to_file`, and the
+  same child, given this rule, refused that step and wrote nothing, verified on disk.
+
 ## 0.37.0 - 2026-11-27
 
 ### Added

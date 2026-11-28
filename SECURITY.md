@@ -134,7 +134,17 @@ provider passes the parent and fails in the child. No version and no content are
 the profile loads the installed package, which is what stops a provider update from needing a release
 of this one. Antigravity also keeps native tools that bypass Pi's tool list and Pi's permission system
 entirely, including for the Advisor 3 profile whose Pi tool list is empty: nothing on the Pi side
-disables them.
+disables them. Every packaged profile that must not change state (`advisor`, `advisor-anthropic-auth`,
+`advisor-provider-extension`, `advisor-read`, `context-shunt-inline-reader`, `bulk-reader` and
+`reader-antigravity-acp`) now opens its system prompt with a fixed environment rule: never create,
+modify, move or delete a file, and never run a command, with any tool at all, the Pi tools or the
+provider's native ones, and refuse and report that step, with no exception the task can lift. The
+writing profile `execution-antigravity-acp` is the only one without it, because writing files and
+running commands is its work. The rule is an instruction the model follows, not a block: the native
+tool still exists and nothing on the Pi side disables it. On 2026-11-28, against
+`pi-antigravity-acp-provider` `0.1.22` with the provider's permission mode set to `yolo`, a child on
+`reader-antigravity-acp` created a file with `write_to_file`, and the same child, given this rule,
+refused that step and wrote nothing, verified on disk.
 
 One pending call per tool: three Advisors plus the reader, at most four children. Abort, branch
 changes, shutdown, and detected settings changes cancel the extension-owned group, never host-owned
