@@ -32,7 +32,7 @@ The extension injects guidance only while an active configuration is valid. It c
 
 ## Start here
 
-These pages describe Version **0.37.0**.
+These pages describe Version **0.37.1**.
 
 - Requires Pi `0.87.1` or later (`>=0.87.1`).
 - Version `0.14.1` supports Pi `0.84.3` or later.

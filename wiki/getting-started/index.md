@@ -7,14 +7,14 @@ description: Install pi-delegation-policy and reach a valid delegation status sa
 
 ## Requirements
 
-- Version `0.37.0` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
+- Version `0.37.1` requires Pi `0.87.1` or later (`>=0.87.1`) and re-applies its marked policy block in the final provider payload.
 - Version `0.14.1` supports Pi `0.84.3` or later (`>=0.84.3`).
 - An authenticated Pi model in the current scope for every ordinary role you enable. Visual Design, Vision, Writing and Advisor are optional.
 
 ## 1. Install and reload
 
 ```bash
-pi install npm:pi-delegation-policy@0.37.0
+pi install npm:pi-delegation-policy@0.37.1
 ```
 
 Restart Pi or run `/reload`. Installing or upgrading changes no configuration: a session with no saved
